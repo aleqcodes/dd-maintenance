@@ -287,6 +287,16 @@ class DD_Maintenance_Restore {
 			return new WP_Error( 'restore_zip_open_failed', __( 'Falha ao abrir o arquivo .zip de backup.', 'dd-maintenance' ) );
 		}
 
+		// Validação de segurança Zip Slip: impede caminhos relativos maliciosos (../) no arquivo.
+		for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+			$entry_name = (string) $zip->getNameIndex( $i );
+			if ( false !== strpos( $entry_name, '..' ) || 0 === strpos( $entry_name, '/' ) || 0 === strpos( $entry_name, '\\' ) ) {
+				$zip->close();
+				$this->delete_directory( $extract_dir );
+				return new WP_Error( 'restore_zip_slip_detected', __( 'Arquivo de backup rejeitado por conter caminhos relativos inválidos (Zip Slip).', 'dd-maintenance' ) );
+			}
+		}
+
 		$extracted = $zip->extractTo( $extract_dir );
 		$zip->close();
 
@@ -528,11 +538,11 @@ class DD_Maintenance_Restore {
 		if ( ! is_dir( $source_dir ) ) {
 			return 0;
 		}
-
 		if ( ! is_dir( $dest_dir ) ) {
 			wp_mkdir_p( $dest_dir );
 		}
 
+		$dest_canonical = wp_normalize_path( realpath( $dest_dir ) ? realpath( $dest_dir ) : $dest_dir );
 		$iterator = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator( $source_dir, FilesystemIterator::SKIP_DOTS ),
 			RecursiveIteratorIterator::SELF_FIRST
@@ -562,7 +572,11 @@ class DD_Maintenance_Restore {
 			if ( $skip ) {
 				continue;
 			}
-
+			// Proteção de travessia de diretório: o destino precisa estar estritamente dentro da pasta de destino.
+			$target_normalized = wp_normalize_path( $target );
+			if ( 0 !== strpos( $target_normalized, $dest_canonical . '/' ) && $target_normalized !== $dest_canonical ) {
+				continue;
+			}
 			if ( $item->isDir() ) {
 				if ( ! is_dir( $target ) ) {
 					wp_mkdir_p( $target );

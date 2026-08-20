@@ -75,6 +75,23 @@ class DD_Maintenance_S3 {
 		$this->bucket     = isset( $this->settings['s3_bucket'] ) ? trim( (string) $this->settings['s3_bucket'] ) : '';
 		$this->region     = isset( $this->settings['s3_region'] ) && '' !== trim( (string) $this->settings['s3_region'] ) ? trim( (string) $this->settings['s3_region'] ) : 'nyc3';
 		$this->endpoint   = isset( $this->settings['s3_endpoint'] ) ? trim( (string) $this->settings['s3_endpoint'] ) : '';
+
+		// Suporte a credenciais blindadas definidas como constantes no wp-config.php.
+		if ( defined( 'DD_MAINTENANCE_S3_KEY' ) && '' !== trim( (string) DD_MAINTENANCE_S3_KEY ) ) {
+			$this->access_key = trim( (string) DD_MAINTENANCE_S3_KEY );
+		}
+		if ( defined( 'DD_MAINTENANCE_S3_SECRET' ) && '' !== trim( (string) DD_MAINTENANCE_S3_SECRET ) ) {
+			$this->secret_key = trim( (string) DD_MAINTENANCE_S3_SECRET );
+		}
+		if ( defined( 'DD_MAINTENANCE_S3_BUCKET' ) && '' !== trim( (string) DD_MAINTENANCE_S3_BUCKET ) ) {
+			$this->bucket = trim( (string) DD_MAINTENANCE_S3_BUCKET );
+		}
+		if ( defined( 'DD_MAINTENANCE_S3_REGION' ) && '' !== trim( (string) DD_MAINTENANCE_S3_REGION ) ) {
+			$this->region = trim( (string) DD_MAINTENANCE_S3_REGION );
+		}
+		if ( defined( 'DD_MAINTENANCE_S3_ENDPOINT' ) && '' !== trim( (string) DD_MAINTENANCE_S3_ENDPOINT ) ) {
+			$this->endpoint = trim( (string) DD_MAINTENANCE_S3_ENDPOINT );
+		}
 	}
 
 	/**

@@ -129,6 +129,34 @@ class DD_Maintenance {
 			@file_put_contents( $index_file, '<?php // Silence is golden.' );
 		}
 
+		// Proteção .htaccess para servidores Apache e LiteSpeed (bloqueia download direto de .zip e .sql).
+		$htaccess_file = $dir . '/.htaccess';
+		if ( ! file_exists( $htaccess_file ) ) {
+			$htaccess_content = "# DD Maintenance - Bloqueio de Acesso Publico a Backups\n"
+				. "<IfModule !authz_core_module>\n"
+				. "Order deny,allow\n"
+				. "Deny from all\n"
+				. "</IfModule>\n"
+				. "<IfModule authz_core_module>\n"
+				. "Require all denied\n"
+				. "</IfModule>\n";
+			@file_put_contents( $htaccess_file, $htaccess_content );
+		}
+
+		// Proteção web.config para servidores IIS.
+		$webconfig_file = $dir . '/web.config';
+		if ( ! file_exists( $webconfig_file ) ) {
+			$webconfig_content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+				. "<configuration>\n"
+				. "  <system.webServer>\n"
+				. "    <authorization>\n"
+				. "      <deny users=\"*\" />\n"
+				. "    </authorization>\n"
+				. "  </system.webServer>\n"
+				. "</configuration>\n";
+			@file_put_contents( $webconfig_file, $webconfig_content );
+		}
+
 		return $dir;
 	}
 
