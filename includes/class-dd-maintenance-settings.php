@@ -248,28 +248,36 @@ class DD_Maintenance_Settings {
 				}
 				/* Modal de Progresso em Tempo Real */
 				.dd-maint-modal {
-					position: fixed;
-					top: 0;
-					left: 0;
-					width: 100vw;
-					height: 100vh;
-					z-index: 999999;
+					position: fixed !important;
+					top: 0 !important;
+					left: 0 !important;
+					width: 100vw !important;
+					height: 100vh !important;
+					z-index: 9999999 !important;
 					display: flex;
 					align-items: center;
 					justify-content: center;
 				}
 				.dd-maint-modal-backdrop {
-					position: absolute;
-					top: 0;
-					left: 0;
-					width: 100%;
-					height: 100%;
-					background: rgba(18, 23, 28, 0.75);
-					backdrop-filter: blur(3px);
+					position: absolute !important;
+					top: 0 !important;
+					left: 0 !important;
+					width: 100% !important;
+					height: 100% !important;
+					background: rgba(18, 23, 28, 0.75) !important;
+					backdrop-filter: blur(3px) !important;
 				}
 				.dd-maint-modal-dialog {
-					position: relative;
-					background: #ffffff;
+					position: relative !important;
+					background: #ffffff !important;
+					width: 92% !important;
+					max-width: 650px !important;
+					border-radius: 8px !important;
+					box-shadow: 0 15px 35px rgba(0,0,0,0.35) !important;
+					overflow: hidden !important;
+					z-index: 10 !important;
+					animation: ddMaintFadeIn 0.25s ease-out;
+				}
 					width: 92%;
 					max-width: 650px;
 					border-radius: 8px;
@@ -961,7 +969,7 @@ class DD_Maintenance_Settings {
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="dd_maintenance_run_full">
 					<?php wp_nonce_field( 'dd_maintenance_run_full' ); ?>
-					<button type="submit" class="button button-primary">
+					<button type="submit" class="button button-primary" data-dd-action="run_full">
 						<span class="dashicons dashicons-update"></span>
 						<span class="btn-text"><?php esc_html_e( 'Executar Tudo (Backup → S3 → Plugins → Core)', 'dd-maintenance' ); ?></span>
 					</button>
@@ -971,7 +979,7 @@ class DD_Maintenance_Settings {
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="dd_maintenance_run_backup">
 					<?php wp_nonce_field( 'dd_maintenance_run_backup' ); ?>
-					<button type="submit" class="button button-secondary">
+					<button type="submit" class="button button-secondary" data-dd-action="run_backup">
 						<span class="dashicons dashicons-cloud-upload"></span>
 						<span class="btn-text"><?php esc_html_e( 'Backup e Envio ao S3', 'dd-maintenance' ); ?></span>
 					</button>
@@ -981,7 +989,7 @@ class DD_Maintenance_Settings {
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="dd_maintenance_update_plugins">
 					<?php wp_nonce_field( 'dd_maintenance_update_plugins' ); ?>
-					<button type="submit" class="button button-secondary">
+					<button type="submit" class="button button-secondary" data-dd-action="update_plugins">
 						<span class="dashicons dashicons-admin-plugins"></span>
 						<span class="btn-text"><?php esc_html_e( 'Atualizar Plugins', 'dd-maintenance' ); ?></span>
 					</button>
@@ -991,7 +999,7 @@ class DD_Maintenance_Settings {
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="dd_maintenance_update_core">
 					<?php wp_nonce_field( 'dd_maintenance_update_core' ); ?>
-					<button type="submit" class="button button-secondary">
+					<button type="submit" class="button button-secondary" data-dd-action="update_core">
 						<span class="dashicons dashicons-wordpress"></span>
 						<span class="btn-text"><?php esc_html_e( 'Atualizar Core WordPress', 'dd-maintenance' ); ?></span>
 					</button>
