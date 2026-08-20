@@ -605,86 +605,152 @@ class DD_Maintenance_Settings {
 				var stripped = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 				return stripped.length > 200 ? stripped.substring(0, 200) + '...' : (stripped || 'Erro HTTP ' + status);
 			}
-
-			// Intercepta formulários de Ações Rápidas (Painel Geral)
-			document.querySelectorAll('.dd-maintenance-actions form').forEach(function(form) {
-				form.addEventListener('submit', function(e) {
-					e.preventDefault();
-					var act = form.querySelector('input[name="action"]').value;
-
-					if (act === 'dd_maintenance_run_full') {
-						runFullSequence();
-					} else if (act === 'dd_maintenance_run_backup') {
-						runBackupSequence();
-					} else if (act === 'dd_maintenance_update_plugins') {
-						runPluginsUpdate();
-					} else if (act === 'dd_maintenance_update_core') {
-						runCoreUpdate();
-					}
-				});
-			});
-
 			function runFullSequence() {
 				openModal('Manutenção Completa (Backup → S3 → Plugins → Core)');
-				setProgress(5, 'Passo 1/5: Gerando dump SQL e arquivos compactados (partes de 25MB)...', '[Início] ' + new Date().toLocaleTimeString());
+				executeBackupPipeline(function(finalBackupData) {
+					setProgress(92, 'Passo 4/5: Atualizando plugins com versões pendentes...', '[Plugins] Verificando plugins...');
 
-				sendAjax('dd_maintenance_ajax_action', { step: 'backup' }, function(d) {
-					setProgress(35, 'Passo 2/5: Enviando partes para o S3 / Spaces...', d.log);
+					sendAjax('dd_maintenance_ajax_action', { step: 'plugins' }, function(dPlugins) {
+						setProgress(96, 'Passo 5/5: Verificando e atualizando Core do WordPress...', dPlugins.log);
 
-					sendAjax('dd_maintenance_ajax_action', { step: 's3', parts_data: JSON.stringify(d.parts_data), folder: d.folder }, function(d2) {
-						setProgress(70, 'Passo 3/5: Aplicando política de retenção local...', d2.log);
-
-						sendAjax('dd_maintenance_ajax_action', { step: 'retention' }, function(d3) {
-							setProgress(80, 'Passo 4/5: Atualizando plugins com versões pendentes...', d3.log);
-
-							sendAjax('dd_maintenance_ajax_action', { step: 'plugins' }, function(d4) {
-								setProgress(90, 'Passo 5/5: Verificando e atualizando Core do WordPress...', d4.log);
-
-								sendAjax('dd_maintenance_ajax_action', { step: 'core' }, function(d5) {
-									setProgress(100, 'Manutenção completa concluída com sucesso!', d5.log + '\n[Fim] ' + new Date().toLocaleTimeString(), true);
-								}, function(err) {
-									setProgress(90, 'Erro na atualização do Core', '[ERRO] ' + err, false, true);
-								});
-
-							}, function(err) {
-								setProgress(80, 'Erro na atualização de plugins', '[ERRO] ' + err, false, true);
-							});
-
+						sendAjax('dd_maintenance_ajax_action', { step: 'core' }, function(dCore) {
+							setProgress(100, 'Manutenção completa concluída com sucesso!', dCore.log + '\n[Fim] ' + new Date().toLocaleTimeString(), true);
 						}, function(err) {
-							setProgress(70, 'Erro na retenção', '[ERRO] ' + err, false, true);
+							setProgress(96, 'Erro na atualização do Core', '[ERRO] ' + err, false, true);
 						});
 
 					}, function(err) {
-						setProgress(35, 'Erro no envio ao S3', '[ERRO] ' + err, false, true);
+						setProgress(92, 'Erro na atualização de plugins', '[ERRO] ' + err, false, true);
 					});
 
 				}, function(err) {
-					setProgress(5, 'Erro na criação do backup', '[ERRO] ' + err, false, true);
+					// Erro já tratado dentro do pipeline
 				});
 			}
 
 			function runBackupSequence() {
-				openModal('Backup & Envio para S3 / Spaces');
-				setProgress(10, 'Passo 1/3: Criando backup (SQL + Arquivos em partes de 25MB)...', '[Início] ' + new Date().toLocaleTimeString());
+				openModal('Backup & Envio para S3 / Spaces (Lotes de 25MB)');
+				executeBackupPipeline(function(finalBackupData) {
+					setProgress(100, 'Backup e envio ao S3 concluídos com sucesso!', '[OK] Todas as etapas foram finalizadas com sucesso.\n[Fim] ' + new Date().toLocaleTimeString(), true);
+				}, function(err) {
+					// Erro já tratado dentro do pipeline
+				});
+			}
 
-				sendAjax('dd_maintenance_ajax_action', { step: 'backup' }, function(d) {
-					setProgress(50, 'Passo 2/3: Enviando partes para o bucket S3 / Spaces...', d.log);
+			function executeBackupPipeline(onSuccess, onError) {
+				setProgress(3, 'Passo 1: Inicializando sessão de backup...', '[Início] ' + new Date().toLocaleTimeString());
 
-					sendAjax('dd_maintenance_ajax_action', { step: 's3', parts_data: JSON.stringify(d.parts_data), folder: d.folder }, function(d2) {
-						setProgress(85, 'Passo 3/3: Aplicando política de retenção...', d2.log);
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup_init' }, function(initData) {
+					var sessionId = initData.session_id;
+					setProgress(8, 'Passo 2: Gerando dump SQL do banco de dados...', '[Sessão] ' + sessionId);
 
-						sendAjax('dd_maintenance_ajax_action', { step: 'retention' }, function(d3) {
-							setProgress(100, 'Backup e envio ao S3 concluídos com sucesso!', d3.log + '\n[OK] Concluído com sucesso.', true);
+					sendAjax('dd_maintenance_ajax_action', { step: 'backup_db', session_id: sessionId }, function(dbData) {
+						setProgress(18, 'Passo 3: Catalogando arquivos do site...', dbData.log);
+
+						sendAjax('dd_maintenance_ajax_action', { step: 'backup_index', session_id: sessionId }, function(indexData) {
+							var totalFiles = indexData.total_files || 0;
+							setProgress(25, 'Passo 4: Compactando arquivos em lotes (0/' + totalFiles + ')...', indexData.log);
+
+							loopZipBatches(sessionId, 0, totalFiles, function() {
+								setProgress(65, 'Passo 5: Finalizando arquivo e gerando partes de 25MB...', '[Compactação] Todos os lotes foram adicionados ao arquivo.');
+
+								sendAjax('dd_maintenance_ajax_action', { step: 'backup_finalize', session_id: sessionId }, function(finalData) {
+									var parts = finalData.parts || [];
+									var folder = finalData.folder || 'site';
+									setProgress(70, 'Passo 6: Enviando ' + parts.length + ' parte(s) para o S3 / Spaces...', finalData.log);
+
+									uploadS3PartsSequentially(parts, folder, 0, function() {
+										setProgress(90, 'Passo 7: Aplicando política de retenção...', '[S3] Todas as partes foram enviadas com sucesso.');
+
+										sendAjax('dd_maintenance_ajax_action', { step: 'retention' }, function(retData) {
+											if (retData.log) {
+												consoleOut.innerText += '\n' + retData.log;
+												consoleOut.scrollTop = consoleOut.scrollHeight;
+											}
+											if (onSuccess) onSuccess(finalData);
+										}, function(err) {
+											setProgress(90, 'Aviso na retenção', '[Aviso] ' + err);
+											if (onSuccess) onSuccess(finalData);
+										});
+
+									}, function(uploadErr) {
+										setProgress(70, 'Erro no envio de partes ao S3', '[ERRO] ' + uploadErr, false, true);
+										if (onError) onError(uploadErr);
+									});
+
+								}, function(err) {
+									setProgress(65, 'Erro ao finalizar backup', '[ERRO] ' + err, false, true);
+									if (onError) onError(err);
+								});
+
+							}, function(batchErr) {
+								setProgress(35, 'Erro na compactação de arquivos', '[ERRO] ' + batchErr, false, true);
+								if (onError) onError(batchErr);
+							});
+
 						}, function(err) {
-							setProgress(85, 'Erro na retenção', '[ERRO] ' + err, false, true);
+							setProgress(18, 'Erro ao indexar arquivos', '[ERRO] ' + err, false, true);
+							if (onError) onError(err);
 						});
 
 					}, function(err) {
-						setProgress(50, 'Erro no envio ao S3', '[ERRO] ' + err, false, true);
+						setProgress(8, 'Erro no dump SQL', '[ERRO] ' + err, false, true);
+						if (onError) onError(err);
 					});
 
 				}, function(err) {
-					setProgress(10, 'Erro no backup', '[ERRO] ' + err, false, true);
+					setProgress(3, 'Erro ao iniciar sessão', '[ERRO] ' + err, false, true);
+					if (onError) onError(err);
+				});
+			}
+
+			function loopZipBatches(sessionId, offset, totalFiles, onDone, onBatchError) {
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup_zip_batch', session_id: sessionId, offset: offset }, function(res) {
+					var processed = res.processed || (offset + (res.batch_count || 800));
+					var pct = 25 + Math.round(((res.percent || (processed / totalFiles * 100)) / 100) * 40); // escala de 25% a 65%
+
+					setProgress(pct, 'Passo 4: Compactando arquivos (' + processed + ' / ' + totalFiles + ')...', res.log);
+
+					if (res.completed || processed >= totalFiles) {
+						if (onDone) onDone();
+					} else {
+						loopZipBatches(sessionId, res.next_offset || processed, totalFiles, onDone, onBatchError);
+					}
+				}, function(err) {
+					if (onBatchError) onBatchError(err);
+				});
+			}
+
+			function uploadS3PartsSequentially(parts, folder, index, onAllUploaded, onPartError) {
+				if (!parts || parts.length === 0 || index >= parts.length) {
+					if (onAllUploaded) onAllUploaded();
+					return;
+				}
+
+				var part = parts[index];
+				var totalParts = parts.length;
+				var currentNum = index + 1;
+				var progressPct = 70 + Math.round((currentNum / totalParts) * 20); // escala de 70% a 90%
+
+				setProgress(progressPct, 'Enviando parte ' + currentNum + ' de ' + totalParts + ' para o S3 (' + part.name + ')...');
+
+				sendAjax('dd_maintenance_ajax_action', {
+					step: 's3_upload_part',
+					part_file: part.file,
+					part_name: part.name,
+					part_size: part.size,
+					part_index: currentNum,
+					total_parts: totalParts,
+					folder: folder
+				}, function(res) {
+					if (res.log) {
+						consoleOut.innerText += '\n' + res.log;
+						consoleOut.scrollTop = consoleOut.scrollHeight;
+					}
+
+					uploadS3PartsSequentially(parts, folder, index + 1, onAllUploaded, onPartError);
+				}, function(err) {
+					if (onPartError) onPartError('Falha ao enviar parte ' + currentNum + '/' + totalParts + ': ' + err);
 				});
 			}
 
@@ -1940,17 +2006,67 @@ class DD_Maintenance_Settings {
 
 		$step = isset( $_POST['step'] ) ? sanitize_key( wp_unslash( $_POST['step'] ) ) : '';
 		switch ( $step ) {
-			case 'backup':
+			case 'backup_init':
 				$backup = new DD_Maintenance_Backup();
-				$result = $backup->run();
+				$session = $backup->init_session();
+
+				if ( is_wp_error( $session ) ) {
+					wp_send_json_error( array( 'message' => $session->get_error_message() ) );
+				}
+
+				wp_send_json_success(
+					array(
+						'session_id' => $session['session_id'],
+						'base_name'  => $session['base_name'],
+					)
+				);
+				break;
+
+			case 'backup_db':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->dump_database_step( $session_id );
 
 				if ( is_wp_error( $result ) ) {
 					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 				}
 
-				$parts       = isset( $result['parts'] ) ? $result['parts'] : array( array( 'file' => $result['file'], 'name' => $result['name'], 'size' => $result['size'], 'part' => 1 ) );
-				$total_parts = count( $parts );
-				$total_size  = isset( $result['total_size'] ) ? $result['total_size'] : $result['size'];
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_index':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->index_files_step( $session_id );
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_zip_batch':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$offset     = isset( $_POST['offset'] ) ? max( 0, (int) $_POST['offset'] ) : 0;
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->zip_batch_step( $session_id, $offset );
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_finalize':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->finalize_and_split_step( $session_id );
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
 
 				$site_slug = sanitize_title( get_bloginfo( 'name' ) );
 				$site_slug = $site_slug ? $site_slug : 'site';
@@ -1958,48 +2074,46 @@ class DD_Maintenance_Settings {
 
 				wp_send_json_success(
 					array(
-						'log'        => sprintf( __( '[OK] Backup criado: %1$d parte(s) de até 25MB (Total: %2$s)', 'dd-maintenance' ), $total_parts, size_format( $total_size ) ),
-						'parts_data' => $parts,
-						'folder'     => $folder,
+						'parts'       => $result['parts'],
+						'folder'      => $folder,
+						'total_parts' => $result['total_parts'],
+						'total_size'  => $result['total_size'],
+						'log'         => $result['log'],
 					)
 				);
 				break;
 
-			case 's3':
+			case 's3_upload_part':
 				$s3 = new DD_Maintenance_S3();
 				if ( ! $s3->is_configured() ) {
 					wp_send_json_error( array( 'message' => __( 'S3 / Spaces não configurado.', 'dd-maintenance' ) ) );
 				}
 
-				$folder     = isset( $_POST['folder'] ) ? sanitize_text_field( wp_unslash( $_POST['folder'] ) ) : 'site/' . current_time( 'Y-m-d' );
-				$parts_json = isset( $_POST['parts_data'] ) ? wp_unslash( $_POST['parts_data'] ) : '';
-				$parts      = json_decode( $parts_json, true );
+				$part_file   = isset( $_POST['part_file'] ) ? sanitize_text_field( wp_unslash( $_POST['part_file'] ) ) : '';
+				$part_name   = isset( $_POST['part_name'] ) ? sanitize_file_name( wp_unslash( $_POST['part_name'] ) ) : '';
+				$part_size   = isset( $_POST['part_size'] ) ? (int) $_POST['part_size'] : 0;
+				$part_index  = isset( $_POST['part_index'] ) ? (int) $_POST['part_index'] : 1;
+				$total_parts = isset( $_POST['total_parts'] ) ? (int) $_POST['total_parts'] : 1;
+				$folder      = isset( $_POST['folder'] ) ? sanitize_text_field( wp_unslash( $_POST['folder'] ) ) : 'site/' . current_time( 'Y-m-d' );
 
-				if ( empty( $parts ) || ! is_array( $parts ) ) {
-					wp_send_json_error( array( 'message' => __( 'Dados de partes do backup ausentes.', 'dd-maintenance' ) ) );
+				if ( empty( $part_file ) || ! file_exists( $part_file ) ) {
+					wp_send_json_error( array( 'message' => __( 'Arquivo da parte de backup não encontrado no servidor.', 'dd-maintenance' ) ) );
 				}
 
-				$logs        = array();
-				$total_parts = count( $parts );
+				$key    = $folder . '/' . $part_name;
+				$upload = $s3->put_object( $key, $part_file );
 
-				foreach ( $parts as $idx => $part ) {
-					$key    = $folder . '/' . sanitize_file_name( $part['name'] );
-					$upload = $s3->put_object( $key, $part['file'] );
-
-					if ( is_wp_error( $upload ) ) {
-						wp_send_json_error(
-							array(
-								'message' => sprintf( __( 'Erro no envio da parte %1$d/%2$d: %3$s', 'dd-maintenance' ), $idx + 1, $total_parts, $upload->get_error_message() ),
-							)
-						);
-					}
-
-					$logs[] = sprintf( __( '[OK] Parte %1$d/%2$d enviada para S3: %3$s (%4$s)', 'dd-maintenance' ), $idx + 1, $total_parts, $part['name'], size_format( $part['size'] ) );
+				if ( is_wp_error( $upload ) ) {
+					wp_send_json_error(
+						array(
+							'message' => sprintf( __( 'Erro no envio da parte %1$d/%2$d: %3$s', 'dd-maintenance' ), $part_index, $total_parts, $upload->get_error_message() ),
+						)
+					);
 				}
 
 				wp_send_json_success(
 					array(
-						'log' => implode( "\n", $logs ),
+						'log' => sprintf( __( '[OK] Parte %1$d/%2$d enviada para S3: %3$s (%4$s)', 'dd-maintenance' ), $part_index, $total_parts, $part_name, size_format( $part_size ? $part_size : filesize( $part_file ) ) ),
 					)
 				);
 				break;

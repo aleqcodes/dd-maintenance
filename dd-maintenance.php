@@ -30,6 +30,12 @@ if ( ! defined( 'WEEK_IN_SECONDS' ) ) {
 if ( ! defined( 'MONTH_IN_SECONDS' ) ) {
 	define( 'MONTH_IN_SECONDS', 2592000 );
 }
+if ( ! defined( 'ARRAY_N' ) ) {
+	define( 'ARRAY_N', 'ARRAY_N' );
+}
+if ( ! defined( 'ARRAY_A' ) ) {
+	define( 'ARRAY_A', 'ARRAY_A' );
+}
 
 // Constantes de compatibilidade com versões antigas do Backuper.
 if ( ! defined( 'BACKUPER_VERSION' ) ) {
