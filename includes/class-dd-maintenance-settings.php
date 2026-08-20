@@ -563,18 +563,47 @@ class DD_Maintenance_Settings {
 					body: fd,
 					credentials: 'same-origin'
 				})
-				.then(function(r) { return r.json(); })
-				.then(function(json) {
+				.then(function(r) {
+					return r.text().then(function(text) {
+						return { ok: r.ok, status: r.status, text: text };
+					});
+				})
+				.then(function(res) {
+					var json = null;
+					try {
+						json = JSON.parse(res.text);
+					} catch (e) {
+						json = null;
+					}
+
 					if (json && json.success) {
 						if (onSuccess) onSuccess(json.data);
+					} else if (json && !json.success) {
+						var errMsg = (json.data && json.data.message) ? json.data.message : (json.data ? json.data : 'Erro retornado pelo servidor.');
+						if (onError) onError(errMsg, json);
 					} else {
-						var err = (json && json.data && json.data.message) ? json.data.message : (json && json.data) ? json.data : 'Erro desconhecido';
-						if (onError) onError(err, json);
+						// Se o servidor retornou HTML em vez de JSON (ex: Timeout 504, 500, etc.)
+						var cleanErr = extractCleanError(res.text, res.status);
+						if (onError) onError(cleanErr);
 					}
 				})
 				.catch(function(err) {
-					if (onError) onError('Erro de conexão ou resposta inválida: ' + err);
+					if (onError) onError('Erro de conexão: ' + err);
 				});
+			}
+
+			function extractCleanError(rawText, status) {
+				if (!rawText) return 'Erro HTTP ' + (status || 'desconhecido') + ': resposta vazia do servidor.';
+				var titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i);
+				if (titleMatch && titleMatch[1]) {
+					return 'Erro do servidor (HTTP ' + (status || '500') + '): ' + titleMatch[1].trim();
+				}
+				var bodyMatch = rawText.match(/<p[^>]*>([^<]+)<\/p>/i);
+				if (bodyMatch && bodyMatch[1]) {
+					return bodyMatch[1].trim();
+				}
+				var stripped = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+				return stripped.length > 200 ? stripped.substring(0, 200) + '...' : (stripped || 'Erro HTTP ' + status);
 			}
 
 			// Intercepta formulários de Ações Rápidas (Painel Geral)
@@ -1892,14 +1921,24 @@ class DD_Maintenance_Settings {
 	 * Handler AJAX: executa etapas de manutenção com progresso em tempo real.
 	 */
 	public function ajax_handle_action() {
-		check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce' );
+		if ( ! check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => __( 'Sessão expirada ou nonce inválido. Recarregue a página.', 'dd-maintenance' ) ) );
+		}
 
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'dd-maintenance' ) ) );
 		}
 
-		$step = isset( $_POST['step'] ) ? sanitize_key( wp_unslash( $_POST['step'] ) ) : '';
+		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
+			@set_time_limit( 0 );
+		}
+		if ( function_exists( 'ini_set' ) ) {
+			@ini_set( 'memory_limit', '512M' );
+			@ini_set( 'max_execution_time', '3600' );
+		}
+		@ignore_user_abort( true );
 
+		$step = isset( $_POST['step'] ) ? sanitize_key( wp_unslash( $_POST['step'] ) ) : '';
 		switch ( $step ) {
 			case 'backup':
 				$backup = new DD_Maintenance_Backup();
@@ -2014,11 +2053,22 @@ class DD_Maintenance_Settings {
 	 * Handler AJAX: restauração com progresso.
 	 */
 	public function ajax_handle_restore() {
-		check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce' );
+		if ( ! check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => __( 'Sessão expirada ou nonce inválido. Recarregue a página.', 'dd-maintenance' ) ) );
+		}
 
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'dd-maintenance' ) ) );
 		}
+
+		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
+			@set_time_limit( 0 );
+		}
+		if ( function_exists( 'ini_set' ) ) {
+			@ini_set( 'memory_limit', '512M' );
+			@ini_set( 'max_execution_time', '3600' );
+		}
+		@ignore_user_abort( true );
 
 		if ( DD_Maintenance_Config::has_password() ) {
 			$password = isset( $_POST['restore_password'] ) ? trim( (string) wp_unslash( $_POST['restore_password'] ) ) : '';
@@ -2026,7 +2076,6 @@ class DD_Maintenance_Settings {
 				wp_send_json_error( array( 'message' => __( 'Senha de confirmação incorreta.', 'dd-maintenance' ) ) );
 			}
 		}
-
 		$mode    = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : '';
 		$restore = new DD_Maintenance_Restore();
 

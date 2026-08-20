@@ -327,6 +327,7 @@ class DD_Maintenance_Backup {
 		$backup_dirs = array(
 			wp_normalize_path( DD_Maintenance::backup_dir() ),
 			wp_normalize_path( WP_CONTENT_DIR . '/uploads/backuper' ),
+			wp_normalize_path( WP_CONTENT_DIR . '/cache' ),
 		);
 
 		$abs_path = wp_normalize_path( $abs_path );
@@ -345,15 +346,21 @@ class DD_Maintenance_Backup {
 		foreach ( $iterator as $item ) {
 			$item_path = wp_normalize_path( $item->getPathname() );
 
-			$is_backup = false;
+			$is_ignored = false;
 			foreach ( $backup_dirs as $b_dir ) {
 				if ( $item_path === $b_dir || 0 === strpos( $item_path, $b_dir . '/' ) ) {
-					$is_backup = true;
+					$is_ignored = true;
 					break;
 				}
 			}
 
-			if ( $is_backup ) {
+			// Ignora pastas desnecessárias como .git, node_modules, cache
+			$filename = $item->getFilename();
+			if ( '.git' === $filename || 'node_modules' === $filename || '.temp' === $filename ) {
+				$is_ignored = true;
+			}
+
+			if ( $is_ignored ) {
 				continue;
 			}
 
