@@ -28,6 +28,9 @@ class DD_Maintenance_Settings {
 		add_action( 'admin_post_dd_maintenance_restore_local', array( $this, 'handle_restore_local' ) );
 		add_action( 'admin_post_dd_maintenance_delete_backup', array( $this, 'handle_delete_backup' ) );
 
+		// Handlers AJAX para barra de progresso visual em tempo real.
+		add_action( 'wp_ajax_dd_maintenance_ajax_action', array( $this, 'ajax_handle_action' ) );
+		add_action( 'wp_ajax_dd_maintenance_ajax_restore', array( $this, 'ajax_handle_restore' ) );
 		// Compatibilidade com ações legadas do Backuper.
 		add_action( 'admin_post_backuper_save_settings', array( $this, 'save_settings' ) );
 		add_action( 'admin_post_backuper_run_backup', array( $this, 'handle_backup' ) );
@@ -241,6 +244,154 @@ class DD_Maintenance_Settings {
 					align-items: center;
 					justify-content: center;
 					color: #2271b1;
+					color: #2271b1;
+				}
+				/* Modal de Progresso em Tempo Real */
+				.dd-maint-modal {
+					position: fixed;
+					top: 0;
+					left: 0;
+					width: 100vw;
+					height: 100vh;
+					z-index: 999999;
+					display: flex;
+					align-items: center;
+					justify-content: center;
+				}
+				.dd-maint-modal-backdrop {
+					position: absolute;
+					top: 0;
+					left: 0;
+					width: 100%;
+					height: 100%;
+					background: rgba(18, 23, 28, 0.75);
+					backdrop-filter: blur(3px);
+				}
+				.dd-maint-modal-dialog {
+					position: relative;
+					background: #ffffff;
+					width: 92%;
+					max-width: 650px;
+					border-radius: 8px;
+					box-shadow: 0 15px 35px rgba(0,0,0,0.35);
+					overflow: hidden;
+					z-index: 1;
+					animation: ddMaintFadeIn 0.25s ease-out;
+				}
+				@keyframes ddMaintFadeIn {
+					from { opacity: 0; transform: translateY(-15px); }
+					to { opacity: 1; transform: translateY(0); }
+				}
+				.dd-maint-modal-header {
+					display: flex;
+					align-items: center;
+					justify-content: space-between;
+					padding: 16px 20px;
+					border-bottom: 1px solid #dcdcde;
+					background: #f6f7f7;
+				}
+				.dd-maint-modal-header h3 {
+					margin: 0;
+					display: flex;
+					align-items: center;
+					gap: 8px;
+					font-size: 15px;
+					font-weight: 600;
+				}
+				.dd-maint-badge {
+					background: #2271b1;
+					color: #ffffff;
+					font-weight: 700;
+					font-size: 13px;
+					padding: 3px 10px;
+					border-radius: 12px;
+					letter-spacing: 0.5px;
+				}
+				.dd-maint-badge.success {
+					background: #46b450;
+				}
+				.dd-maint-badge.error {
+					background: #d63638;
+				}
+				.dd-maint-modal-body {
+					padding: 20px;
+				}
+				.dd-maint-progress-container {
+					width: 100%;
+					height: 18px;
+					background: #e0e0e0;
+					border-radius: 9px;
+					overflow: hidden;
+					margin-bottom: 12px;
+					box-shadow: inset 0 1px 2px rgba(0,0,0,0.12);
+				}
+				.dd-maint-progress-bar {
+					height: 100%;
+					width: 0%;
+					background-color: #2271b1;
+					background-image: linear-gradient(45deg, rgba(255,255,255,0.2) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0.2) 75%, transparent 75%, transparent);
+					background-size: 30px 30px;
+					border-radius: 9px;
+					transition: width 0.35s ease;
+					animation: ddMaintProgressStripes 1s linear infinite;
+				}
+				.dd-maint-progress-bar.success {
+					background-color: #46b450;
+				}
+				.dd-maint-progress-bar.error {
+					background-color: #d63638;
+				}
+				@keyframes ddMaintProgressStripes {
+					0% { background-position: 0 0; }
+					100% { background-position: 30px 0; }
+				}
+				.dd-maint-status-text {
+					font-size: 13.5px;
+					font-weight: 500;
+					color: #1d2327;
+					margin: 0 0 14px 0;
+					min-height: 20px;
+				}
+				.dd-maint-console-container {
+					background: #1d2327;
+					border-radius: 5px;
+					border: 1px solid #0c0d0e;
+					overflow: hidden;
+				}
+				.dd-maint-console-header {
+					background: #2c3338;
+					color: #8c8f94;
+					padding: 6px 12px;
+					font-size: 11px;
+					font-weight: 600;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+				}
+				.dd-maint-console {
+					margin: 0;
+					padding: 12px;
+					background: transparent;
+					color: #72aee6;
+					font-family: Consolas, Monaco, monospace;
+					font-size: 12px;
+					line-height: 1.55;
+					max-height: 180px;
+					overflow-y: auto;
+					white-space: pre-wrap;
+					word-break: break-all;
+				}
+				.dd-maint-modal-footer {
+					padding: 12px 20px;
+					background: #f6f7f7;
+					border-top: 1px solid #dcdcde;
+					display: flex;
+					justify-content: flex-end;
+				}
+				.dd-maint-spin {
+					animation: ddMaintSpin 1.2s linear infinite;
+				}
+				@keyframes ddMaintSpin {
+					100% { transform: rotate(360deg); }
 				}
 			</style>
 			<h1>
@@ -308,10 +459,310 @@ class DD_Maintenance_Settings {
 					break;
 			}
 			?>
+		<!-- Modal de Progresso em Tempo Real (0 a 100%) -->
+		<div id="dd-maint-progress-modal" class="dd-maint-modal" style="display:none;">
+			<div class="dd-maint-modal-backdrop"></div>
+			<div class="dd-maint-modal-dialog">
+				<div class="dd-maint-modal-header">
+					<h3>
+						<span id="dd-maint-modal-icon" class="dashicons dashicons-update dd-maint-spin" style="color:#2271b1;font-size:22px;width:22px;height:22px;vertical-align:middle;"></span>
+						<span id="dd-maint-modal-title-text"><?php esc_html_e( 'Processando...', 'dd-maintenance' ); ?></span>
+					</h3>
+					<span id="dd-maint-modal-percent" class="dd-maint-badge">0%</span>
+				</div>
+
+				<div class="dd-maint-modal-body">
+					<div class="dd-maint-progress-container">
+						<div id="dd-maint-progress-bar" class="dd-maint-progress-bar" style="width:0%;"></div>
+					</div>
+
+					<p id="dd-maint-status-text" class="dd-maint-status-text"><?php esc_html_e( 'Iniciando operação...', 'dd-maintenance' ); ?></p>
+
+					<div class="dd-maint-console-container">
+						<div class="dd-maint-console-header">
+							<span><?php esc_html_e( 'Terminal de Logs em Tempo Real', 'dd-maintenance' ); ?></span>
+						</div>
+						<pre id="dd-maint-console-output" class="dd-maint-console"></pre>
+					</div>
+				</div>
+
+				<div class="dd-maint-modal-footer">
+					<button type="button" id="dd-maint-modal-close-btn" class="button button-primary" style="display:none;" onclick="location.reload();">
+						<?php esc_html_e( 'Concluído (Atualizar Página)', 'dd-maintenance' ); ?>
+					</button>
+				</div>
+			</div>
+		</div>
+
+		<script>
+		(function() {
+			var ajaxUrl = <?php echo json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+			var nonce   = <?php echo json_encode( wp_create_nonce( 'dd_maint_ajax_nonce' ) ); ?>;
+
+			var modal      = document.getElementById('dd-maint-progress-modal');
+			var icon       = document.getElementById('dd-maint-modal-icon');
+			var titleText  = document.getElementById('dd-maint-modal-title-text');
+			var percentEl  = document.getElementById('dd-maint-modal-percent');
+			var barEl      = document.getElementById('dd-maint-progress-bar');
+			var statusText = document.getElementById('dd-maint-status-text');
+			var consoleOut = document.getElementById('dd-maint-console-output');
+			var closeBtn   = document.getElementById('dd-maint-modal-close-btn');
+
+			function openModal(title) {
+				titleText.innerText = title || 'Processando...';
+				percentEl.innerText = '0%';
+				percentEl.className = 'dd-maint-badge';
+				barEl.style.width   = '0%';
+				barEl.className     = 'dd-maint-progress-bar';
+				statusText.innerText = 'Iniciando operação...';
+				consoleOut.innerText = '';
+				icon.className       = 'dashicons dashicons-update dd-maint-spin';
+				icon.style.color     = '#2271b1';
+				closeBtn.style.display = 'none';
+				modal.style.display    = 'flex';
+			}
+
+			function setProgress(pct, status, logLine, isSuccess, isError) {
+				pct = Math.min(100, Math.max(0, Math.round(pct)));
+				percentEl.innerText = pct + '%';
+				barEl.style.width   = pct + '%';
+
+				if (status) statusText.innerText = status;
+				if (logLine) {
+					consoleOut.innerText += (consoleOut.innerText ? '\n' : '') + logLine;
+					consoleOut.scrollTop = consoleOut.scrollHeight;
+				}
+
+				if (isSuccess) {
+					percentEl.className = 'dd-maint-badge success';
+					barEl.className     = 'dd-maint-progress-bar success';
+					icon.className       = 'dashicons dashicons-yes-alt';
+					icon.style.color     = '#46b450';
+					closeBtn.style.display = 'inline-block';
+				} else if (isError) {
+					percentEl.className = 'dd-maint-badge error';
+					barEl.className     = 'dd-maint-progress-bar error';
+					icon.className       = 'dashicons dashicons-no-alt';
+					icon.style.color     = '#d63638';
+					closeBtn.style.display = 'inline-block';
+				}
+			}
+
+			function sendAjax(action, data, onSuccess, onError) {
+				var fd = new FormData();
+				fd.append('action', action);
+				fd.append('nonce', nonce);
+				for (var k in data) {
+					if (data.hasOwnProperty(k)) {
+						fd.append(k, data[k]);
+					}
+				}
+
+				fetch(ajaxUrl, {
+					method: 'POST',
+					body: fd,
+					credentials: 'same-origin'
+				})
+				.then(function(r) { return r.json(); })
+				.then(function(json) {
+					if (json && json.success) {
+						if (onSuccess) onSuccess(json.data);
+					} else {
+						var err = (json && json.data && json.data.message) ? json.data.message : (json && json.data) ? json.data : 'Erro desconhecido';
+						if (onError) onError(err, json);
+					}
+				})
+				.catch(function(err) {
+					if (onError) onError('Erro de conexão ou resposta inválida: ' + err);
+				});
+			}
+
+			// Intercepta formulários de Ações Rápidas (Painel Geral)
+			document.querySelectorAll('.dd-maintenance-actions form').forEach(function(form) {
+				form.addEventListener('submit', function(e) {
+					e.preventDefault();
+					var act = form.querySelector('input[name="action"]').value;
+
+					if (act === 'dd_maintenance_run_full') {
+						runFullSequence();
+					} else if (act === 'dd_maintenance_run_backup') {
+						runBackupSequence();
+					} else if (act === 'dd_maintenance_update_plugins') {
+						runPluginsUpdate();
+					} else if (act === 'dd_maintenance_update_core') {
+						runCoreUpdate();
+					}
+				});
+			});
+
+			function runFullSequence() {
+				openModal('Manutenção Completa (Backup → S3 → Plugins → Core)');
+				setProgress(5, 'Passo 1/5: Gerando dump SQL e arquivos compactados (partes de 25MB)...', '[Início] ' + new Date().toLocaleTimeString());
+
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup' }, function(d) {
+					setProgress(35, 'Passo 2/5: Enviando partes para o S3 / Spaces...', d.log);
+
+					sendAjax('dd_maintenance_ajax_action', { step: 's3', parts_data: JSON.stringify(d.parts_data), folder: d.folder }, function(d2) {
+						setProgress(70, 'Passo 3/5: Aplicando política de retenção local...', d2.log);
+
+						sendAjax('dd_maintenance_ajax_action', { step: 'retention' }, function(d3) {
+							setProgress(80, 'Passo 4/5: Atualizando plugins com versões pendentes...', d3.log);
+
+							sendAjax('dd_maintenance_ajax_action', { step: 'plugins' }, function(d4) {
+								setProgress(90, 'Passo 5/5: Verificando e atualizando Core do WordPress...', d4.log);
+
+								sendAjax('dd_maintenance_ajax_action', { step: 'core' }, function(d5) {
+									setProgress(100, 'Manutenção completa concluída com sucesso!', d5.log + '\n[Fim] ' + new Date().toLocaleTimeString(), true);
+								}, function(err) {
+									setProgress(90, 'Erro na atualização do Core', '[ERRO] ' + err, false, true);
+								});
+
+							}, function(err) {
+								setProgress(80, 'Erro na atualização de plugins', '[ERRO] ' + err, false, true);
+							});
+
+						}, function(err) {
+							setProgress(70, 'Erro na retenção', '[ERRO] ' + err, false, true);
+						});
+
+					}, function(err) {
+						setProgress(35, 'Erro no envio ao S3', '[ERRO] ' + err, false, true);
+					});
+
+				}, function(err) {
+					setProgress(5, 'Erro na criação do backup', '[ERRO] ' + err, false, true);
+				});
+			}
+
+			function runBackupSequence() {
+				openModal('Backup & Envio para S3 / Spaces');
+				setProgress(10, 'Passo 1/3: Criando backup (SQL + Arquivos em partes de 25MB)...', '[Início] ' + new Date().toLocaleTimeString());
+
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup' }, function(d) {
+					setProgress(50, 'Passo 2/3: Enviando partes para o bucket S3 / Spaces...', d.log);
+
+					sendAjax('dd_maintenance_ajax_action', { step: 's3', parts_data: JSON.stringify(d.parts_data), folder: d.folder }, function(d2) {
+						setProgress(85, 'Passo 3/3: Aplicando política de retenção...', d2.log);
+
+						sendAjax('dd_maintenance_ajax_action', { step: 'retention' }, function(d3) {
+							setProgress(100, 'Backup e envio ao S3 concluídos com sucesso!', d3.log + '\n[OK] Concluído com sucesso.', true);
+						}, function(err) {
+							setProgress(85, 'Erro na retenção', '[ERRO] ' + err, false, true);
+						});
+
+					}, function(err) {
+						setProgress(50, 'Erro no envio ao S3', '[ERRO] ' + err, false, true);
+					});
+
+				}, function(err) {
+					setProgress(10, 'Erro no backup', '[ERRO] ' + err, false, true);
+				});
+			}
+
+			function runPluginsUpdate() {
+				openModal('Atualização de Plugins');
+				setProgress(20, 'Buscando atualizações de plugins...', '[Início] ' + new Date().toLocaleTimeString());
+
+				sendAjax('dd_maintenance_ajax_action', { step: 'plugins' }, function(d) {
+					setProgress(100, 'Plugins atualizados com sucesso!', d.log, true);
+				}, function(err) {
+					setProgress(50, 'Erro ao atualizar plugins', '[ERRO] ' + err, false, true);
+				});
+			}
+
+			function runCoreUpdate() {
+				openModal('Atualização do Core do WordPress');
+				setProgress(20, 'Verificando versão e atualizando core...', '[Início] ' + new Date().toLocaleTimeString());
+
+				sendAjax('dd_maintenance_ajax_action', { step: 'core' }, function(d) {
+					setProgress(100, 'Core do WordPress atualizado com sucesso!', d.log, true);
+				}, function(err) {
+					setProgress(50, 'Erro ao atualizar Core', '[ERRO] ' + err, false, true);
+				});
+			}
+
+			// Intercepta formulários de Restauração (Upload e Local)
+			document.querySelectorAll('form[action*="admin-post.php"]').forEach(function(f) {
+				var actInput = f.querySelector('input[name="action"]');
+				if (!actInput) return;
+				var actVal = actInput.value;
+
+				if (actVal === 'dd_maintenance_restore_upload') {
+					f.addEventListener('submit', function(e) {
+						e.preventDefault();
+						var fileInput = f.querySelector('input[name="backup_zip[]"]') || f.querySelector('input[name="backup_zip"]');
+						if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+							alert('Selecione pelo menos um arquivo .zip');
+							return;
+						}
+
+						openModal('Restauração de Backup (Upload)');
+						setProgress(5, 'Enviando arquivo(s) para o servidor...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Upload] ' + fileInput.files.length + ' arquivo(s) selecionado(s)...');
+
+						var fd = new FormData(f);
+						fd.append('action', 'dd_maintenance_ajax_restore');
+						fd.append('mode', 'upload');
+						fd.append('nonce', nonce);
+
+						var xhr = new XMLHttpRequest();
+						xhr.open('POST', ajaxUrl, true);
+						xhr.withCredentials = true;
+
+						xhr.upload.onprogress = function(pe) {
+							if (pe.lengthComputable) {
+								var uploadPct = Math.round((pe.loaded / pe.total) * 50);
+								setProgress(uploadPct, 'Enviando arquivo(s) para o servidor (' + Math.round((pe.loaded / pe.total) * 100) + '% enviado)...');
+							}
+						};
+
+						xhr.onload = function() {
+							if (xhr.status >= 200 && xhr.status < 300) {
+								try {
+									var res = JSON.parse(xhr.responseText);
+									if (res && res.success) {
+										setProgress(100, 'Backup restaurado com sucesso!', res.data.log || '[OK] Restauração concluída.', true);
+									} else {
+										var errMsg = (res && res.data && res.data.message) ? res.data.message : (res && res.data) ? res.data : 'Erro na restauração.';
+										setProgress(50, 'Erro na restauração', '[ERRO] ' + errMsg, false, true);
+									}
+								} catch (err) {
+									setProgress(50, 'Erro ao processar resposta', '[ERRO] Resposta inválida do servidor: ' + xhr.responseText.substr(0, 200), false, true);
+								}
+							} else {
+								setProgress(50, 'Erro HTTP ' + xhr.status, '[ERRO] Falha na requisição ao servidor.', false, true);
+							}
+						};
+
+						xhr.onerror = function() {
+							setProgress(50, 'Erro de conexão', '[ERRO] Falha de conexão ao enviar arquivos.', false, true);
+						};
+
+						xhr.send(fd);
+					});
+				} else if (actVal === 'dd_maintenance_restore_local') {
+					f.addEventListener('submit', function(e) {
+						e.preventDefault();
+						var fnInput = f.querySelector('input[name="backup_filename"]');
+						var pwdInput = f.querySelector('input[name="restore_password"]');
+						var filename = fnInput ? fnInput.value : '';
+						var pwd = pwdInput ? pwdInput.value : '';
+
+						openModal('Restauração de Backup Local');
+						setProgress(10, 'Reconstruindo e extraindo backup local...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Arquivo] ' + filename);
+
+						sendAjax('dd_maintenance_ajax_restore', { mode: 'local', backup_filename: filename, restore_password: pwd }, function(d) {
+							setProgress(100, 'Backup local restaurado com sucesso!', d.log || '[OK] Restauração concluída.', true);
+						}, function(err) {
+							setProgress(40, 'Erro na restauração', '[ERRO] ' + err, false, true);
+						});
+					});
+				}
+			});
+		})();
+		</script>
 		</div>
 		<?php
 	}
-
 	/**
 	 * Aba 1: Visão Geral & Ações Rápidas.
 	 */
@@ -1435,5 +1886,172 @@ class DD_Maintenance_Settings {
 
 		wp_safe_redirect( $this->page_url( 'logs' ) );
 		exit;
+	}
+
+	/**
+	 * Handler AJAX: executa etapas de manutenção com progresso em tempo real.
+	 */
+	public function ajax_handle_action() {
+		check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'dd-maintenance' ) ) );
+		}
+
+		$step = isset( $_POST['step'] ) ? sanitize_key( wp_unslash( $_POST['step'] ) ) : '';
+
+		switch ( $step ) {
+			case 'backup':
+				$backup = new DD_Maintenance_Backup();
+				$result = $backup->run();
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				$parts       = isset( $result['parts'] ) ? $result['parts'] : array( array( 'file' => $result['file'], 'name' => $result['name'], 'size' => $result['size'], 'part' => 1 ) );
+				$total_parts = count( $parts );
+				$total_size  = isset( $result['total_size'] ) ? $result['total_size'] : $result['size'];
+
+				$site_slug = sanitize_title( get_bloginfo( 'name' ) );
+				$site_slug = $site_slug ? $site_slug : 'site';
+				$folder    = $site_slug . '/' . current_time( 'Y-m-d' );
+
+				wp_send_json_success(
+					array(
+						'log'        => sprintf( __( '[OK] Backup criado: %1$d parte(s) de até 25MB (Total: %2$s)', 'dd-maintenance' ), $total_parts, size_format( $total_size ) ),
+						'parts_data' => $parts,
+						'folder'     => $folder,
+					)
+				);
+				break;
+
+			case 's3':
+				$s3 = new DD_Maintenance_S3();
+				if ( ! $s3->is_configured() ) {
+					wp_send_json_error( array( 'message' => __( 'S3 / Spaces não configurado.', 'dd-maintenance' ) ) );
+				}
+
+				$folder     = isset( $_POST['folder'] ) ? sanitize_text_field( wp_unslash( $_POST['folder'] ) ) : 'site/' . current_time( 'Y-m-d' );
+				$parts_json = isset( $_POST['parts_data'] ) ? wp_unslash( $_POST['parts_data'] ) : '';
+				$parts      = json_decode( $parts_json, true );
+
+				if ( empty( $parts ) || ! is_array( $parts ) ) {
+					wp_send_json_error( array( 'message' => __( 'Dados de partes do backup ausentes.', 'dd-maintenance' ) ) );
+				}
+
+				$logs        = array();
+				$total_parts = count( $parts );
+
+				foreach ( $parts as $idx => $part ) {
+					$key    = $folder . '/' . sanitize_file_name( $part['name'] );
+					$upload = $s3->put_object( $key, $part['file'] );
+
+					if ( is_wp_error( $upload ) ) {
+						wp_send_json_error(
+							array(
+								'message' => sprintf( __( 'Erro no envio da parte %1$d/%2$d: %3$s', 'dd-maintenance' ), $idx + 1, $total_parts, $upload->get_error_message() ),
+							)
+						);
+					}
+
+					$logs[] = sprintf( __( '[OK] Parte %1$d/%2$d enviada para S3: %3$s (%4$s)', 'dd-maintenance' ), $idx + 1, $total_parts, $part['name'], size_format( $part['size'] ) );
+				}
+
+				wp_send_json_success(
+					array(
+						'log' => implode( "\n", $logs ),
+					)
+				);
+				break;
+
+			case 'retention':
+				$purged = DD_Maintenance::instance()->apply_retention_policy();
+				$log    = ! empty( $purged )
+					? sprintf( __( '[OK] Retenção: %d backup(s) antigo(s) removido(s).', 'dd-maintenance' ), count( $purged ) )
+					: __( '[OK] Retenção verificada (nenhum backup antigo para expurgar).', 'dd-maintenance' );
+
+				wp_send_json_success( array( 'log' => $log ) );
+				break;
+
+			case 'plugins':
+				$updater = new DD_Maintenance_Updater();
+				$result  = $updater->update_plugins();
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				$lines = array();
+				if ( ! empty( $result['logs'] ) ) {
+					foreach ( $result['logs'] as $line ) {
+						$lines[] = '[Plugins] ' . $line;
+					}
+				}
+				$lines[] = sprintf( __( '[OK] Total de plugins atualizados: %d', 'dd-maintenance' ), $result['updated'] );
+
+				wp_send_json_success( array( 'log' => implode( "\n", $lines ) ) );
+				break;
+
+			case 'core':
+				$updater = new DD_Maintenance_Updater();
+				$result  = $updater->update_core();
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				wp_send_json_success( array( 'log' => '[Core] ' . $result['message'] ) );
+				break;
+
+			default:
+				wp_send_json_error( array( 'message' => __( 'Etapa inválida.', 'dd-maintenance' ) ) );
+				break;
+		}
+	}
+
+	/**
+	 * Handler AJAX: restauração com progresso.
+	 */
+	public function ajax_handle_restore() {
+		check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce' );
+
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'dd-maintenance' ) ) );
+		}
+
+		if ( DD_Maintenance_Config::has_password() ) {
+			$password = isset( $_POST['restore_password'] ) ? trim( (string) wp_unslash( $_POST['restore_password'] ) ) : '';
+			if ( ! DD_Maintenance_Config::verify_password( $password ) ) {
+				wp_send_json_error( array( 'message' => __( 'Senha de confirmação incorreta.', 'dd-maintenance' ) ) );
+			}
+		}
+
+		$mode    = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : '';
+		$restore = new DD_Maintenance_Restore();
+
+		if ( 'upload' === $mode ) {
+			if ( empty( $_FILES['backup_zip'] ) ) {
+				wp_send_json_error( array( 'message' => __( 'Nenhum arquivo enviado.', 'dd-maintenance' ) ) );
+			}
+
+			$result = $restore->restore_from_upload( $_FILES['backup_zip'] );
+		} elseif ( 'local' === $mode ) {
+			$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
+			if ( empty( $filename ) ) {
+				wp_send_json_error( array( 'message' => __( 'Nome de backup local inválido.', 'dd-maintenance' ) ) );
+			}
+
+			$result = $restore->restore_from_local_file( $filename );
+		} else {
+			wp_send_json_error( array( 'message' => __( 'Modo de restauração inválido.', 'dd-maintenance' ) ) );
+		}
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		$log_str = ! empty( $result['log'] ) ? implode( "\n", $result['log'] ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+		wp_send_json_success( array( 'log' => $log_str ) );
 	}
 }
