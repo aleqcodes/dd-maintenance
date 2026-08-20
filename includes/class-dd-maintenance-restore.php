@@ -378,6 +378,10 @@ class DD_Maintenance_Restore {
 	public function restore_database( string $sql_file ) {
 		global $wpdb;
 
+		// Salva as URLs atuais do site para preservar a navegação no domínio atual após a restauração.
+		$current_siteurl = get_option( 'siteurl', '' );
+		$current_home    = get_option( 'home', '' );
+
 		$handle = fopen( $sql_file, 'r' );
 		if ( ! $handle ) {
 			return new WP_Error( 'restore_sql_open_failed', __( 'Não foi possível ler o arquivo SQL do banco de dados.', 'dd-maintenance' ) );
@@ -440,6 +444,11 @@ class DD_Maintenance_Restore {
 				$query_buffer = '';
 
 				if ( '' !== $sql ) {
+					// Ignora comandos de criação ou troca de banco de dados para manter sempre o banco ativo do wp-config.php.
+					if ( preg_match( '/^(CREATE DATABASE|DROP DATABASE|USE\s+)/i', $sql ) ) {
+						continue;
+					}
+
 					if ( preg_match( '/^(CREATE TABLE|DROP TABLE)/i', $sql ) ) {
 						$table_count++;
 					}
@@ -457,6 +466,16 @@ class DD_Maintenance_Restore {
 
 		// Restaura checagem de foreign keys.
 		$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
+
+		// Garante que o site continue acessível no domínio atual (caso o backup tenha vindo de outro domínio).
+		if ( ! empty( $current_siteurl ) ) {
+			$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
+			$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", $current_siteurl ) );
+		}
+		if ( ! empty( $current_home ) ) {
+			$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
+			$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $current_home ) );
+		}
 
 		return array(
 			'queries' => $query_count,
@@ -483,18 +502,11 @@ class DD_Maintenance_Restore {
 		if ( is_dir( $extract_dir . '/site' ) ) {
 			$copied_files += $this->copy_directory( $extract_dir . '/site', ABSPATH, $backup_dirs );
 		} else {
-			// Estrutura 2: wp-content/ e/ou wp-config.php soltos na raiz do backup.
+			// Estrutura 2: wp-content/ solto na raiz do backup.
 			if ( is_dir( $extract_dir . '/wp-content' ) ) {
 				$copied_files += $this->copy_directory( $extract_dir . '/wp-content', WP_CONTENT_DIR, $backup_dirs );
 			}
-
-			if ( file_exists( $extract_dir . '/wp-config.php' ) ) {
-				if ( copy( $extract_dir . '/wp-config.php', ABSPATH . 'wp-config.php' ) ) {
-					$copied_files++;
-				}
-			}
 		}
-
 		return array(
 			'copied' => $copied_files,
 		);
@@ -529,8 +541,10 @@ class DD_Maintenance_Restore {
 		foreach ( $iterator as $item ) {
 			$item_path = wp_normalize_path( $item->getPathname() );
 
-			// Não copia database.sql durante a cópia de arquivos.
-			if ( 'database.sql' === $item->getFilename() ) {
+			$filename_lower = strtolower( $item->getFilename() );
+
+			// NUNCA sobrescreve o wp-config.php e não copia arquivos SQL soltos durante a cópia de arquivos.
+			if ( 'wp-config.php' === $filename_lower || 'database.sql' === $filename_lower || preg_match( '/\.sql$/i', $filename_lower ) ) {
 				continue;
 			}
 
