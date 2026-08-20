@@ -1,0 +1,14 @@
+# Logs and temp files
+*.log
+*.zip
+*.sql
+.temp/
+temp/
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
