@@ -34,11 +34,38 @@ class DD_Maintenance {
 	private function __construct() {
 		new DD_Maintenance_Settings();
 
+		add_filter( 'cron_schedules', array( $this, 'add_cron_schedules' ) );
 		add_action( 'admin_init', array( $this, 'maybe_upgrade' ) );
 		add_action( 'dd_maintenance_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
 
 		// Compatibilidade com agendamentos anteriores do Backuper.
 		add_action( 'backuper_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
+	}
+
+	/**
+	 * Registra intervalos personalizados no WP-Cron (diário, 7 dias, 15 dias e 30 dias).
+	 *
+	 * @param array $schedules Lista de intervalos existentes.
+	 * @return array
+	 */
+	public function add_cron_schedules( $schedules ) {
+		$schedules['dd_daily'] = array(
+			'interval' => 86400,
+			'display'  => __( 'Diário (a cada 24 horas)', 'dd-maintenance' ),
+		);
+		$schedules['dd_weekly'] = array(
+			'interval' => 604800,
+			'display'  => __( 'Semanal (a cada 7 dias)', 'dd-maintenance' ),
+		);
+		$schedules['dd_biweekly'] = array(
+			'interval' => 1296000,
+			'display'  => __( 'Quinzenal (a cada 15 dias)', 'dd-maintenance' ),
+		);
+		$schedules['dd_monthly'] = array(
+			'interval' => 2592000,
+			'display'  => __( 'Mensal (a cada 30 dias)', 'dd-maintenance' ),
+		);
+		return $schedules;
 	}
 
 	/**
@@ -70,12 +97,15 @@ class DD_Maintenance {
 		$settings = wp_parse_args(
 			get_option( 'dd_maintenance_settings', array() ),
 			array(
-				'include_db'        => 1,
-				'include_wpcontent' => 1,
-				'include_wpconfig'  => 1,
-				'include_entire'    => 1,
-				'keep_local'        => 1,
-				'schedule_enabled'  => 0,
+				'include_db'         => 1,
+				'include_wpcontent'  => 1,
+				'include_wpconfig'   => 1,
+				'include_entire'     => 1,
+				'keep_local'         => 1,
+				'schedule_enabled'   => 0,
+				'schedule_frequency' => 'daily',
+				'schedule_time'      => '03:00',
+				'retention_local'    => 5,
 			)
 		);
 		update_option( 'dd_maintenance_settings', $settings );
@@ -109,14 +139,7 @@ class DD_Maintenance {
 		$dir = self::backup_dir();
 		@file_put_contents( $dir . '/index.php', '<?php // Silence is golden.' );
 
-		$settings = get_option( 'dd_maintenance_settings', array() );
-		if ( empty( $settings ) ) {
-			$settings = get_option( 'backuper_settings', array() );
-		}
-
-		if ( ! empty( $settings['schedule_enabled'] ) && ! wp_next_scheduled( 'dd_maintenance_daily_maintenance' ) ) {
-			wp_schedule_event( time() + 60, 'daily', 'dd_maintenance_daily_maintenance' );
-		}
+		self::maybe_schedule_cron();
 	}
 
 	/**
@@ -128,7 +151,38 @@ class DD_Maintenance {
 	}
 
 	/**
-	 * Agenda (ou remove) o cron de manutenção diária conforme as configurações.
+	 * Calcula o próximo timestamp GMT para o horário e dia configurados.
+	 *
+	 * @param string $time_str Horário no formato HH:MM (ex.: "03:00").
+	 * @return int Timestamp GMT.
+	 */
+	public static function calculate_next_run_timestamp( string $time_str = '03:00' ): int {
+		$time_str = trim( $time_str );
+		if ( ! preg_match( '/^([01]?[0-9]|2[0-3]):([0-5][0-9])$/', $time_str ) ) {
+			$time_str = '03:00';
+		}
+
+		list( $hours, $minutes ) = explode( ':', $time_str );
+		$hours   = (int) $hours;
+		$minutes = (int) $minutes;
+
+		// Pega timestamp atual na timezone configurada no WordPress.
+		$current_local_time = current_time( 'timestamp' );
+		$today_target       = strtotime( sprintf( '%s %02d:%02d:00', date( 'Y-m-d', $current_local_time ), $hours, $minutes ) );
+
+		if ( $today_target <= $current_local_time ) {
+			$next_local_target = $today_target + DAY_IN_SECONDS;
+		} else {
+			$next_local_target = $today_target;
+		}
+
+		// Converte para GMT timestamp.
+		$gmt_offset = (float) get_option( 'gmt_offset', 0 ) * HOUR_IN_SECONDS;
+		return (int) ( $next_local_target - $gmt_offset );
+	}
+
+	/**
+	 * Agenda (ou remove) o cron de manutenção conforme frequência e horário configurados.
 	 */
 	public static function maybe_schedule_cron() {
 		$settings = get_option( 'dd_maintenance_settings', array() );
@@ -136,18 +190,74 @@ class DD_Maintenance {
 			$settings = get_option( 'backuper_settings', array() );
 		}
 
+		// Limpa agendamentos antigos para reagendar com nova frequência/horário.
+		wp_clear_scheduled_hook( 'dd_maintenance_daily_maintenance' );
+		wp_clear_scheduled_hook( 'backuper_daily_maintenance' );
+
 		if ( ! empty( $settings['schedule_enabled'] ) ) {
-			if ( ! wp_next_scheduled( 'dd_maintenance_daily_maintenance' ) ) {
-				wp_schedule_event( time() + 60, 'daily', 'dd_maintenance_daily_maintenance' );
+			$freq_setting = isset( $settings['schedule_frequency'] ) ? $settings['schedule_frequency'] : 'daily';
+			$time_setting = isset( $settings['schedule_time'] ) ? $settings['schedule_time'] : '03:00';
+
+			$recurrence = 'dd_daily';
+			switch ( $freq_setting ) {
+				case 'weekly':
+				case '7':
+					$recurrence = 'dd_weekly';
+					break;
+				case 'biweekly':
+				case '15':
+					$recurrence = 'dd_biweekly';
+					break;
+				case 'monthly':
+				case '30':
+					$recurrence = 'dd_monthly';
+					break;
+				case 'daily':
+				default:
+					$recurrence = 'dd_daily';
+					break;
 			}
-		} else {
-			wp_clear_scheduled_hook( 'dd_maintenance_daily_maintenance' );
-			wp_clear_scheduled_hook( 'backuper_daily_maintenance' );
+
+			$first_run = self::calculate_next_run_timestamp( $time_setting );
+			wp_schedule_event( $first_run, $recurrence, 'dd_maintenance_daily_maintenance' );
 		}
 	}
 
 	/**
-	 * Executa a manutenção completa via cron (backup -> S3 -> plugins -> core).
+	 * Aplica a política de retenção excluindo backups locais antigos que excedam o limite configurado.
+	 *
+	 * @return array Lista de backups locais removidos.
+	 */
+	public function apply_retention_policy(): array {
+		$settings  = get_option( 'dd_maintenance_settings', array() );
+		$retention = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
+
+		// 0 significa retenção ilimitada (não apaga backups).
+		if ( $retention <= 0 ) {
+			return array();
+		}
+
+		$backups = DD_Maintenance_Restore::get_local_backups();
+		$total   = count( $backups );
+
+		if ( $total <= $retention ) {
+			return array();
+		}
+
+		$deleted = array();
+		// Mantém os primeiros $retention e apaga o restante (já estão ordenados do mais recente para o mais antigo).
+		for ( $i = $retention; $i < $total; $i++ ) {
+			$item = $backups[ $i ];
+			if ( DD_Maintenance_Restore::delete_local_backup( $item['identifier'] ) ) {
+				$deleted[] = $item['display_name'];
+			}
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * Executa a manutenção completa via cron (backup -> S3 -> plugins -> core -> retenção).
 	 */
 	public function cron_full_maintenance() {
 		$log = $this->run_full();
@@ -158,10 +268,11 @@ class DD_Maintenance {
 	/**
 	 * Executa a manutenção completa:
 	 * 1. Verificação de travas no wp-config (aviso caso DISALLOW_FILE_MODS esteja ativo).
-	 * 2. Backup do site.
+	 * 2. Backup do site (com divisão em partes de 25MB).
 	 * 3. Envio para o bucket S3 (DigitalOcean Spaces).
-	 * 4. Atualização de todos os plugins.
-	 * 5. Atualização do core do WordPress.
+	 * 4. Aplicação da política de retenção local.
+	 * 5. Atualização de todos os plugins.
+	 * 6. Atualização do core do WordPress.
 	 *
 	 * @return array Log de execução.
 	 */
@@ -186,6 +297,7 @@ class DD_Maintenance {
 			$log[] = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
 			return $log;
 		}
+
 		$parts       = isset( $result['parts'] ) ? $result['parts'] : array( array( 'file' => $result['file'], 'name' => $result['name'], 'size' => $result['size'], 'part' => 1 ) );
 		$total_parts = count( $parts );
 		$total_size  = isset( $result['total_size'] ) ? $result['total_size'] : $result['size'];
@@ -253,7 +365,17 @@ class DD_Maintenance {
 			$folder
 		);
 
-		// 3. Plugins.
+		// 3. Aplica política de retenção local de backups.
+		$purged_backups = $this->apply_retention_policy();
+		if ( ! empty( $purged_backups ) ) {
+			$log[] = sprintf(
+				/* translators: %s: Lista de backups removidos */
+				__( '[Retenção] %d backup(s) antigo(s) removido(s) conforme a política de retenção.', 'dd-maintenance' ),
+				count( $purged_backups )
+			);
+		}
+
+		// 4. Plugins.
 		$updater = new DD_Maintenance_Updater();
 		$plugins = $updater->update_plugins();
 
@@ -266,7 +388,7 @@ class DD_Maintenance {
 			$log[] = '[OK] Plugins atualizados: ' . $plugins['updated'];
 		}
 
-		// 4. Core.
+		// 5. Core.
 		$core = $updater->update_core();
 
 		if ( is_wp_error( $core ) ) {

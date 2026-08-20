@@ -366,20 +366,32 @@ class DD_Maintenance_Settings {
 				</p>
 			</div>
 
-			<!-- Card 3: Status da Automação -->
+			<!-- Card 3: Status da Automação & Retenção -->
 			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
 				<h3 class="dd-maintenance-card-title">
 					<span class="dashicons dashicons-backup" style="color:#2271b1;"></span>
-					<?php esc_html_e( 'Automação Diária', 'dd-maintenance' ); ?>
+					<?php esc_html_e( 'Automação & Retenção', 'dd-maintenance' ); ?>
 				</h3>
 				<?php if ( ! empty( $settings['schedule_enabled'] ) ) : ?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span> <strong><?php esc_html_e( 'Ativada (Diária)', 'dd-maintenance' ); ?></strong></p>
+					<?php
+					$freq_labels = array(
+						'daily'    => __( 'Diária (24h)', 'dd-maintenance' ),
+						'weekly'   => __( 'Semanal (7 dias)', 'dd-maintenance' ),
+						'biweekly' => __( 'Quinzenal (15 dias)', 'dd-maintenance' ),
+						'monthly'  => __( 'Mensal (30 dias)', 'dd-maintenance' ),
+					);
+					$freq_key   = isset( $settings['schedule_frequency'] ) ? $settings['schedule_frequency'] : 'daily';
+					$freq_label = isset( $freq_labels[ $freq_key ] ) ? $freq_labels[ $freq_key ] : __( 'Ativada', 'dd-maintenance' );
+					$retention  = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
+					?>
+					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span> <strong><?php echo esc_html( $freq_label ); ?></strong></p>
 					<?php if ( $next_cron ) : ?>
-						<p style="margin-bottom:0;color:#666;"><?php printf( esc_html__( 'Próxima execução: %s', 'dd-maintenance' ), esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ) ); ?></p>
+						<p style="margin:4px 0;color:#666;font-size:12px;"><?php printf( esc_html__( 'Próxima: %s', 'dd-maintenance' ), esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ) ); ?></p>
 					<?php endif; ?>
+					<p style="margin:4px 0;color:#666;font-size:12px;"><?php printf( esc_html__( 'Retenção: %s', 'dd-maintenance' ), $retention > 0 ? sprintf( esc_html__( 'últimos %d backups', 'dd-maintenance' ), $retention ) : esc_html__( 'Ilimitada', 'dd-maintenance' ) ); ?></p>
 				<?php else : ?>
 					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-marker" style="color:#666;"></span> <strong><?php esc_html_e( 'Desativada', 'dd-maintenance' ); ?></strong></p>
-					<p><a href="<?php echo esc_url( $this->page_url( 'cron' ) ); ?>" class="button button-small"><?php esc_html_e( 'Ativar agendamento', 'dd-maintenance' ); ?></a></p>
+					<p><a href="<?php echo esc_url( $this->page_url( 'cron' ) ); ?>" class="button button-small"><?php esc_html_e( 'Configurar agendamento', 'dd-maintenance' ); ?></a></p>
 				<?php endif; ?>
 			</div>
 		</div>
@@ -727,19 +739,24 @@ class DD_Maintenance_Settings {
 		if ( ! $next_cron ) {
 			$next_cron = wp_next_scheduled( 'backuper_daily_maintenance' );
 		}
+
+		$current_freq      = isset( $settings['schedule_frequency'] ) ? $settings['schedule_frequency'] : 'daily';
+		$current_time_val  = isset( $settings['schedule_time'] ) ? $settings['schedule_time'] : '03:00';
+		$current_retention = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
 		?>
 		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;">
 			<h2 style="margin-top:0;display:flex;align-items:center;gap:8px;">
 				<span class="dashicons dashicons-clock"></span>
-				<?php esc_html_e( 'Agendamento & Automação Diária (WP-Cron)', 'dd-maintenance' ); ?>
+				<?php esc_html_e( 'Agendamento Automático & Políticas de Retenção (WP-Cron)', 'dd-maintenance' ); ?>
 			</h2>
 
 			<p>
-				<?php esc_html_e( 'Configure a rotina automática para executar diariamente o fluxo completo de manutenção (backup completo do site, envio ao S3/DigitalOcean Spaces e atualização de plugins e core do WordPress).', 'dd-maintenance' ); ?>
+				<?php esc_html_e( 'Configure a rotina automática para executar periodicamente o fluxo completo de manutenção (backup completo com partes de 25MB, envio ao S3/Spaces, limpeza de retenção e atualizações de plugins e core).', 'dd-maintenance' ); ?>
 			</p>
 
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="dd_maintenance_save_settings">
+				<input type="hidden" name="active_tab" value="cron">
 				<input type="hidden" name="s3_access_key" value="<?php echo esc_attr( $settings['s3_access_key'] ); ?>">
 				<input type="hidden" name="s3_secret_key" value="<?php echo esc_attr( $settings['s3_secret_key'] ); ?>">
 				<input type="hidden" name="s3_bucket" value="<?php echo esc_attr( $settings['s3_bucket'] ); ?>">
@@ -754,37 +771,81 @@ class DD_Maintenance_Settings {
 
 				<table class="form-table" role="presentation">
 					<tr>
-						<th scope="row"><?php esc_html_e( 'Rotina Diária Automática', 'dd-maintenance' ); ?></th>
+						<th scope="row"><?php esc_html_e( 'Ativar Agendamento', 'dd-maintenance' ); ?></th>
 						<td>
 							<label>
 								<input type="checkbox" name="schedule_enabled" value="1" <?php checked( ! empty( $settings['schedule_enabled'] ), true ); ?>>
-								<strong><?php esc_html_e( 'Ativar execução automática diária (WP-Cron)', 'dd-maintenance' ); ?></strong>
+								<strong><?php esc_html_e( 'Ativar execução periódica automática (WP-Cron)', 'dd-maintenance' ); ?></strong>
 							</label>
+						</td>
+					</tr>
+
+					<tr>
+						<th scope="row"><label for="schedule_frequency"><?php esc_html_e( 'Frequência do Backup', 'dd-maintenance' ); ?></label></th>
+						<td>
+							<select id="schedule_frequency" name="schedule_frequency">
+								<option value="daily" <?php selected( $current_freq, 'daily' ); ?>><?php esc_html_e( 'Diário (a cada 24 horas)', 'dd-maintenance' ); ?></option>
+								<option value="weekly" <?php selected( $current_freq, 'weekly' ); ?>><?php esc_html_e( 'Semanal (a cada 7 dias)', 'dd-maintenance' ); ?></option>
+								<option value="biweekly" <?php selected( $current_freq, 'biweekly' ); ?>><?php esc_html_e( 'Quinzenal (a cada 15 dias)', 'dd-maintenance' ); ?></option>
+								<option value="monthly" <?php selected( $current_freq, 'monthly' ); ?>><?php esc_html_e( 'Mensal (a cada 30 dias)', 'dd-maintenance' ); ?></option>
+							</select>
 							<p class="description">
-								<?php esc_html_e( 'O WordPress executará o ciclo completo uma vez por dia quando houver tráfego no site.', 'dd-maintenance' ); ?>
+								<?php esc_html_e( 'Escolha o intervalo desejado para rodar a rotina automática.', 'dd-maintenance' ); ?>
 							</p>
 						</td>
 					</tr>
+
 					<tr>
-						<th scope="row"><?php esc_html_e( 'Status do Cron', 'dd-maintenance' ); ?></th>
+						<th scope="row"><label for="schedule_time"><?php esc_html_e( 'Horário de Execução', 'dd-maintenance' ); ?></label></th>
+						<td>
+							<input type="time" id="schedule_time" name="schedule_time" value="<?php echo esc_attr( $current_time_val ); ?>" required>
+							<p class="description">
+								<?php esc_html_e( 'Horário de início preferencial (no fuso horário local configurado no WordPress). Recomendado: madrugada (ex: 03:00).', 'dd-maintenance' ); ?>
+							</p>
+						</td>
+					</tr>
+
+					<tr>
+						<th scope="row"><label for="retention_local"><?php esc_html_e( 'Política de Retenção Local', 'dd-maintenance' ); ?></label></th>
+						<td>
+							<select id="retention_local" name="retention_local">
+								<option value="0" <?php selected( $current_retention, 0 ); ?>><?php esc_html_e( 'Ilimitado (nunca excluir backups locais)', 'dd-maintenance' ); ?></option>
+								<option value="3" <?php selected( $current_retention, 3 ); ?>><?php esc_html_e( 'Manter os 3 backups mais recentes', 'dd-maintenance' ); ?></option>
+								<option value="5" <?php selected( $current_retention, 5 ); ?>><?php esc_html_e( 'Manter os 5 backups mais recentes (Recomendado)', 'dd-maintenance' ); ?></option>
+								<option value="7" <?php selected( $current_retention, 7 ); ?>><?php esc_html_e( 'Manter os 7 backups mais recentes', 'dd-maintenance' ); ?></option>
+								<option value="10" <?php selected( $current_retention, 10 ); ?>><?php esc_html_e( 'Manter os 10 backups mais recentes', 'dd-maintenance' ); ?></option>
+								<option value="15" <?php selected( $current_retention, 15 ); ?>><?php esc_html_e( 'Manter os 15 backups mais recentes', 'dd-maintenance' ); ?></option>
+								<option value="30" <?php selected( $current_retention, 30 ); ?>><?php esc_html_e( 'Manter os 30 backups mais recentes', 'dd-maintenance' ); ?></option>
+							</select>
+							<p class="description">
+								<?php esc_html_e( 'Backups locais mais antigos que ultrapassarem este limite serão excluídos automaticamente após novas rotinas para economizar espaço em disco no servidor.', 'dd-maintenance' ); ?>
+							</p>
+						</td>
+					</tr>
+
+					<tr>
+						<th scope="row"><?php esc_html_e( 'Status Atual do Cron', 'dd-maintenance' ); ?></th>
 						<td>
 							<?php if ( ! empty( $settings['schedule_enabled'] ) && $next_cron ) : ?>
+								<p style="margin-top:0;">
+									<span class="dashicons dashicons-yes-alt" style="color:#46b450;vertical-align:middle;"></span>
+									<strong style="color:#46b450;"><?php esc_html_e( 'Agendamento Ativo', 'dd-maintenance' ); ?></strong>
+								</p>
 								<p>
-									<span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span>
-									<strong><?php esc_html_e( 'Agendado com sucesso.', 'dd-maintenance' ); ?></strong>
-									<?php printf( esc_html__( 'Próxima execução prevista para: %s', 'dd-maintenance' ), '<strong>' . esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ) . '</strong>' ); ?>
+									<strong><?php esc_html_e( 'Próxima Execução Prevista:', 'dd-maintenance' ); ?></strong>
+									<code><?php echo esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ); ?></code>
 								</p>
 							<?php else : ?>
-								<p style="color:#666;">
-									<span class="dashicons dashicons-no-alt" style="color:#d63638;"></span>
-									<?php esc_html_e( 'Nenhuma rotina diária agendada.', 'dd-maintenance' ); ?>
+								<p style="color:#666;margin-top:0;">
+									<span class="dashicons dashicons-no-alt" style="color:#d63638;vertical-align:middle;"></span>
+									<?php esc_html_e( 'Nenhuma rotina automática agendada no momento.', 'dd-maintenance' ); ?>
 								</p>
 							<?php endif; ?>
 						</td>
 					</tr>
 				</table>
 
-				<?php submit_button( __( 'Salvar Configurações de Agendamento', 'dd-maintenance' ), 'primary' ); ?>
+				<?php submit_button( __( 'Salvar Configurações de Agendamento e Retenção', 'dd-maintenance' ), 'primary' ); ?>
 			</form>
 		</div>
 		<?php
@@ -1126,11 +1187,28 @@ class DD_Maintenance_Settings {
 			$settings['schedule_enabled'] = empty( $_POST['schedule_enabled'] ) ? 0 : 1;
 		}
 
+		if ( isset( $_POST['schedule_frequency'] ) ) {
+			$freq = sanitize_key( wp_unslash( $_POST['schedule_frequency'] ) );
+			if ( in_array( $freq, array( 'daily', 'weekly', 'biweekly', 'monthly' ), true ) ) {
+				$settings['schedule_frequency'] = $freq;
+			}
+		}
+
+		if ( isset( $_POST['schedule_time'] ) ) {
+			$time_str = trim( sanitize_text_field( wp_unslash( $_POST['schedule_time'] ) ) );
+			if ( preg_match( '/^([01]?[0-9]|2[0-3]):([0-5][0-9])$/', $time_str ) ) {
+				$settings['schedule_time'] = $time_str;
+			}
+		}
+
+		if ( isset( $_POST['retention_local'] ) ) {
+			$settings['retention_local'] = max( 0, (int) $_POST['retention_local'] );
+		}
+
 		update_option( 'dd_maintenance_settings', $settings );
 		update_option( 'backuper_settings', $settings );
 
-		$redirect_tab = 's3';
-
+		$redirect_tab = isset( $_POST['active_tab'] ) ? sanitize_key( wp_unslash( $_POST['active_tab'] ) ) : 's3';
 		if ( $do_detect ) {
 			$s3 = new DD_Maintenance_S3();
 

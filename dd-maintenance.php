@@ -18,6 +18,18 @@ define( 'DD_MAINTENANCE_VERSION', '2.0.0' );
 define( 'DD_MAINTENANCE_FILE', __FILE__ );
 define( 'DD_MAINTENANCE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'DD_MAINTENANCE_URL', plugin_dir_url( __FILE__ ) );
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+	define( 'HOUR_IN_SECONDS', 3600 );
+}
+if ( ! defined( 'DAY_IN_SECONDS' ) ) {
+	define( 'DAY_IN_SECONDS', 86400 );
+}
+if ( ! defined( 'WEEK_IN_SECONDS' ) ) {
+	define( 'WEEK_IN_SECONDS', 604800 );
+}
+if ( ! defined( 'MONTH_IN_SECONDS' ) ) {
+	define( 'MONTH_IN_SECONDS', 2592000 );
+}
 
 // Constantes de compatibilidade com versões antigas do Backuper.
 if ( ! defined( 'BACKUPER_VERSION' ) ) {
