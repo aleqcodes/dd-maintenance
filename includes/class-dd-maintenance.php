@@ -162,6 +162,202 @@ class DD_Maintenance {
 	}
 
 	/**
+	 * Pasta de logs persistentes em uploads.
+	 *
+	 * @return string
+	 */
+	public static function logs_dir(): string {
+		$dir = self::backup_dir() . '/logs';
+		if ( ! is_dir( $dir ) ) {
+			wp_mkdir_p( $dir );
+		}
+
+		$index_file = $dir . '/index.php';
+		if ( ! file_exists( $index_file ) ) {
+			@file_put_contents( $index_file, '<?php // Silence is golden.' );
+		}
+
+		return $dir;
+	}
+
+	/**
+	 * Salva um log tanto no transient quanto em arquivo físico na pasta de uploads.
+	 *
+	 * @param array|string $log       Linhas do log ou texto.
+	 * @param string       $status    'success' | 'failure' | 'info'.
+	 * @param string       $base_name Identificador do backup (ex: site-2026-08-21-1430).
+	 * @return string Caminho do arquivo de log criado.
+	 */
+	public static function save_log( $log, string $status = 'success', string $base_name = '' ): string {
+		$lines = is_array( $log ) ? $log : explode( "\n", (string) $log );
+		$lines = array_values( array_filter( array_map( 'trim', $lines ) ) );
+
+		set_transient( 'dd_maintenance_last_log', $lines, DAY_IN_SECONDS );
+		set_transient( 'backuper_last_log', $lines, DAY_IN_SECONDS );
+
+		$logs_dir = self::logs_dir();
+		$status   = in_array( $status, array( 'success', 'failure', 'error', 'info' ), true ) ? $status : 'info';
+		if ( 'error' === $status ) {
+			$status = 'failure';
+		}
+
+		$date_stamp = current_time( 'Y-m-d-His' );
+		if ( ! empty( $base_name ) ) {
+			$clean_base = sanitize_file_name( $base_name );
+			$filename   = sprintf( 'backup-%s-%s-%s.log', $clean_base, $status, $date_stamp );
+		} else {
+			$filename   = sprintf( 'backup-%s-%s.log', $status, $date_stamp );
+		}
+
+		$filepath = $logs_dir . '/' . $filename;
+		$content  = implode( "\n", $lines ) . "\n";
+
+		@file_put_contents( $filepath, $content );
+		self::purge_old_log_files( 30 );
+
+		return $filepath;
+	}
+
+	/**
+	 * Remove arquivos de log antigos mantendo apenas os N mais recentes.
+	 *
+	 * @param int $keep Quantidade de logs a manter.
+	 */
+	public static function purge_old_log_files( int $keep = 30 ): void {
+		$dir   = self::logs_dir();
+		$files = glob( $dir . '/backup-*.log' );
+		if ( ! is_array( $files ) || count( $files ) <= $keep ) {
+			return;
+		}
+
+		usort(
+			$files,
+			function( $a, $b ) {
+				return filemtime( $b ) - filemtime( $a );
+			}
+		);
+
+		$total = count( $files );
+		for ( $i = $keep; $i < $total; $i++ ) {
+			if ( is_file( $files[ $i ] ) ) {
+				@unlink( $files[ $i ] );
+			}
+		}
+	}
+
+	/**
+	 * Retorna a lista de logs salvos na pasta de uploads.
+	 *
+	 * @return array
+	 */
+	public static function get_saved_logs(): array {
+		$dir   = self::logs_dir();
+		$files = glob( $dir . '/backup-*.log' );
+		if ( ! is_array( $files ) ) {
+			return array();
+		}
+
+		$logs = array();
+		foreach ( $files as $file ) {
+			if ( ! is_file( $file ) ) {
+				continue;
+			}
+			$name   = basename( $file );
+			$mtime  = (int) filemtime( $file );
+			$size   = (int) filesize( $file );
+			$status = 'info';
+
+			if ( strpos( $name, '-success-' ) !== false ) {
+				$status = 'success';
+			} elseif ( strpos( $name, '-failure-' ) !== false || strpos( $name, '-error-' ) !== false ) {
+				$status = 'failure';
+			}
+
+			$logs[] = array(
+				'filename'       => $name,
+				'path'           => $file,
+				'status'         => $status,
+				'size'           => $size,
+				'size_formatted' => size_format( $size ),
+				'mtime'          => $mtime,
+				'date_formatted' => function_exists( 'get_date_from_gmt' )
+					? get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $mtime ), 'd/m/Y H:i:s' )
+					: date( 'd/m/Y H:i:s', $mtime ),
+			);
+		}
+
+		usort(
+			$logs,
+			function( $a, $b ) {
+				return $b['mtime'] - $a['mtime'];
+			}
+		);
+
+		return $logs;
+	}
+
+	/**
+	 * Retorna o conteúdo de um log salvo específico.
+	 *
+	 * @param string $filename Nome do arquivo.
+	 * @return string|WP_Error
+	 */
+	public static function get_log_content( string $filename ) {
+		$filename = sanitize_file_name( $filename );
+		$dir      = self::logs_dir();
+		$path     = $dir . '/' . $filename;
+
+		if ( empty( $filename ) || ! is_file( $path ) ) {
+			return new WP_Error( 'log_not_found', __( 'Arquivo de log não encontrado.', 'dd-maintenance' ) );
+		}
+
+		return (string) file_get_contents( $path );
+	}
+
+	/**
+	 * Exclui um arquivo de log salvo.
+	 *
+	 * @param string $filename Nome do arquivo.
+	 * @return bool
+	 */
+	public static function delete_saved_log( string $filename ): bool {
+		$filename = sanitize_file_name( $filename );
+		$dir      = self::logs_dir();
+		$path     = $dir . '/' . $filename;
+
+		if ( ! empty( $filename ) && is_file( $path ) ) {
+			return @unlink( $path );
+		}
+
+		return false;
+	}
+
+	/**
+	 * Limpa todos os logs salvos da pasta de uploads.
+	 *
+	 * @return int Quantidade de logs removidos.
+	 */
+	public static function clear_all_saved_logs(): int {
+		$dir   = self::logs_dir();
+		$files = glob( $dir . '/backup-*.log' );
+		if ( ! is_array( $files ) ) {
+			return 0;
+		}
+
+		$count = 0;
+		foreach ( $files as $file ) {
+			if ( is_file( $file ) && @unlink( $file ) ) {
+				$count++;
+			}
+		}
+
+		delete_transient( 'dd_maintenance_last_log' );
+		delete_transient( 'backuper_last_log' );
+
+		return $count;
+	}
+
+	/**
 	 * Ativa o plugin.
 	 */
 	public static function activate() {
@@ -292,11 +488,15 @@ class DD_Maintenance {
 	 */
 	public function cron_full_maintenance() {
 		$active = get_option( 'dd_maintenance_background_job', array() );
-		if ( is_array( $active ) && isset( $active['status'], $active['session_id'] ) && 'running' === $active['status'] ) {
-			$this->schedule_backup_continuation( $active['session_id'] );
-			return;
+		$now    = time();
+		if ( is_array( $active ) && isset( $active['status'], $active['session_id'], $active['started_at'] ) && 'running' === $active['status'] ) {
+			if ( ( $now - (int) $active['started_at'] ) < 3600 ) {
+				$this->schedule_backup_continuation( $active['session_id'] );
+				return;
+			}
+			$backup = new DD_Maintenance_Backup();
+			$backup->cleanup_failed_session( $active['session_id'], __( 'Job agendado expirado por tempo limite.', 'dd-maintenance' ) );
 		}
-
 		$backup  = new DD_Maintenance_Backup();
 		$session = $backup->init_session();
 		if ( is_wp_error( $session ) ) {
@@ -438,12 +638,18 @@ class DD_Maintenance {
 			$job['status']      = 'error';
 			$job['finished_at'] = time();
 			$job['log'][]       = '[ERRO] ' . $result->get_error_message();
+			$job['log'][]       = '[AUTOLIMPEZA] Backup encerrado por erro. Arquivos residuais limpos.';
 			$job['log'][]       = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
+			if ( ! empty( $session_id ) ) {
+				$backup->cleanup_failed_session( $session_id, $result->get_error_message(), $job['log'] );
+			} else {
+				self::save_log( $job['log'], 'failure' );
+			}
+		} elseif ( 'completed' === $job['status'] ) {
+			self::save_log( $job['log'], 'success', $job['base_name'] ?? '' );
 		}
-
 		update_option( 'dd_maintenance_background_job', $job, false );
-		set_transient( 'dd_maintenance_last_log', $job['log'], DAY_IN_SECONDS );
-		set_transient( 'backuper_last_log', $job['log'], DAY_IN_SECONDS );
+
 
 		if ( 'running' === $job['status'] ) {
 			$this->schedule_backup_continuation( $session_id );

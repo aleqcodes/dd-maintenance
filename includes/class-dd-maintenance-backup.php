@@ -33,6 +33,8 @@ class DD_Maintenance_Backup {
 	public function init_session() {
 		$this->set_time_and_memory_limits();
 
+		self::purge_orphaned_sessions();
+
 		$backup_dir = DD_Maintenance::backup_dir();
 		$session_id = 'bk_' . time() . '_' . wp_generate_password( 8, false );
 		$session_dir = $backup_dir . '/session_' . $session_id;
@@ -760,6 +762,94 @@ class DD_Maintenance_Backup {
 
 		$this->clean_session_directory( $session['session_dir'] );
 		return true;
+	}
+	/**
+	 * Executa a limpeza automática de um backup que falhou, removendo pastas residuais,
+	 * temporários e salvando o log da falha na pasta de uploads.
+	 *
+	 * @param string $session_id      ID da sessão de backup.
+	 * @param string $error_message   Mensagem de erro explicativa.
+	 * @param array  $accumulated_log Linhas de log acumuladas até a falha.
+	 * @return array
+	 */
+	public function cleanup_failed_session( string $session_id, string $error_message = '', array $accumulated_log = array() ): array {
+		$session_id  = sanitize_file_name( $session_id );
+		$session     = $this->get_session_data( $session_id );
+		$base_name   = ! is_wp_error( $session ) && ! empty( $session['base_name'] ) ? $session['base_name'] : '';
+		$session_dir = ! is_wp_error( $session ) && ! empty( $session['session_dir'] ) ? $session['session_dir'] : '';
+
+		if ( ! empty( $session_dir ) && is_dir( $session_dir ) ) {
+			$this->clean_session_directory( $session_dir );
+		} elseif ( ! empty( $session_id ) ) {
+			$backup_dir = DD_Maintenance::backup_dir();
+			$this->clean_session_directory( $backup_dir . '/session_' . $session_id );
+		}
+
+		if ( ! empty( $base_name ) ) {
+			$backup_dir = DD_Maintenance::backup_dir();
+			$leftovers  = glob( $backup_dir . '/' . $base_name . '.volume*.zip' );
+			if ( is_array( $leftovers ) ) {
+				foreach ( $leftovers as $file ) {
+					if ( is_file( $file ) ) {
+						@unlink( $file );
+					}
+				}
+			}
+		}
+
+		$log = ! empty( $accumulated_log ) ? $accumulated_log : array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) );
+		if ( ! empty( $error_message ) ) {
+			$log[] = '[ERRO] Falha no backup: ' . $error_message;
+		}
+		$log[] = '[AUTOLIMPEZA] Arquivos temporários residuais removidos da pasta de uploads com sucesso.';
+		$log[] = '[Fim com Erro] ' . current_time( 'Y-m-d H:i:s' );
+
+		DD_Maintenance::save_log( $log, 'failure', $base_name );
+
+		return array(
+			'cleaned' => true,
+			'log'     => $log,
+		);
+	}
+
+	/**
+	 * Varre a pasta de backups e remove pastas temporárias de sessões abandonadas
+	 * ou arquivos residuais com mais de X segundos (padrão: 2 horas).
+	 *
+	 * @param int $max_age_seconds Idade máxima em segundos.
+	 * @return int Quantidade de itens limpos.
+	 */
+	public static function purge_orphaned_sessions( int $max_age_seconds = 7200 ): int {
+		$backup_dir = DD_Maintenance::backup_dir();
+		$now        = time();
+		$cleaned    = 0;
+
+		$dirs = glob( $backup_dir . '/{session_*,upload-temp-*,temp-restore-*}', GLOB_BRACE | GLOB_ONLYDIR );
+		if ( is_array( $dirs ) ) {
+			foreach ( $dirs as $dir ) {
+				$mtime = filemtime( $dir );
+				if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds ) {
+					$instance = new self();
+					$instance->clean_session_directory( $dir );
+					$cleaned++;
+				}
+			}
+		}
+
+		$temp_files = glob( $backup_dir . '/*.{volume*.zip,tmp}', GLOB_BRACE );
+		if ( is_array( $temp_files ) ) {
+			foreach ( $temp_files as $file ) {
+				if ( is_file( $file ) ) {
+					$mtime = filemtime( $file );
+					if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds ) {
+						@unlink( $file );
+						$cleaned++;
+					}
+				}
+			}
+		}
+
+		return $cleaned;
 	}
 
 	/**

@@ -24,6 +24,8 @@ class DD_Maintenance_Settings {
 		add_action( 'admin_post_dd_maintenance_run_full', array( $this, 'handle_full' ) );
 		add_action( 'admin_post_dd_maintenance_config_action', array( $this, 'handle_config_action' ) );
 		add_action( 'admin_post_dd_maintenance_clear_log', array( $this, 'handle_clear_log' ) );
+		add_action( 'admin_post_dd_maintenance_delete_log', array( $this, 'handle_delete_log' ) );
+		add_action( 'admin_post_dd_maintenance_download_log', array( $this, 'handle_download_log' ) );
 		add_action( 'admin_post_dd_maintenance_restore_upload', array( $this, 'handle_restore_upload' ) );
 		add_action( 'admin_post_dd_maintenance_restore_local', array( $this, 'handle_restore_local' ) );
 		add_action( 'admin_post_dd_maintenance_delete_backup', array( $this, 'handle_delete_backup' ) );
@@ -645,24 +647,56 @@ class DD_Maintenance_Settings {
 				});
 			}
 
+			function handlePipelineError(sessionId, baseName, errMsg, onError) {
+				sendAjax('dd_maintenance_ajax_action', {
+					step: 'backup_fail_cleanup',
+					session_id: sessionId || '',
+					base_name: baseName || '',
+					error: errMsg || '',
+					log: consoleOut.innerText || ''
+				}, function() {
+					if (onError) onError(errMsg);
+				}, function() {
+					if (onError) onError(errMsg);
+				});
+			}
+
+			function handlePipelineSuccess(sessionId, baseName, finalData, onSuccess) {
+				sendAjax('dd_maintenance_ajax_action', {
+					step: 'backup_save_log',
+					session_id: sessionId || '',
+					base_name: baseName || '',
+					status: 'success',
+					log: consoleOut.innerText || ''
+				}, function() {
+					if (onSuccess) onSuccess(finalData);
+				}, function() {
+					if (onSuccess) onSuccess(finalData);
+				});
+			}
+
 			function executeBackupPipeline(onSuccess, onError) {
+				var currentSessionId = '';
+				var currentBaseName = '';
+
 				setProgress(3, 'Passo 1: Inicializando sessão de backup...', '[Início] ' + new Date().toLocaleTimeString());
 
 				sendAjax('dd_maintenance_ajax_action', { step: 'backup_init' }, function(initData) {
-					var sessionId = initData.session_id;
-					setProgress(8, 'Passo 2: Gerando dump SQL do banco de dados em lotes...', '[Sessão] ' + sessionId);
+					currentSessionId = initData.session_id;
+					currentBaseName  = initData.base_name || '';
+					setProgress(8, 'Passo 2: Gerando dump SQL do banco de dados em lotes...', '[Sessão] ' + currentSessionId);
 
-					loopDatabaseBatches(sessionId, function() {
+					loopDatabaseBatches(currentSessionId, function() {
 						setProgress(18, 'Passo 3: Catalogando arquivos do site em lotes...');
 
-						loopIndexBatches(sessionId, function(indexData) {
+						loopIndexBatches(currentSessionId, function(indexData) {
 							var totalFiles = indexData.total_files || 0;
 							setProgress(25, 'Passo 4: Montando lotes ZIP de 25MB sem compressão (0/' + totalFiles + ')...', indexData.log);
 
-							loopZipBatches(sessionId, 0, totalFiles, function() {
+							loopZipBatches(currentSessionId, 0, totalFiles, function() {
 								setProgress(65, 'Passo 5: Finalizando os lotes de 25MB...', '[Lotes] Todos os arquivos foram distribuídos.');
 
-								loopFinalizeBatches(sessionId, function(finalData) {
+								loopFinalizeBatches(currentSessionId, function(finalData) {
 									var parts = finalData.parts || [];
 									var folder = finalData.folder || 'site';
 									setProgress(70, 'Passo 6: Enviando ' + parts.length + ' parte(s) para o S3 / Spaces...', finalData.log);
@@ -670,42 +704,41 @@ class DD_Maintenance_Settings {
 									uploadS3PartsSequentially(parts, folder, 0, function() {
 										setProgress(90, 'Passo 7: Aplicando política de retenção...', '[S3] Todas as partes foram enviadas com sucesso.');
 
-										sendAjax('dd_maintenance_ajax_action', { step: 'retention', session_id: sessionId }, function(retData) {
+										sendAjax('dd_maintenance_ajax_action', { step: 'retention', session_id: currentSessionId }, function(retData) {
 											if (retData.log) {
 												consoleOut.innerText += '\n' + retData.log;
 												consoleOut.scrollTop = consoleOut.scrollHeight;
 											}
-											if (onSuccess) onSuccess(finalData);
+											handlePipelineSuccess(currentSessionId, currentBaseName, finalData, onSuccess);
 										}, function(err) {
 											setProgress(90, 'Aviso na retenção', '[Aviso] ' + err);
-											if (onSuccess) onSuccess(finalData);
+											handlePipelineSuccess(currentSessionId, currentBaseName, finalData, onSuccess);
 										});
 									}, function(uploadErr) {
 										setProgress(70, 'Erro no envio de partes ao S3', '[ERRO] ' + uploadErr, false, true);
-										if (onError) onError(uploadErr);
+										handlePipelineError(currentSessionId, currentBaseName, uploadErr, onError);
 									});
 								}, function(err) {
 									setProgress(65, 'Erro ao finalizar backup', '[ERRO] ' + err, false, true);
-									if (onError) onError(err);
+									handlePipelineError(currentSessionId, currentBaseName, err, onError);
 								});
 							}, function(batchErr) {
 								setProgress(35, 'Erro ao montar os lotes de 25MB', '[ERRO] ' + batchErr, false, true);
-								if (onError) onError(batchErr);
+								handlePipelineError(currentSessionId, currentBaseName, batchErr, onError);
 							});
 						}, function(err) {
 							setProgress(18, 'Erro ao indexar arquivos', '[ERRO] ' + err, false, true);
-							if (onError) onError(err);
+							handlePipelineError(currentSessionId, currentBaseName, err, onError);
 						});
 					}, function(err) {
 						setProgress(8, 'Erro no dump SQL', '[ERRO] ' + err, false, true);
-						if (onError) onError(err);
+						handlePipelineError(currentSessionId, currentBaseName, err, onError);
 					});
 				}, function(err) {
 					setProgress(3, 'Erro ao iniciar sessão', '[ERRO] ' + err, false, true);
-					if (onError) onError(err);
+					handlePipelineError('', '', err, onError);
 				});
 			}
-
 			function loopDatabaseBatches(sessionId, onDone, onBatchError) {
 				sendAjax('dd_maintenance_ajax_action', { step: 'backup_db', session_id: sessionId }, function(res) {
 					var pct = 8 + Math.round(((res.percent || 0) / 100) * 10);
@@ -1475,28 +1508,159 @@ class DD_Maintenance_Settings {
 	 * Aba 5: Logs & Histórico.
 	 */
 	private function render_tab_logs( $last_log ) {
+		$saved_logs = DD_Maintenance::get_saved_logs();
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;">
+		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;margin-bottom:24px;">
 			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
 				<h2 style="margin:0;display:flex;align-items:center;gap:8px;">
 					<span class="dashicons dashicons-media-text"></span>
 					<?php esc_html_e( 'Log da Última Execução', 'dd-maintenance' ); ?>
 				</h2>
 
-				<?php if ( ! empty( $last_log ) ) : ?>
+				<?php if ( ! empty( $last_log ) || ! empty( $saved_logs ) ) : ?>
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 						<input type="hidden" name="action" value="dd_maintenance_clear_log">
 						<?php wp_nonce_field( 'dd_maintenance_clear_log' ); ?>
-						<?php submit_button( __( 'Limpar Log', 'dd-maintenance' ), 'secondary button-small', 'submit', false ); ?>
+						<?php submit_button( __( 'Limpar Todos os Logs', 'dd-maintenance' ), 'secondary button-small', 'submit', false ); ?>
 					</form>
 				<?php endif; ?>
 			</div>
 
 			<?php if ( ! empty( $last_log ) && is_array( $last_log ) ) : ?>
-				<pre style="background:#1d2327;color:#f0f0f1;padding:16px;border-radius:4px;overflow:auto;max-height:450px;font-family:monospace;font-size:13px;line-height:1.6;"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
+				<pre style="background:#1d2327;color:#f0f0f1;padding:16px;border-radius:4px;overflow:auto;max-height:350px;font-family:monospace;font-size:13px;line-height:1.6;"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
 			<?php else : ?>
 				<p style="color:#666;font-style:italic;">
-					<?php esc_html_e( 'Nenhum log registrado ainda. Execute uma manutenção para ver o histórico.', 'dd-maintenance' ); ?>
+					<?php esc_html_e( 'Nenhum log registrado na sessão atual.', 'dd-maintenance' ); ?>
+				</p>
+			<?php endif; ?>
+		</div>
+
+		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;">
+			<h2 style="margin-top:0;margin-bottom:16px;display:flex;align-items:center;gap:8px;">
+				<span class="dashicons dashicons-archive"></span>
+				<?php esc_html_e( 'Histórico de Logs Salvos (Uploads)', 'dd-maintenance' ); ?>
+			</h2>
+
+			<?php if ( ! empty( $saved_logs ) ) : ?>
+				<table class="wp-list-table widefat fixed striped">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Data do Backup / Log', 'dd-maintenance' ); ?></th>
+							<th><?php esc_html_e( 'Arquivo', 'dd-maintenance' ); ?></th>
+							<th><?php esc_html_e( 'Status', 'dd-maintenance' ); ?></th>
+							<th><?php esc_html_e( 'Tamanho', 'dd-maintenance' ); ?></th>
+							<th style="text-align:right;"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $saved_logs as $log_item ) : ?>
+							<tr>
+								<td><strong><?php echo esc_html( $log_item['date_formatted'] ); ?></strong></td>
+								<td><code><?php echo esc_html( $log_item['filename'] ); ?></code></td>
+								<td>
+									<?php if ( 'success' === $log_item['status'] ) : ?>
+										<span class="dd-maint-badge success"><?php esc_html_e( 'Sucesso', 'dd-maintenance' ); ?></span>
+									<?php elseif ( 'failure' === $log_item['status'] ) : ?>
+										<span class="dd-maint-badge error"><?php esc_html_e( 'Falha / Erro', 'dd-maintenance' ); ?></span>
+									<?php else : ?>
+										<span class="dd-maint-badge"><?php esc_html_e( 'Info', 'dd-maintenance' ); ?></span>
+									<?php endif; ?>
+								</td>
+								<td><?php echo esc_html( $log_item['size_formatted'] ); ?></td>
+								<td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;align-items:center;">
+									<button type="button" class="button button-small dd-view-log-btn" data-log-filename="<?php echo esc_attr( $log_item['filename'] ); ?>">
+										<span class="dashicons dashicons-visibility" style="font-size:14px;vertical-align:middle;line-height:1.4;"></span>
+										<?php esc_html_e( 'Ver Log', 'dd-maintenance' ); ?>
+									</button>
+
+									<?php
+									$download_url = add_query_arg(
+										array(
+											'action'       => 'dd_maintenance_download_log',
+											'log_filename' => $log_item['filename'],
+											'_wpnonce'     => wp_create_nonce( 'dd_maintenance_download_log' ),
+										),
+										admin_url( 'admin-post.php' )
+									);
+									?>
+									<a href="<?php echo esc_url( $download_url ); ?>" class="button button-small">
+										<span class="dashicons dashicons-download" style="font-size:14px;vertical-align:middle;line-height:1.4;"></span>
+										<?php esc_html_e( 'Baixar', 'dd-maintenance' ); ?>
+									</a>
+
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;margin:0;">
+										<input type="hidden" name="action" value="dd_maintenance_delete_log">
+										<input type="hidden" name="log_filename" value="<?php echo esc_attr( $log_item['filename'] ); ?>">
+										<?php wp_nonce_field( 'dd_maintenance_delete_log' ); ?>
+										<button type="submit" class="button button-small button-link-delete" onclick="return confirm('Excluir este log permanentemente?');">
+											<?php esc_html_e( 'Excluir', 'dd-maintenance' ); ?>
+										</button>
+									</form>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+
+				<!-- Modal para visualização de log individual -->
+				<div id="dd-maint-log-viewer-modal" class="dd-maint-modal-backdrop" style="display:none;z-index:100001;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+					<div class="dd-maint-modal-dialog" style="background:#fff;border-radius:6px;width:80%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.3);">
+						<div class="dd-maint-modal-header" style="padding:16px 20px;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;align-items:center;">
+							<h3 id="dd-maint-log-viewer-title" style="margin:0;font-size:16px;">Log</h3>
+							<button type="button" id="dd-maint-log-viewer-close" class="button button-small">&times;</button>
+						</div>
+						<div class="dd-maint-modal-body" style="padding:20px;flex:1;overflow:auto;background:#1d2327;">
+							<pre id="dd-maint-log-viewer-content" style="color:#f0f0f1;margin:0;font-family:monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;"></pre>
+						</div>
+					</div>
+				</div>
+
+				<script>
+				(function() {
+					var modal = document.getElementById('dd-maint-log-viewer-modal');
+					var title = document.getElementById('dd-maint-log-viewer-title');
+					var content = document.getElementById('dd-maint-log-viewer-content');
+					var closeBtn = document.getElementById('dd-maint-log-viewer-close');
+					var ajaxUrl = <?php echo json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+					var nonce = <?php echo json_encode( wp_create_nonce( 'dd_maint_ajax_nonce' ) ); ?>;
+
+					if (closeBtn) {
+						closeBtn.addEventListener('click', function() { modal.style.display = 'none'; });
+					}
+					if (modal) {
+						modal.addEventListener('click', function(e) { if (e.target === modal) modal.style.display = 'none'; });
+					}
+
+					document.querySelectorAll('.dd-view-log-btn').forEach(function(btn) {
+						btn.addEventListener('click', function() {
+							var fn = btn.getAttribute('data-log-filename');
+							title.innerText = 'Log: ' + fn;
+							content.innerText = 'Carregando log...';
+							modal.style.display = 'flex';
+
+							var fd = new FormData();
+							fd.append('action', 'dd_maintenance_ajax_action');
+							fd.append('step', 'get_log_content');
+							fd.append('log_filename', fn);
+							fd.append('nonce', nonce);
+
+							fetch(ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' })
+							.then(function(r) { return r.json(); })
+							.then(function(res) {
+								if (res && res.success) {
+									content.innerText = res.data.content || 'Log vazio.';
+								} else {
+									content.innerText = 'Erro ao carregar log: ' + (res.data ? res.data.message : 'Desconhecido');
+								}
+							})
+							.catch(function(err) { content.innerText = 'Erro de conexão: ' + err; });
+						});
+					});
+				})();
+				</script>
+			<?php else : ?>
+				<p style="color:#666;font-style:italic;margin:0;">
+					<?php esc_html_e( 'Nenhum histórico de log salvo no servidor.', 'dd-maintenance' ); ?>
 				</p>
 			<?php endif; ?>
 		</div>
@@ -2048,12 +2212,56 @@ class DD_Maintenance_Settings {
 			wp_die( esc_html__( 'Sem permissão.', 'dd-maintenance' ) );
 		}
 
-		delete_transient( 'dd_maintenance_last_log' );
-		delete_transient( 'backuper_last_log' );
-
-		DD_Maintenance::instance()->set_notice( __( 'Log limpo com sucesso.', 'dd-maintenance' ), 'info' );
+		$count = DD_Maintenance::clear_all_saved_logs();
+		DD_Maintenance::instance()->set_notice(
+			sprintf( __( '%d log(s) removido(s) com sucesso.', 'dd-maintenance' ), $count ),
+			'info'
+		);
 
 		wp_safe_redirect( $this->page_url( 'logs' ) );
+		exit;
+	}
+
+	/**
+	 * Handler: exclui um log salvo específico.
+	 */
+	public function handle_delete_log() {
+		check_admin_referer( 'dd_maintenance_delete_log' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Sem permissão.', 'dd-maintenance' ) );
+		}
+
+		$filename = isset( $_POST['log_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['log_filename'] ) ) : '';
+		if ( ! empty( $filename ) && DD_Maintenance::delete_saved_log( $filename ) ) {
+			DD_Maintenance::instance()->set_notice( __( 'Arquivo de log excluído com sucesso.', 'dd-maintenance' ), 'info' );
+		} else {
+			DD_Maintenance::instance()->set_notice( __( 'Não foi possível excluir o log.', 'dd-maintenance' ), 'error' );
+		}
+
+		wp_safe_redirect( $this->page_url( 'logs' ) );
+		exit;
+	}
+
+	/**
+	 * Handler: faz download de um arquivo de log salvo.
+	 */
+	public function handle_download_log() {
+		check_admin_referer( 'dd_maintenance_download_log' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Sem permissão.', 'dd-maintenance' ) );
+		}
+
+		$filename = isset( $_GET['log_filename'] ) ? sanitize_file_name( wp_unslash( $_GET['log_filename'] ) ) : '';
+		$content  = DD_Maintenance::get_log_content( $filename );
+
+		if ( is_wp_error( $content ) ) {
+			wp_die( esc_html( $content->get_error_message() ) );
+		}
+
+		header( 'Content-Type: text/plain; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename="' . esc_attr( $filename ) . '"' );
+		header( 'Content-Length: ' . strlen( $content ) );
+		echo $content;
 		exit;
 	}
 
@@ -2102,9 +2310,86 @@ class DD_Maintenance_Settings {
 				$result     = $backup->dump_database_step( $session_id );
 
 				if ( is_wp_error( $result ) ) {
+					$backup->cleanup_failed_session( $session_id, $result->get_error_message() );
 					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 				}
 
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_index':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->index_files_step( $session_id );
+
+				if ( is_wp_error( $result ) ) {
+					$backup->cleanup_failed_session( $session_id, $result->get_error_message() );
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_zip_batch':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$offset     = isset( $_POST['offset'] ) ? max( 0, (int) $_POST['offset'] ) : 0;
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->zip_batch_step( $session_id, $offset );
+
+				if ( is_wp_error( $result ) ) {
+					$backup->cleanup_failed_session( $session_id, $result->get_error_message() );
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_finalize':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$backup     = new DD_Maintenance_Backup();
+				$result     = $backup->finalize_and_split_step( $session_id );
+
+				if ( is_wp_error( $result ) ) {
+					$backup->cleanup_failed_session( $session_id, $result->get_error_message() );
+					wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+				}
+
+				$site_slug = sanitize_title( get_bloginfo( 'name' ) );
+				$site_slug = $site_slug ? $site_slug : 'site';
+				$folder    = $site_slug . '/' . current_time( 'Y-m-d' );
+
+				$result['folder'] = $folder;
+				wp_send_json_success( $result );
+				break;
+
+			case 'backup_fail_cleanup':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$error_msg  = isset( $_POST['error'] ) ? sanitize_text_field( wp_unslash( $_POST['error'] ) ) : '';
+				$log_raw    = isset( $_POST['log'] ) ? wp_unslash( $_POST['log'] ) : '';
+				$lines      = is_array( $log_raw ) ? $log_raw : explode( "\n", (string) $log_raw );
+				$backup     = new DD_Maintenance_Backup();
+				$backup->cleanup_failed_session( $session_id, $error_msg, $lines );
+				wp_send_json_success( array( 'cleaned' => true ) );
+				break;
+
+			case 'backup_save_log':
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$status     = isset( $_POST['status'] ) ? sanitize_key( wp_unslash( $_POST['status'] ) ) : 'success';
+				$base_name  = isset( $_POST['base_name'] ) ? sanitize_file_name( wp_unslash( $_POST['base_name'] ) ) : '';
+				$log_raw    = isset( $_POST['log'] ) ? wp_unslash( $_POST['log'] ) : '';
+				$lines      = is_array( $log_raw ) ? $log_raw : explode( "\n", (string) $log_raw );
+				DD_Maintenance::save_log( $lines, $status, $base_name );
+				wp_send_json_success( array( 'saved' => true ) );
+				break;
+
+			case 'get_log_content':
+				$filename = isset( $_POST['log_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['log_filename'] ) ) : '';
+				$content  = DD_Maintenance::get_log_content( $filename );
+				if ( is_wp_error( $content ) ) {
+					wp_send_json_error( array( 'message' => $content->get_error_message() ) );
+				}
+				wp_send_json_success( array( 'content' => $content ) );
+				break;
 				wp_send_json_success( $result );
 				break;
 

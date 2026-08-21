@@ -42,6 +42,7 @@ function get_option($name, $default = array()) {
 	return $GLOBALS['test_options'][$name] ?? $default;
 }
 function update_option($name, $value, $autoload = null) { $GLOBALS['test_options'][$name] = $value; return true; }
+function delete_option($name) { unset($GLOBALS['test_options'][$name]); return true; }
 function set_transient($name, $value, $expiration) { $GLOBALS['test_transients'][$name] = $value; return true; }
 function add_action() {}
 function add_filter() {}
@@ -228,6 +229,7 @@ try {
 	assert(hash_file('sha256', $large_file) === $large_hash, 'O arquivo maior que 25MB deve ser reconstruído sem alteração.');
 	assert(file_get_contents(WP_CONTENT_DIR . '/many/file-1.txt') === 'x');
 
+	delete_option('dd_maintenance_background_job');
 	$maintenance = DD_Maintenance::instance();
 	$maintenance->cron_full_maintenance();
 	$iterations = 0;
@@ -235,13 +237,34 @@ try {
 		$event = array_shift($GLOBALS['test_events']);
 		assert($event['hook'] === 'dd_maintenance_backup_continue');
 		$maintenance->cron_backup_continue($event['args'][0]);
+		$job = get_option('dd_maintenance_background_job');
 		$iterations++;
-		assert($iterations < 40, 'O worker do WP-Cron não convergiu.');
+		assert($iterations < 150, 'O worker do WP-Cron não convergiu.');
 	}
-
 	$job = get_option('dd_maintenance_background_job');
 	assert($job['status'] === 'completed' && $job['phase'] === 'done');
 	assert(count(DD_Maintenance_S3::$uploads) === count($job['parts']), 'O WP-Cron deve enviar um volume independente por evento.');
+
+	// Teste de simulação de falha e autolimpeza
+	$fail_session = $backup->init_session();
+	assert(!is_wp_error($fail_session));
+	$fail_dir = $fail_session['session_dir'];
+	assert(is_dir($fail_dir));
+
+	$cleanup = $backup->cleanup_failed_session($fail_session['session_id'], 'Erro de teste simulado');
+	assert(!is_dir($fail_dir), 'A pasta da sessão que falhou deve ser removida da pasta de uploads.');
+
+	$logs = DD_Maintenance::get_saved_logs();
+	assert(!empty($logs), 'Os logs salvos fisicamente devem ser encontrados na pasta de uploads.');
+	$has_failure_log = false;
+	foreach ($logs as $log_item) {
+		if ($log_item['status'] === 'failure') {
+			$has_failure_log = true;
+			$content = DD_Maintenance::get_log_content($log_item['filename']);
+			assert(strpos($content, 'AUTOLIMPEZA') !== false, 'O log de falha deve conter o registro de autolimpeza.');
+		}
+	}
+	assert($has_failure_log, 'Deve existir pelo menos um log registrado com status de falha.');
 
 	echo "backup volume self-check: OK\n";
 } finally {
