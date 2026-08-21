@@ -69,20 +69,15 @@ class DD_Maintenance_Restore {
 				return new WP_Error( 'restore_invalid_ext', __( 'O arquivo precisa estar no formato .zip.', 'dd-maintenance' ) );
 			}
 
-			// Se for um arquivo do tipo part002 sem as outras partes.
-			if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $single_file ), $m ) ) {
-				$part_num = (int) $m[1];
-				if ( $part_num > 1 ) {
-					$this->delete_directory( $temp_dir );
-					return new WP_Error(
-						'restore_missing_other_parts',
-						sprintf(
-							/* translators: %s: Nome da parte */
-							__( 'Você enviou apenas a parte %s. Em backups divididos em partes de 25MB, envie todas as partes juntas no campo de upload.', 'dd-maintenance' ),
-							basename( $single_file )
-						)
-					);
-				}
+			if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $single_file ) ) ) {
+				$this->delete_directory( $temp_dir );
+				return new WP_Error(
+					'restore_missing_other_parts',
+					sprintf(
+						__( 'O arquivo %s pertence a um backup em lotes. Selecione todas as partes juntas.', 'dd-maintenance' ),
+						basename( $single_file )
+					)
+				);
 			}
 
 			$result = $this->restore_archive( $single_file );
@@ -90,19 +85,8 @@ class DD_Maintenance_Restore {
 			return $result;
 		}
 
-		// Múltiplos arquivos enviados: junta as partes em um único .zip.
-		$merged_zip = $temp_dir . '/merged_backup_' . time() . '.zip';
-		$join_result = $this->join_part_files( $uploaded_files, $merged_zip );
-
-		if ( is_wp_error( $join_result ) ) {
-			$this->delete_directory( $temp_dir );
-			return $join_result;
-		}
-
-		$result = $this->restore_archive( $merged_zip );
-
+		$result = $this->restore_part_files( $uploaded_files, $temp_dir );
 		$this->delete_directory( $temp_dir );
-
 		return $result;
 	}
 
@@ -140,30 +124,92 @@ class DD_Maintenance_Restore {
 			return new WP_Error( 'restore_local_not_found', __( 'Arquivo(s) de backup local não encontrado(s).', 'dd-maintenance' ) );
 		}
 
-		// Se só tiver 1 parte (ex: part001 apenas), mas o arquivo completo era só ela.
-		if ( 1 === count( $part_files ) && preg_match( '/\.part001\.zip$/i', $part_files[0] ) ) {
-			// Junta ou executa direto
-		}
-
 		$temp_dir = $backup_dir . '/local-restore-' . time() . '-' . wp_generate_password( 8, false );
 		if ( ! wp_mkdir_p( $temp_dir ) ) {
-			return new WP_Error( 'restore_temp_failed', __( 'Não foi possível criar pasta temporária para juntar as partes.', 'dd-maintenance' ) );
+			return new WP_Error( 'restore_temp_failed', __( 'Não foi possível criar pasta temporária para processar os lotes.', 'dd-maintenance' ) );
 		}
 
-		$merged_zip  = $temp_dir . '/merged_' . $base_name . '.zip';
-		$join_result = $this->join_part_files( $part_files, $merged_zip );
-
-		if ( is_wp_error( $join_result ) ) {
-			$this->delete_directory( $temp_dir );
-			return $join_result;
-		}
-
-		$result = $this->restore_archive( $merged_zip );
-
-		// Remove o zip temporário unificado (as partes originais permanecem na pasta de backups).
+		$result = $this->restore_part_files( $part_files, $temp_dir );
 		$this->delete_directory( $temp_dir );
-
 		return $result;
+	}
+
+	/**
+	 * Restaura volumes ZIP independentes e mantém compatibilidade com partes binárias antigas.
+	 *
+	 * @param array  $part_files Arquivos enviados ou locais.
+	 * @param string $temp_dir   Pasta para eventual união legada.
+	 * @return array|WP_Error
+	 */
+	private function restore_part_files( array $part_files, string $temp_dir ) {
+		if ( ! class_exists( 'ZipArchive' ) ) {
+			return new WP_Error( 'restore_zip_missing', __( 'A extensão PHP ZipArchive não está disponível no servidor.', 'dd-maintenance' ) );
+		}
+		$part_files = $this->sort_part_files( $part_files );
+		if ( is_wp_error( $part_files ) ) {
+			return $part_files;
+		}
+
+		$independent = true;
+		foreach ( $part_files as $file ) {
+			$zip = new ZipArchive();
+			if ( true !== $zip->open( $file ) ) {
+				$independent = false;
+				break;
+			}
+			$zip->close();
+		}
+
+		if ( $independent ) {
+			return $this->restore_archive_set( $part_files );
+		}
+
+		$merged = $temp_dir . '/merged_legacy_' . time() . '.zip';
+		$joined = $this->join_part_files( $part_files, $merged );
+		if ( is_wp_error( $joined ) ) {
+			return $joined;
+		}
+		return $this->restore_archive( $merged );
+	}
+
+	/**
+	 * Ordena e valida a sequência .part001.zip, .part002.zip...
+	 *
+	 * @param array $part_files Arquivos das partes.
+	 * @return array|WP_Error
+	 */
+	private function sort_part_files( array $part_files ) {
+		if ( empty( $part_files ) ) {
+			return new WP_Error( 'join_empty_list', __( 'Nenhuma parte fornecida para restauração.', 'dd-maintenance' ) );
+		}
+
+		usort(
+			$part_files,
+			function( $a, $b ) {
+				preg_match( '/\.part(\d+)\.zip$/i', basename( $a ), $ma );
+				preg_match( '/\.part(\d+)\.zip$/i', basename( $b ), $mb );
+				return (int) ( $ma[1] ?? 0 ) - (int) ( $mb[1] ?? 0 );
+			}
+		);
+
+		$expected = 1;
+		foreach ( $part_files as $file ) {
+			if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $file ), $match ) ) {
+				$current = (int) $match[1];
+				if ( $current !== $expected ) {
+					return new WP_Error(
+						'join_sequence_missing',
+						sprintf(
+							__( 'Sequência de partes incompleta: era esperada a parte %1$03d, mas foi encontrada a parte %2$03d.', 'dd-maintenance' ),
+							$expected,
+							$current
+						)
+					);
+				}
+				$expected++;
+			}
+		}
+		return $part_files;
 	}
 
 	/**
@@ -174,44 +220,9 @@ class DD_Maintenance_Restore {
 	 * @return true|WP_Error
 	 */
 	public function join_part_files( array $part_files, string $output_file ) {
-		if ( empty( $part_files ) ) {
-			return new WP_Error( 'join_empty_list', __( 'Nenhuma parte fornecida para junção.', 'dd-maintenance' ) );
-		}
-
-		// Ordena as partes numericamente pelo sufixo .partXXX.zip.
-		usort(
-			$part_files,
-			function( $a, $b ) {
-				$num_a = 0;
-				$num_b = 0;
-				if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $a ), $ma ) ) {
-					$num_a = (int) $ma[1];
-				}
-				if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $b ), $mb ) ) {
-					$num_b = (int) $mb[1];
-				}
-				return $num_a - $num_b;
-			}
-		);
-
-		// Valida se a sequência começa em 1 e não tem partes faltando.
-		$expected = 1;
-		foreach ( $part_files as $file ) {
-			if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $file ), $m ) ) {
-				$current = (int) $m[1];
-				if ( $current !== $expected ) {
-					return new WP_Error(
-						'join_sequence_missing',
-						sprintf(
-							/* translators: 1: Parte esperada, 2: Parte encontrada */
-							__( 'Sequência de partes incompleta: era esperada a parte %1$03d, mas foi encontrada a parte %2$03d.', 'dd-maintenance' ),
-							$expected,
-							$current
-						)
-					);
-				}
-				$expected++;
-			}
+		$part_files = $this->sort_part_files( $part_files );
+		if ( is_wp_error( $part_files ) ) {
+			return $part_files;
 		}
 
 		$out_handle = fopen( $output_file, 'wb' );
@@ -264,68 +275,75 @@ class DD_Maintenance_Restore {
 	 * @return array|WP_Error
 	 */
 	public function restore_archive( string $zip_path ) {
-		$this->set_time_and_memory_limits();
+		return $this->restore_archive_set( array( $zip_path ) );
+	}
 
+	/**
+	 * Extrai volumes ZIP independentes na mesma árvore e restaura o conteúdo.
+	 *
+	 * @param array $zip_paths Volumes em ordem.
+	 * @return array|WP_Error
+	 */
+	private function restore_archive_set( array $zip_paths ) {
+		$this->set_time_and_memory_limits();
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'restore_zip_missing', __( 'A extensão PHP ZipArchive não está disponível no servidor.', 'dd-maintenance' ) );
 		}
 
-		if ( ! file_exists( $zip_path ) || filesize( $zip_path ) <= 0 ) {
-			return new WP_Error( 'restore_zip_invalid', __( 'Arquivo de backup inválido ou vazio.', 'dd-maintenance' ) );
-		}
-
 		$backup_dir  = DD_Maintenance::backup_dir();
 		$extract_dir = $backup_dir . '/temp-restore-' . time() . '-' . wp_generate_password( 8, false );
-
 		if ( ! wp_mkdir_p( $extract_dir ) ) {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
 		}
 
-		$zip = new ZipArchive();
-		if ( true !== $zip->open( $zip_path ) ) {
-			$this->delete_directory( $extract_dir );
-			return new WP_Error( 'restore_zip_open_failed', __( 'Falha ao abrir o arquivo .zip de backup.', 'dd-maintenance' ) );
-		}
-
-		// Validação de segurança Zip Slip: impede caminhos relativos maliciosos (../) no arquivo.
-		for ( $i = 0; $i < $zip->numFiles; $i++ ) {
-			$entry_name = (string) $zip->getNameIndex( $i );
-			if ( false !== strpos( $entry_name, '..' ) || 0 === strpos( $entry_name, '/' ) || 0 === strpos( $entry_name, '\\' ) ) {
-				$zip->close();
+		$log = array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) );
+		foreach ( $zip_paths as $zip_path ) {
+			if ( ! is_file( $zip_path ) || filesize( $zip_path ) <= 0 ) {
 				$this->delete_directory( $extract_dir );
-				return new WP_Error( 'restore_zip_slip_detected', __( 'Arquivo de backup rejeitado por conter caminhos relativos inválidos (Zip Slip).', 'dd-maintenance' ) );
+				return new WP_Error( 'restore_zip_invalid', __( 'Arquivo de backup inválido ou vazio.', 'dd-maintenance' ) );
 			}
+
+			$zip = new ZipArchive();
+			if ( true !== $zip->open( $zip_path ) ) {
+				$this->delete_directory( $extract_dir );
+				return new WP_Error( 'restore_zip_open_failed', sprintf( __( 'Falha ao abrir o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
+			}
+
+			for ( $index = 0; $index < $zip->numFiles; $index++ ) {
+				$entry_name = wp_normalize_path( (string) $zip->getNameIndex( $index ) );
+				if ( 0 === strpos( $entry_name, '/' ) || preg_match( '#(^|/)\.\.(/|$)#', $entry_name ) ) {
+					$zip->close();
+					$this->delete_directory( $extract_dir );
+					return new WP_Error( 'restore_zip_slip_detected', __( 'Arquivo de backup rejeitado por conter caminhos relativos inválidos (Zip Slip).', 'dd-maintenance' ) );
+				}
+			}
+
+			$extracted = $zip->extractTo( $extract_dir );
+			$zip->close();
+			if ( ! $extracted ) {
+				$this->delete_directory( $extract_dir );
+				return new WP_Error( 'restore_extract_failed', sprintf( __( 'Falha ao extrair o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
+			}
+			$log[] = '[Lote] ' . basename( $zip_path ) . ' (' . size_format( filesize( $zip_path ) ) . ')';
 		}
 
-		$extracted = $zip->extractTo( $extract_dir );
-		$zip->close();
-
-		if ( ! $extracted ) {
+		$rebuilt = $this->reassemble_large_files( $extract_dir );
+		if ( is_wp_error( $rebuilt ) ) {
 			$this->delete_directory( $extract_dir );
-			return new WP_Error( 'restore_extract_failed', __( 'Falha ao descompactar os arquivos do backup.', 'dd-maintenance' ) );
+			return $rebuilt;
 		}
 
-		$log = array(
-			'[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ),
-			'[Arquivo] ' . basename( $zip_path ) . ' (' . size_format( filesize( $zip_path ) ) . ')',
-		);
-
-		// 1. Localiza e restaura o banco de dados (database.sql ou qualquer arquivo .sql).
 		$sql_file = $this->find_sql_file( $extract_dir );
 		$db_stats = null;
-
 		if ( $sql_file ) {
-			$log[] = '[Banco] Arquivo SQL detectado: ' . basename( $sql_file );
+			$log[]     = '[Banco] Arquivo SQL detectado: ' . basename( $sql_file );
 			$db_result = $this->restore_database( $sql_file );
-
 			if ( is_wp_error( $db_result ) ) {
 				$this->delete_directory( $extract_dir );
 				return $db_result;
 			}
-
 			$db_stats = $db_result;
 			$log[]    = sprintf(
-				/* translators: 1: Quantidade de queries, 2: Tabelas afetadas */
 				__( '[OK] Banco restaurado com sucesso: %1$d comandos executados (%2$d tabelas processadas).', 'dd-maintenance' ),
 				$db_result['queries'],
 				$db_result['tables']
@@ -334,22 +352,13 @@ class DD_Maintenance_Restore {
 			$log[] = '[Aviso] Nenhum arquivo .sql encontrado no backup (banco de dados não alterado).';
 		}
 
-		// 2. Restaura os arquivos (site/ ou wp-content/ ou wp-config.php).
 		$files_result = $this->restore_files( $extract_dir );
 		if ( is_wp_error( $files_result ) ) {
 			$this->delete_directory( $extract_dir );
 			return $files_result;
 		}
-
-		$log[] = sprintf(
-			/* translators: %d: Quantidade de arquivos restaurados */
-			__( '[OK] Arquivos restaurados com sucesso: %d arquivos copiados.', 'dd-maintenance' ),
-			$files_result['copied']
-		);
-
-		// Limpa a pasta temporária de extração.
+		$log[] = sprintf( __( '[OK] Arquivos restaurados com sucesso: %d arquivos copiados.', 'dd-maintenance' ), $files_result['copied'] );
 		$this->delete_directory( $extract_dir );
-
 		$log[] = '[Fim da Restauração] ' . current_time( 'Y-m-d H:i:s' );
 
 		return array(
@@ -358,6 +367,70 @@ class DD_Maintenance_Restore {
 			'db_stats' => $db_stats,
 			'files'    => $files_result['copied'],
 		);
+	}
+
+	/**
+	 * Reconstrói arquivos que atravessaram mais de um volume.
+	 *
+	 * @param string $extract_dir Pasta compartilhada de extração.
+	 * @return true|WP_Error
+	 */
+	private function reassemble_large_files( string $extract_dir ) {
+		$chunk_dir    = $extract_dir . '/__dd_chunks__';
+		$manifest_file = $chunk_dir . '/manifest.json';
+		if ( ! is_file( $manifest_file ) ) {
+			return true;
+		}
+
+		$manifest = json_decode( (string) file_get_contents( $manifest_file ), true );
+		if ( ! is_array( $manifest ) || empty( $manifest['files'] ) || ! is_array( $manifest['files'] ) ) {
+			return new WP_Error( 'restore_chunk_manifest', __( 'Manifesto de arquivos grandes inválido.', 'dd-maintenance' ) );
+		}
+
+		foreach ( $manifest['files'] as $file ) {
+			if ( empty( $file['target'] ) || empty( $file['chunks'] ) || ! is_array( $file['chunks'] ) ) {
+				return new WP_Error( 'restore_chunk_entry', __( 'Entrada inválida no manifesto de arquivos grandes.', 'dd-maintenance' ) );
+			}
+
+			$target = wp_normalize_path( $file['target'] );
+			if ( 0 === strpos( $target, '/' ) || preg_match( '#(^|/)\.\.(/|$)#', $target ) ) {
+				return new WP_Error( 'restore_chunk_path', __( 'Caminho inválido no manifesto de arquivos grandes.', 'dd-maintenance' ) );
+			}
+
+			$destination = $extract_dir . '/' . $target;
+			if ( ! wp_mkdir_p( dirname( $destination ) ) ) {
+				return new WP_Error( 'restore_chunk_mkdir', sprintf( __( 'Não foi possível criar a pasta para %s.', 'dd-maintenance' ), $target ) );
+			}
+			$output = fopen( $destination, 'wb' );
+			if ( ! $output ) {
+				return new WP_Error( 'restore_chunk_output', sprintf( __( 'Não foi possível reconstruir %s.', 'dd-maintenance' ), $target ) );
+			}
+
+			$chunks = $file['chunks'];
+			ksort( $chunks, SORT_NUMERIC );
+			foreach ( $chunks as $chunk ) {
+				$chunk = wp_normalize_path( $chunk );
+				if ( 0 !== strpos( $chunk, '__dd_chunks__/' ) || preg_match( '#(^|/)\.\.(/|$)#', $chunk ) ) {
+					fclose( $output );
+					return new WP_Error( 'restore_chunk_path', __( 'Caminho de trecho inválido no manifesto.', 'dd-maintenance' ) );
+				}
+				$input = fopen( $extract_dir . '/' . $chunk, 'rb' );
+				if ( ! $input ) {
+					fclose( $output );
+					return new WP_Error( 'restore_chunk_missing', sprintf( __( 'Trecho ausente ao reconstruir %s.', 'dd-maintenance' ), $target ) );
+				}
+				stream_copy_to_stream( $input, $output );
+				fclose( $input );
+			}
+			fclose( $output );
+			clearstatcache( true, $destination );
+			if ( isset( $file['size'] ) && filesize( $destination ) !== (int) $file['size'] ) {
+				return new WP_Error( 'restore_chunk_size', sprintf( __( 'Tamanho reconstruído inválido para %s.', 'dd-maintenance' ), $target ) );
+			}
+		}
+
+		$this->delete_directory( $chunk_dir );
+		return true;
 	}
 
 	/**

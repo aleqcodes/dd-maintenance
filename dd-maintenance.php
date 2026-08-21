@@ -3,7 +3,7 @@
  * Plugin Name:       DD Maintenance
  * Plugin URI:        https://example.com/dd-maintenance
  * Description:       Solução completa de manutenção para WordPress: gerenciamento seguro de travas no wp-config.php (DISALLOW_FILE_MODS e DISALLOW_FILE_EDIT com senha), backups completos (arquivos + banco de dados), envio para S3 / DigitalOcean Spaces e atualização automatizada de plugins e core.
- * Version:           2.1.0
+ * Version:           2.1.1
  * Requires at least: 5.4
  * Requires PHP:      7.4
  * Author:            DD & Aleq
@@ -14,7 +14,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'DD_MAINTENANCE_VERSION', '2.1.0' );
+define( 'DD_MAINTENANCE_VERSION', '2.1.1' );
 define( 'DD_MAINTENANCE_FILE', __FILE__ );
 define( 'DD_MAINTENANCE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'DD_MAINTENANCE_URL', plugin_dir_url( __FILE__ ) );

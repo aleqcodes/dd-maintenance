@@ -657,10 +657,10 @@ class DD_Maintenance_Settings {
 
 						loopIndexBatches(sessionId, function(indexData) {
 							var totalFiles = indexData.total_files || 0;
-							setProgress(25, 'Passo 4: Compactando arquivos em lotes (0/' + totalFiles + ')...', indexData.log);
+							setProgress(25, 'Passo 4: Montando lotes ZIP de 25MB sem compressão (0/' + totalFiles + ')...', indexData.log);
 
 							loopZipBatches(sessionId, 0, totalFiles, function() {
-								setProgress(65, 'Passo 5: Finalizando arquivo e gerando partes de 25MB...', '[Compactação] Todos os lotes foram adicionados ao arquivo.');
+								setProgress(65, 'Passo 5: Finalizando os lotes de 25MB...', '[Lotes] Todos os arquivos foram distribuídos.');
 
 								loopFinalizeBatches(sessionId, function(finalData) {
 									var parts = finalData.parts || [];
@@ -689,7 +689,7 @@ class DD_Maintenance_Settings {
 									if (onError) onError(err);
 								});
 							}, function(batchErr) {
-								setProgress(35, 'Erro na compactação de arquivos', '[ERRO] ' + batchErr, false, true);
+								setProgress(35, 'Erro ao montar os lotes de 25MB', '[ERRO] ' + batchErr, false, true);
 								if (onError) onError(batchErr);
 							});
 						}, function(err) {
@@ -732,7 +732,7 @@ class DD_Maintenance_Settings {
 			function loopFinalizeBatches(sessionId, onDone, onBatchError) {
 				sendAjax('dd_maintenance_ajax_action', { step: 'backup_finalize', session_id: sessionId }, function(res) {
 					var pct = 65 + Math.round(((res.percent || 0) / 100) * 5);
-					setProgress(pct, 'Passo 5: Gerando partes de 25MB...', res.log);
+					setProgress(pct, 'Passo 5: Finalizando lotes de 25MB...', res.log);
 					if (res.completed) {
 						if (onDone) onDone(res);
 					} else {
@@ -741,20 +741,29 @@ class DD_Maintenance_Settings {
 				}, onBatchError);
 			}
 
-			function loopZipBatches(sessionId, offset, totalFiles, onDone, onBatchError) {
+			function loopZipBatches(sessionId, offset, totalFiles, onDone, onBatchError, attempt) {
+				attempt = attempt || 0;
 				sendAjax('dd_maintenance_ajax_action', { step: 'backup_zip_batch', session_id: sessionId, offset: offset }, function(res) {
-					var processed = res.processed || (offset + (res.batch_count || 800));
-					var pct = 25 + Math.round(((res.percent || (processed / totalFiles * 100)) / 100) * 40); // escala de 25% a 65%
+					var processed = typeof res.processed === 'number' ? res.processed : offset;
+					var rawPct = typeof res.percent === 'number' ? res.percent : (totalFiles ? processed / totalFiles * 100 : 100);
+					var pct = 25 + Math.round((rawPct / 100) * 40); // escala de 25% a 65%
 
-					setProgress(pct, 'Passo 4: Compactando arquivos (' + processed + ' / ' + totalFiles + ')...', res.log);
+					setProgress(pct, 'Passo 4: Montando lotes sem compressão (' + processed + ' / ' + totalFiles + ')...', res.log);
 
-					if (res.completed || processed >= totalFiles) {
+					if (res.completed) {
 						if (onDone) onDone();
 					} else {
-						loopZipBatches(sessionId, res.next_offset || processed, totalFiles, onDone, onBatchError);
+						loopZipBatches(sessionId, processed, totalFiles, onDone, onBatchError, 0);
 					}
 				}, function(err) {
-					if (onBatchError) onBatchError(err);
+					if (attempt < 2) {
+						setProgress(35, 'Servidor ocupado; retomando o mesmo lote...', '[Lotes] Tentativa ' + (attempt + 2) + '/3 após: ' + err);
+						setTimeout(function() {
+							loopZipBatches(sessionId, offset, totalFiles, onDone, onBatchError, attempt + 1);
+						}, Math.pow(2, attempt) * 1000);
+					} else if (onBatchError) {
+						onBatchError(err);
+					}
 				});
 			}
 

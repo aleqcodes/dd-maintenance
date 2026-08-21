@@ -17,24 +17,13 @@ class DD_Maintenance_Backup {
 	const CHUNK_SIZE = 26214400;
 
 	/**
-	 * Limites de trabalho por requisição. O relógio, e não apenas a quantidade de
-	 * arquivos, mantém cada resposta bem abaixo do timeout do proxy.
+	 * Limites por requisição e por volume. Os arquivos são armazenados sem
+	 * compressão; a margem cobre cabeçalhos e o índice central do ZIP.
 	 */
-	const BATCH_FILE_COUNT = 100;
-	const DB_BATCH_SIZE    = 250;
-	const STEP_TIME_LIMIT  = 8;
-
-	/**
-	 * Extensões de mídia pré-compactadas que usam CM_STORE para máxima velocidade.
-	 *
-	 * @var array
-	 */
-	const PRECOMPRESSED_EXTENSIONS = array(
-		'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'ico',
-		'mp4', 'mov', 'avi', 'mkv', 'webm', 'mp3', 'ogg', 'wav',
-		'zip', 'gz', 'tar', 'tgz', 'rar', '7z', 'bz2', 'pdf',
-		'woff', 'woff2', 'ttf', 'eot',
-	);
+	const BATCH_FILE_COUNT    = 1000;
+	const DB_BATCH_SIZE       = 250;
+	const STEP_TIME_LIMIT     = 8;
+	const VOLUME_PAYLOAD_SIZE = 25165824;
 
 	/**
 	 * Inicializa uma sessão de backup em lotes (cria pasta e metadados da sessão).
@@ -72,32 +61,35 @@ class DD_Maintenance_Backup {
 			'session_dir'        => $session_dir,
 			'base_name'          => $base,
 			'settings'           => $settings,
-			'db_file'            => $session_dir . '/database.sql',
-			'zip_file'           => $session_dir . '/' . $base . '.raw.zip',
-			'manifest_file'      => $session_dir . '/manifest.jsonl',
-			'index_queue_file'   => $session_dir . '/index-queue.jsonl',
-			'total_files'        => 0,
-			'processed'          => 0,
-			'db_initialized'      => false,
-			'db_completed'        => false,
-			'db_table_index'      => 0,
-			'db_row_offset'       => 0,
-			'db_schema_written'   => false,
-			'db_position'         => 0,
-			'index_initialized'   => false,
-			'index_completed'     => false,
-			'index_queue_offset'  => 0,
-			'index_queue_size'    => 0,
-			'manifest_size'       => 0,
-			'indexed_dirs'        => 0,
-			'zip_manifest_offset' => 0,
-			'archive_finalized'   => false,
-			'split_completed'     => false,
-			'split_offset'        => 0,
-			'split_part'          => 1,
-			'total_size'          => 0,
-			'parts'               => array(),
-			'created_at'          => time(),
+			'db_file'              => $session_dir . '/database.sql',
+			'manifest_file'        => $session_dir . '/manifest.jsonl',
+			'index_queue_file'     => $session_dir . '/index-queue.jsonl',
+			'total_files'          => 0,
+			'processed'            => 0,
+			'db_initialized'       => false,
+			'db_completed'         => false,
+			'db_table_index'       => 0,
+			'db_row_offset'        => 0,
+			'db_schema_written'    => false,
+			'db_position'          => 0,
+			'db_manifested'        => false,
+			'index_initialized'    => false,
+			'index_completed'      => false,
+			'index_queue_offset'   => 0,
+			'index_queue_size'     => 0,
+			'manifest_size'        => 0,
+			'indexed_dirs'         => 0,
+			'zip_manifest_offset'  => 0,
+			'volume_index'         => 1,
+			'large_file_offset'    => 0,
+			'large_file_target'    => '',
+			'large_files'          => array(),
+			'metadata_added'       => false,
+			'volume_count'         => 0,
+			'volumes_completed'    => false,
+			'total_size'           => 0,
+			'parts'                => array(),
+			'created_at'           => time(),
 		);
 
 		$this->save_session_data( $session_dir, $session_data );
@@ -286,7 +278,7 @@ class DD_Maintenance_Backup {
 	}
 
 	/**
-	 * Etapa 2: Indexa todos os arquivos que serão compactados em um manifesto leve.
+	 * Etapa 2: Indexa os arquivos em um manifesto leve, sem carregá-los na memória.
 	 *
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
@@ -301,7 +293,7 @@ class DD_Maintenance_Backup {
 			return array(
 				'completed'   => true,
 				'total_files' => (int) $session['total_files'],
-				'log'         => sprintf( __( '[OK] %d arquivos catalogados para compactação.', 'dd-maintenance' ), $session['total_files'] ),
+				'log'         => sprintf( __( '[OK] %d arquivos catalogados para os lotes de 25MB.', 'dd-maintenance' ), $session['total_files'] ),
 			);
 		}
 
@@ -441,6 +433,14 @@ class DD_Maintenance_Backup {
 		}
 
 		if ( $completed ) {
+			if ( empty( $session['db_manifested'] ) && ! empty( $session['settings']['include_db'] ) && is_file( $session['db_file'] ) ) {
+				$entry = array( 'path' => $session['db_file'], 'target' => 'database.sql' );
+				file_put_contents( $session['manifest_file'], wp_json_encode( $entry ) . "\n", FILE_APPEND );
+				clearstatcache( true, $session['manifest_file'] );
+				$session['manifest_size'] = (int) filesize( $session['manifest_file'] );
+				$session['total_files']++;
+				$session['db_manifested'] = true;
+			}
 			$session['index_completed'] = true;
 			$this->save_session_data( $session['session_dir'], $session );
 		}
@@ -450,13 +450,13 @@ class DD_Maintenance_Backup {
 			'total_files'  => (int) $session['total_files'],
 			'indexed_dirs' => (int) $session['indexed_dirs'],
 			'log'          => $completed
-				? sprintf( __( '[OK] %d arquivos catalogados para compactação.', 'dd-maintenance' ), $session['total_files'] )
+				? sprintf( __( '[OK] %d arquivos catalogados para os lotes de 25MB.', 'dd-maintenance' ), $session['total_files'] )
 				: sprintf( __( '[Indexando] %1$d arquivos encontrados em %2$d pastas...', 'dd-maintenance' ), $session['total_files'], $session['indexed_dirs'] ),
 		);
 	}
 
 	/**
-	 * Etapa 3: Compacta um lote de arquivos no .zip da sessão (execução ultrarrápida com CM_STORE).
+	 * Etapa 3: Distribui arquivos em volumes ZIP de até 25MB usando somente CM_STORE.
 	 *
 	 * @param string $session_id ID da sessão.
 	 * @param int    $offset     Índice do arquivo inicial do lote.
@@ -477,16 +477,9 @@ class DD_Maintenance_Backup {
 		}
 
 		$manifest_size   = (int) filesize( $session['manifest_file'] );
-		$manifest_offset = isset( $session['zip_manifest_offset'] ) ? (int) $session['zip_manifest_offset'] : 0;
+		$manifest_offset = (int) $session['zip_manifest_offset'];
 		if ( $manifest_offset >= $manifest_size ) {
-			return array(
-				'completed'   => true,
-				'processed'   => (int) $session['processed'],
-				'total_files' => (int) $session['total_files'],
-				'percent'     => 100,
-				'next_offset' => (int) $session['processed'],
-				'log'         => __( '[OK] Todos os arquivos foram compactados no pacote.', 'dd-maintenance' ),
-			);
+			return $this->format_batch_result( $session, true, 0, 100 );
 		}
 
 		$manifest = fopen( $session['manifest_file'], 'rb' );
@@ -495,77 +488,117 @@ class DD_Maintenance_Backup {
 		}
 		fseek( $manifest, $manifest_offset );
 
-		$zip   = new ZipArchive();
-		$flags = file_exists( $session['zip_file'] ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
-		if ( true !== $zip->open( $session['zip_file'], $flags ) ) {
-			fclose( $manifest );
-			return new WP_Error( 'zip_open_failed', __( 'Não foi possível abrir o arquivo zip para adicionar o lote.', 'dd-maintenance' ) );
-		}
+		$deadline       = microtime( true ) + self::STEP_TIME_LIMIT;
+		$batch_count    = 0;
+		$zip            = null;
+		$volume_path    = '';
+		$estimated_size = 22;
 
-		$deadline    = microtime( true ) + self::STEP_TIME_LIMIT;
-		$batch_count = 0;
 		while ( $batch_count < self::BATCH_FILE_COUNT && microtime( true ) < $deadline ) {
-			$line = fgets( $manifest );
+			$line_offset = ftell( $manifest );
+			$line        = fgets( $manifest );
 			if ( false === $line ) {
 				break;
 			}
 
-			$manifest_offset = ftell( $manifest );
-			$item            = json_decode( $line, true );
-			$batch_count++;
-
+			$next_offset = ftell( $manifest );
+			$item        = json_decode( $line, true );
 			if ( ! is_array( $item ) || empty( $item['path'] ) || empty( $item['target'] ) || ! is_file( $item['path'] ) ) {
-				continue;
-			}
-			if ( false !== $zip->locateName( $item['target'] ) ) {
+				$manifest_offset = $next_offset;
+				$session['processed']++;
+				$batch_count++;
 				continue;
 			}
 
-			$ext = strtolower( pathinfo( $item['path'], PATHINFO_EXTENSION ) );
-			if ( ! $zip->addFile( $item['path'], $item['target'] ) ) {
-				$zip->close();
-				fclose( $manifest );
-				return new WP_Error( 'zip_add_failed', sprintf( __( 'Não foi possível adicionar %s ao backup.', 'dd-maintenance' ), $item['target'] ) );
+			$file_size = (int) filesize( $item['path'] );
+			if ( $file_size > self::VOLUME_PAYLOAD_SIZE ) {
+				if ( $zip instanceof ZipArchive ) {
+					$closed = $this->close_volume( $zip, $volume_path );
+					if ( is_wp_error( $closed ) ) {
+						fclose( $manifest );
+						return $closed;
+					}
+					if ( file_exists( $volume_path ) && filesize( $volume_path ) > 22 ) {
+						$session['volume_index']++;
+					}
+					$zip = null;
+				}
+
+				$large_result = $this->store_large_file_chunk( $session, $item, $line_offset, $next_offset );
+				if ( is_wp_error( $large_result ) ) {
+					fclose( $manifest );
+					return $large_result;
+				}
+				$session         = $large_result['session'];
+				$manifest_offset = (int) $session['zip_manifest_offset'];
+				$batch_count    += ! empty( $large_result['file_completed'] ) ? 1 : 0;
+				$this->save_session_data( $session['session_dir'], $session );
+				break;
 			}
 
-			$is_large = filesize( $item['path'] ) >= 8 * 1024 * 1024;
-			if ( method_exists( $zip, 'setCompressionName' ) && ( $is_large || in_array( $ext, self::PRECOMPRESSED_EXTENSIONS, true ) ) ) {
-				$zip->setCompressionName( $item['target'], ZipArchive::CM_STORE );
+			$entry_size = $file_size + ( 2 * strlen( $item['target'] ) ) + 256;
+			if ( ! $zip instanceof ZipArchive ) {
+				$volume_path = $this->volume_path( $session, (int) $session['volume_index'] );
+				$zip         = $this->open_volume( $volume_path );
+				if ( is_wp_error( $zip ) ) {
+					fclose( $manifest );
+					return $zip;
+				}
+				$estimated_size = file_exists( $volume_path ) ? (int) filesize( $volume_path ) : 22;
 			}
+
+			if ( $zip->numFiles > 0 && $estimated_size + $entry_size > self::VOLUME_PAYLOAD_SIZE ) {
+				$closed = $this->close_volume( $zip, $volume_path );
+				if ( is_wp_error( $closed ) ) {
+					fclose( $manifest );
+					return $closed;
+				}
+				$session['volume_index']++;
+				$volume_path = $this->volume_path( $session, (int) $session['volume_index'] );
+				$zip         = $this->open_volume( $volume_path );
+				if ( is_wp_error( $zip ) ) {
+					fclose( $manifest );
+					return $zip;
+				}
+				$estimated_size = file_exists( $volume_path ) ? (int) filesize( $volume_path ) : 22;
+			}
+
+			if ( false === $zip->locateName( $item['target'] ) ) {
+				if ( ! $zip->addFile( $item['path'], $item['target'] ) ) {
+					$zip->close();
+					fclose( $manifest );
+					return new WP_Error( 'zip_add_failed', sprintf( __( 'Não foi possível adicionar %s ao lote.', 'dd-maintenance' ), $item['target'] ) );
+				}
+				if ( method_exists( $zip, 'setCompressionName' ) ) {
+					$zip->setCompressionName( $item['target'], ZipArchive::CM_STORE );
+				}
+				$estimated_size += $entry_size;
+			}
+
+			$manifest_offset = $next_offset;
+			$session['processed']++;
+			$batch_count++;
 		}
 
 		fclose( $manifest );
-		if ( ! $zip->close() ) {
-			return new WP_Error( 'zip_close_failed', __( 'Não foi possível concluir o lote de compactação.', 'dd-maintenance' ) );
+		if ( $zip instanceof ZipArchive ) {
+			$closed = $this->close_volume( $zip, $volume_path );
+			if ( is_wp_error( $closed ) ) {
+				return $closed;
+			}
 		}
 
 		$session['zip_manifest_offset'] = $manifest_offset;
-		$session['processed']           = min( (int) $session['total_files'], (int) $session['processed'] + $batch_count );
+		$session['processed']           = min( (int) $session['total_files'], (int) $session['processed'] );
 		$this->save_session_data( $session['session_dir'], $session );
 
 		$completed = $manifest_offset >= $manifest_size;
 		$percent   = $manifest_size > 0 ? min( 100, (int) floor( ( $manifest_offset / $manifest_size ) * 100 ) ) : 100;
-
-		return array(
-			'completed'   => $completed,
-			'processed'   => (int) $session['processed'],
-			'total_files' => (int) $session['total_files'],
-			'batch_count' => $batch_count,
-			'next_offset' => (int) $session['processed'],
-			'percent'     => $percent,
-			'log'         => $completed
-				? __( '[OK] Todos os arquivos foram compactados no pacote.', 'dd-maintenance' )
-				: sprintf(
-					__( '[Compactando] %1$d / %2$d arquivos adicionados ao zip (%3$d%%)...', 'dd-maintenance' ),
-					$session['processed'],
-					$session['total_files'],
-					$percent
-				),
-		);
+		return $this->format_batch_result( $session, $completed, $batch_count, $percent );
 	}
 
 	/**
-	 * Etapa 4: Finaliza o zip (adiciona o database.sql), divide em partes de 25MB e limpa a sessão.
+	 * Etapa 4: Finaliza e publica os volumes ZIP independentes.
 	 *
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
@@ -577,103 +610,91 @@ class DD_Maintenance_Backup {
 		if ( is_wp_error( $session ) ) {
 			return $session;
 		}
-		if ( ! empty( $session['split_completed'] ) ) {
-			return $this->format_final_result( $session, true );
+		if ( ! empty( $session['volumes_completed'] ) ) {
+			return $this->format_final_result( $session );
 		}
 
-		$backup_dir = DD_Maintenance::backup_dir();
-		$zip_file   = $session['zip_file'];
-		$base_name  = $session['base_name'];
-
-		if ( empty( $session['archive_finalized'] ) ) {
-			if ( ! class_exists( 'ZipArchive' ) ) {
-				return new WP_Error( 'zip_missing', __( 'Extensão ZipArchive não disponível.', 'dd-maintenance' ) );
+		if ( empty( $session['metadata_added'] ) ) {
+			$volume_files = $this->session_volume_files( $session );
+			if ( empty( $volume_files ) ) {
+				return new WP_Error( 'volume_empty', __( 'Nenhum lote de backup foi gerado.', 'dd-maintenance' ) );
 			}
 
-			$zip   = new ZipArchive();
-			$flags = file_exists( $zip_file ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
-			if ( true !== $zip->open( $zip_file, $flags ) ) {
-				return new WP_Error( 'zip_finalize_open_failed', __( 'Falha ao abrir zip para inclusão do banco de dados.', 'dd-maintenance' ) );
+			if ( ! empty( $session['large_files'] ) ) {
+				$metadata = wp_json_encode(
+					array(
+						'version' => 1,
+						'files'   => array_values( $session['large_files'] ),
+					)
+				);
+				$last_volume = end( $volume_files );
+				$entry_size  = strlen( $metadata ) + 1024;
+				if ( filesize( $last_volume ) + $entry_size > self::VOLUME_PAYLOAD_SIZE ) {
+					$session['volume_index'] = count( $volume_files ) + 1;
+					$last_volume = $this->volume_path( $session, (int) $session['volume_index'] );
+				}
+
+				$zip = $this->open_volume( $last_volume );
+				if ( is_wp_error( $zip ) ) {
+					return $zip;
+				}
+				if ( false === $zip->locateName( '__dd_chunks__/manifest.json' ) ) {
+					$zip->addFromString( '__dd_chunks__/manifest.json', $metadata );
+					$zip->setCompressionName( '__dd_chunks__/manifest.json', ZipArchive::CM_STORE );
+				}
+				$closed = $this->close_volume( $zip, $last_volume );
+				if ( is_wp_error( $closed ) ) {
+					return $closed;
+				}
 			}
 
-			if ( ! empty( $session['settings']['include_db'] ) && file_exists( $session['db_file'] ) && false === $zip->locateName( 'database.sql' ) ) {
-				$zip->addFile( $session['db_file'], 'database.sql' );
-			}
-			if ( ! $zip->close() || ! file_exists( $zip_file ) || filesize( $zip_file ) <= 0 ) {
-				return new WP_Error( 'zip_empty', __( 'O arquivo zip gerado está vazio.', 'dd-maintenance' ) );
-			}
-
-			$session['archive_finalized'] = true;
-			$session['total_size']        = (int) filesize( $zip_file );
-			if ( ! empty( $session['settings']['keep_local'] ) && file_exists( $session['db_file'] ) ) {
-				copy( $session['db_file'], $backup_dir . '/' . $base_name . '.sql' );
-			}
+			$session['metadata_added'] = true;
+			$session['volume_count']   = count( $this->session_volume_files( $session ) );
 			$this->save_session_data( $session['session_dir'], $session );
 		}
 
-		$total_size = (int) $session['total_size'];
-		if ( $total_size <= self::CHUNK_SIZE ) {
-			$final_zip = $backup_dir . '/' . $base_name . '.zip';
-			if ( $zip_file !== $final_zip && file_exists( $zip_file ) && ! rename( $zip_file, $final_zip ) ) {
-				return new WP_Error( 'zip_move_failed', __( 'Não foi possível mover o backup final para a pasta de backups.', 'dd-maintenance' ) );
+		$backup_dir  = DD_Maintenance::backup_dir();
+		$volume_count = (int) $session['volume_count'];
+		$parts        = array();
+		$total_size   = 0;
+
+		for ( $index = 1; $index <= $volume_count; $index++ ) {
+			$source = $this->volume_path( $session, $index );
+			$name   = 1 === $volume_count
+				? $session['base_name'] . '.zip'
+				: sprintf( '%s.part%03d.zip', $session['base_name'], $index );
+			$target = $backup_dir . '/' . $name;
+
+			if ( file_exists( $source ) && ! rename( $source, $target ) ) {
+				return new WP_Error( 'volume_move_failed', sprintf( __( 'Não foi possível finalizar o lote %s.', 'dd-maintenance' ), $name ) );
+			}
+			if ( ! is_file( $target ) ) {
+				return new WP_Error( 'volume_missing', sprintf( __( 'O lote %s não foi encontrado.', 'dd-maintenance' ), $name ) );
 			}
 
-			$session['parts'] = array(
-				array(
-					'file' => $final_zip,
-					'name' => basename( $final_zip ),
-					'size' => $total_size,
-					'part' => 1,
-				),
+			$size = (int) filesize( $target );
+			if ( $size > self::CHUNK_SIZE ) {
+				return new WP_Error( 'volume_oversize', sprintf( __( 'O lote %1$s excedeu 25MB (%2$s).', 'dd-maintenance' ), $name, size_format( $size ) ) );
+			}
+			$parts[] = array(
+				'file' => $target,
+				'name' => $name,
+				'size' => $size,
+				'part' => $index,
 			);
-			$session['split_completed'] = true;
-			$session['split_offset'] = $total_size;
-			$this->save_session_data( $session['session_dir'], $session );
-			return $this->format_final_result( $session, true );
+			$total_size += $size;
 		}
 
-		$part_index = (int) $session['split_part'];
-		$part_name  = sprintf( '%s.part%03d.zip', $base_name, $part_index );
-		$part_path  = $backup_dir . '/' . $part_name;
-		$input      = fopen( $zip_file, 'rb' );
-		$output     = fopen( $part_path, 'wb' );
-		if ( ! $input || ! $output ) {
-			if ( $input ) {
-				fclose( $input );
-			}
-			if ( $output ) {
-				fclose( $output );
-			}
-			return new WP_Error( 'split_file', __( 'Não foi possível abrir os arquivos para divisão do backup.', 'dd-maintenance' ) );
+		if ( ! empty( $session['settings']['keep_local'] ) && is_file( $session['db_file'] ) ) {
+			copy( $session['db_file'], $backup_dir . '/' . $session['base_name'] . '.sql' );
 		}
 
-		fseek( $input, (int) $session['split_offset'] );
-		$copied = stream_copy_to_stream( $input, $output, self::CHUNK_SIZE );
-		fclose( $input );
-		fclose( $output );
-		if ( false === $copied || $copied <= 0 ) {
-			@unlink( $part_path );
-			return new WP_Error( 'split_write', __( 'Não foi possível gravar a próxima parte do backup.', 'dd-maintenance' ) );
-		}
-
-		$session['parts'][] = array(
-			'file' => $part_path,
-			'name' => $part_name,
-			'size' => (int) $copied,
-			'part' => $part_index,
-		);
-		$session['split_offset'] += (int) $copied;
-		$session['split_part']++;
-		$completed = $session['split_offset'] >= $total_size;
-		if ( $completed ) {
-			$session['split_completed'] = true;
-		}
+		$session['parts']             = $parts;
+		$session['total_size']        = $total_size;
+		$session['volumes_completed'] = true;
 		$this->save_session_data( $session['session_dir'], $session );
-		if ( $completed ) {
-			@unlink( $zip_file );
-		}
 
-		return $this->format_final_result( $session, $completed );
+		return $this->format_final_result( $session );
 	}
 
 	/**
@@ -742,43 +763,207 @@ class DD_Maintenance_Backup {
 	}
 
 	/**
-	 * Monta a resposta da divisão sem perder o progresso persistido.
+	 * Monta a resposta de progresso da criação dos volumes.
 	 *
-	 * @param array $session   Estado atual.
-	 * @param bool  $completed Divisão concluída.
+	 * @param array $session     Estado atual.
+	 * @param bool  $completed   Todos os arquivos processados.
+	 * @param int   $batch_count Arquivos processados nesta chamada.
+	 * @param int   $percent     Progresso.
 	 * @return array
 	 */
-	private function format_final_result( array $session, bool $completed ): array {
-		$total_size  = (int) $session['total_size'];
-		$total_parts = $total_size > 0 ? (int) ceil( $total_size / self::CHUNK_SIZE ) : 0;
-		$parts       = isset( $session['parts'] ) && is_array( $session['parts'] ) ? $session['parts'] : array();
-		$result      = array(
+	private function format_batch_result( array $session, bool $completed, int $batch_count, int $percent ): array {
+		return array(
 			'completed'   => $completed,
+			'processed'   => (int) $session['processed'],
+			'total_files' => (int) $session['total_files'],
+			'batch_count' => $batch_count,
+			'next_offset' => (int) $session['processed'],
+			'percent'     => $percent,
+			'log'         => $completed
+				? __( '[OK] Todos os arquivos foram distribuídos nos lotes de 25MB.', 'dd-maintenance' )
+				: sprintf(
+					__( '[Lotes] %1$d/%2$d arquivos processados; volume atual: %3$d (%4$d%%)...', 'dd-maintenance' ),
+					$session['processed'],
+					$session['total_files'],
+					$session['volume_index'],
+					$percent
+				),
+		);
+	}
+
+	/**
+	 * Monta a resposta final dos volumes independentes.
+	 *
+	 * @param array $session Estado final.
+	 * @return array
+	 */
+	private function format_final_result( array $session ): array {
+		$parts      = isset( $session['parts'] ) && is_array( $session['parts'] ) ? $session['parts'] : array();
+		$total_size = (int) $session['total_size'];
+		$result     = array(
+			'completed'   => true,
 			'base'        => $session['base_name'],
 			'parts'       => $parts,
 			'total_size'  => $total_size,
-			'total_parts' => $total_parts,
-			'percent'     => $completed ? 100 : ( $total_size > 0 ? min( 100, (int) floor( ( (int) $session['split_offset'] / $total_size ) * 100 ) ) : 100 ),
-			'log'         => $completed
-				? sprintf(
-					__( '[OK] Backup finalizado: %1$d parte(s) de até 25MB geradas (Total: %2$s)', 'dd-maintenance' ),
-					count( $parts ),
-					size_format( $total_size )
-				)
-				: sprintf(
-					__( '[Dividindo] %1$d/%2$d parte(s) de 25MB geradas...', 'dd-maintenance' ),
-					count( $parts ),
-					$total_parts
-				),
+			'total_parts' => count( $parts ),
+			'percent'     => 100,
+			'log'         => sprintf(
+				__( '[OK] Backup finalizado: %1$d lote(s) ZIP sem compressão, cada um com até 25MB (Total: %2$s)', 'dd-maintenance' ),
+				count( $parts ),
+				size_format( $total_size )
+			),
 		);
 
-		if ( $completed && ! empty( $parts ) ) {
+		if ( ! empty( $parts ) ) {
 			$result['file'] = $parts[0]['file'];
 			$result['name'] = $parts[0]['name'];
 			$result['size'] = $total_size;
 		}
-
 		return $result;
+	}
+
+	/**
+	 * Caminho temporário de um volume.
+	 *
+	 * @param array $session Estado atual.
+	 * @param int   $index   Número do volume.
+	 * @return string
+	 */
+	private function volume_path( array $session, int $index ): string {
+		return sprintf( '%s/%s.volume%06d.zip', $session['session_dir'], $session['base_name'], $index );
+	}
+
+	/**
+	 * Abre um volume existente ou novo.
+	 *
+	 * @param string $path Caminho do volume.
+	 * @return ZipArchive|WP_Error
+	 */
+	private function open_volume( string $path ) {
+		$zip   = new ZipArchive();
+		$flags = file_exists( $path ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
+		if ( true !== $zip->open( $path, $flags ) ) {
+			return new WP_Error( 'volume_open_failed', __( 'Não foi possível abrir um lote ZIP de 25MB.', 'dd-maintenance' ) );
+		}
+		return $zip;
+	}
+
+	/**
+	 * Fecha e valida o limite físico do volume.
+	 *
+	 * @param ZipArchive $zip  Volume aberto.
+	 * @param string     $path Caminho do volume.
+	 * @return true|WP_Error
+	 */
+	private function close_volume( $zip, string $path ) {
+		if ( ! $zip->close() ) {
+			return new WP_Error( 'volume_close_failed', __( 'Não foi possível concluir um lote ZIP.', 'dd-maintenance' ) );
+		}
+		clearstatcache( true, $path );
+		if ( ! is_file( $path ) || filesize( $path ) > self::CHUNK_SIZE ) {
+			return new WP_Error( 'volume_oversize', __( 'Um lote ultrapassou o limite físico de 25MB.', 'dd-maintenance' ) );
+		}
+		return true;
+	}
+
+	/**
+	 * Armazena um trecho de arquivo maior que um volume e persiste o mapa para restauração.
+	 *
+	 * @param array $session     Estado atual.
+	 * @param array $item        Arquivo do manifesto.
+	 * @param int   $line_offset Início da linha no manifesto.
+	 * @param int   $next_offset Próxima linha no manifesto.
+	 * @return array|WP_Error
+	 */
+	private function store_large_file_chunk( array $session, array $item, int $line_offset, int $next_offset ) {
+		$file_size = (int) filesize( $item['path'] );
+		$offset    = $session['large_file_target'] === $item['target'] ? (int) $session['large_file_offset'] : 0;
+		$hash      = sha1( $item['target'] );
+		$chunk_name = sprintf( '__dd_chunks__/%s.part%06d', $hash, 1 );
+		$max_data   = self::VOLUME_PAYLOAD_SIZE - ( 2 * strlen( $chunk_name ) ) - 512;
+		$part       = (int) floor( $offset / $max_data ) + 1;
+		$chunk_name = sprintf( '__dd_chunks__/%s.part%06d', $hash, $part );
+		$length     = min( $max_data, $file_size - $offset );
+
+		$handle = fopen( $item['path'], 'rb' );
+		if ( ! $handle ) {
+			return new WP_Error( 'large_file_read', sprintf( __( 'Não foi possível ler o arquivo grande %s.', 'dd-maintenance' ), $item['target'] ) );
+		}
+		$data = stream_get_contents( $handle, $length, $offset );
+		fclose( $handle );
+		if ( false === $data || strlen( $data ) !== $length ) {
+			return new WP_Error( 'large_file_chunk', sprintf( __( 'Falha ao ler um trecho de %s.', 'dd-maintenance' ), $item['target'] ) );
+		}
+
+		$volume_path = $this->volume_path( $session, (int) $session['volume_index'] );
+		$zip         = $this->open_volume( $volume_path );
+		if ( is_wp_error( $zip ) ) {
+			return $zip;
+		}
+		if ( false === $zip->locateName( $chunk_name ) && $zip->numFiles > 0 ) {
+			$closed = $this->close_volume( $zip, $volume_path );
+			if ( is_wp_error( $closed ) ) {
+				return $closed;
+			}
+			$session['volume_index']++;
+			$volume_path = $this->volume_path( $session, (int) $session['volume_index'] );
+			$zip         = $this->open_volume( $volume_path );
+			if ( is_wp_error( $zip ) ) {
+				return $zip;
+			}
+		}
+
+		if ( false === $zip->locateName( $chunk_name ) ) {
+			if ( ! $zip->addFromString( $chunk_name, $data ) ) {
+				$zip->close();
+				return new WP_Error( 'large_file_add', sprintf( __( 'Não foi possível adicionar um trecho de %s.', 'dd-maintenance' ), $item['target'] ) );
+			}
+			$zip->setCompressionName( $chunk_name, ZipArchive::CM_STORE );
+		}
+		unset( $data );
+
+		$closed = $this->close_volume( $zip, $volume_path );
+		if ( is_wp_error( $closed ) ) {
+			return $closed;
+		}
+
+		if ( ! isset( $session['large_files'][ $hash ] ) ) {
+			$session['large_files'][ $hash ] = array(
+				'target' => $item['target'],
+				'size'   => $file_size,
+				'chunks' => array(),
+			);
+		}
+		$session['large_files'][ $hash ]['chunks'][ $part ] = $chunk_name;
+		$offset += $length;
+		$file_completed = $offset >= $file_size;
+		$session['large_file_target']   = $file_completed ? '' : $item['target'];
+		$session['large_file_offset']   = $file_completed ? 0 : $offset;
+		$session['zip_manifest_offset'] = $file_completed ? $next_offset : $line_offset;
+		$session['volume_index']++;
+		if ( $file_completed ) {
+			$session['processed']++;
+		}
+
+		return array(
+			'session'        => $session,
+			'file_completed' => $file_completed,
+		);
+	}
+
+	/**
+	 * Lista os volumes temporários em ordem numérica.
+	 *
+	 * @param array $session Estado atual.
+	 * @return array
+	 */
+	private function session_volume_files( array $session ): array {
+		$files = glob( $session['session_dir'] . '/' . $session['base_name'] . '.volume*.zip' );
+		if ( ! is_array( $files ) ) {
+			return array();
+		}
+		natsort( $files );
+		return array_values( $files );
 	}
 
 	/**
