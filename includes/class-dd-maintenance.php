@@ -40,6 +40,7 @@ class DD_Maintenance {
 
 		// Compatibilidade com agendamentos anteriores do Backuper.
 		add_action( 'backuper_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
+		add_action( 'dd_maintenance_backup_continue', array( $this, 'cron_backup_continue' ), 10, 1 );
 	}
 
 	/**
@@ -176,6 +177,7 @@ class DD_Maintenance {
 	public static function deactivate() {
 		wp_clear_scheduled_hook( 'dd_maintenance_daily_maintenance' );
 		wp_clear_scheduled_hook( 'backuper_daily_maintenance' );
+		wp_clear_scheduled_hook( 'dd_maintenance_backup_continue' );
 	}
 
 	/**
@@ -285,12 +287,178 @@ class DD_Maintenance {
 	}
 
 	/**
-	 * Executa a manutenção completa via cron (backup -> S3 -> plugins -> core -> retenção).
+	 * Inicia a manutenção agendada e devolve o controle ao WP-Cron imediatamente.
+	 * Cada evento seguinte executa apenas um lote persistido.
 	 */
 	public function cron_full_maintenance() {
-		$log = $this->run_full();
-		set_transient( 'dd_maintenance_last_log', $log, DAY_IN_SECONDS );
-		set_transient( 'backuper_last_log', $log, DAY_IN_SECONDS );
+		$active = get_option( 'dd_maintenance_background_job', array() );
+		if ( is_array( $active ) && isset( $active['status'], $active['session_id'] ) && 'running' === $active['status'] ) {
+			$this->schedule_backup_continuation( $active['session_id'] );
+			return;
+		}
+
+		$backup  = new DD_Maintenance_Backup();
+		$session = $backup->init_session();
+		if ( is_wp_error( $session ) ) {
+			$log = array( '[ERRO] Backup: ' . $session->get_error_message() );
+			set_transient( 'dd_maintenance_last_log', $log, DAY_IN_SECONDS );
+			set_transient( 'backuper_last_log', $log, DAY_IN_SECONDS );
+			return;
+		}
+
+		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
+		$job       = array(
+			'status'       => 'running',
+			'phase'        => 'database',
+			'session_id'   => $session['session_id'],
+			'session_dir'  => $session['session_dir'],
+			'folder'       => ( $site_slug ? $site_slug : 'site' ) . '/' . current_time( 'Y-m-d' ),
+			'parts'        => array(),
+			'upload_index' => 0,
+			'total_size'   => 0,
+			'started_at'   => time(),
+			'log'          => array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) ),
+		);
+		update_option( 'dd_maintenance_background_job', $job, false );
+		$this->schedule_backup_continuation( $session['session_id'] );
+	}
+
+	/**
+	 * Executa um único lote da manutenção agendada e agenda a continuação.
+	 *
+	 * @param string $session_id ID da sessão.
+	 */
+	public function cron_backup_continue( $session_id ) {
+		$job = get_option( 'dd_maintenance_background_job', array() );
+		if ( ! is_array( $job ) || 'running' !== ( $job['status'] ?? '' ) || $session_id !== ( $job['session_id'] ?? '' ) ) {
+			return;
+		}
+
+		$backup = new DD_Maintenance_Backup();
+		$result = true;
+
+		switch ( $job['phase'] ) {
+			case 'database':
+				$result = $backup->dump_database_step( $session_id );
+				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
+					$job['phase'] = 'index';
+					$job['log'][] = $result['log'];
+				}
+				break;
+
+			case 'index':
+				$result = $backup->index_files_step( $session_id );
+				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
+					$job['phase'] = 'zip';
+					$job['log'][] = $result['log'];
+				}
+				break;
+
+			case 'zip':
+				$result = $backup->zip_batch_step( $session_id );
+				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
+					$job['phase'] = 'finalize';
+					$job['log'][] = $result['log'];
+				}
+				break;
+
+			case 'finalize':
+				$result = $backup->finalize_and_split_step( $session_id );
+				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
+					$job['phase']      = 'upload';
+					$job['parts']      = $result['parts'];
+					$job['total_size'] = $result['total_size'];
+					$job['log'][]      = $result['log'];
+				}
+				break;
+
+			case 'upload':
+				$s3 = new DD_Maintenance_S3();
+				if ( ! $s3->is_configured() ) {
+					$result = new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
+					break;
+				}
+
+				$index = (int) $job['upload_index'];
+				if ( $index < count( $job['parts'] ) ) {
+					$part   = $job['parts'][ $index ];
+					$result = $s3->put_object( $job['folder'] . '/' . $part['name'], $part['file'] );
+					if ( is_wp_error( $result ) ) {
+						break;
+					}
+					$job['upload_index']++;
+					$job['log'][] = sprintf(
+						__( '[OK] Parte %1$d/%2$d enviada: %3$s', 'dd-maintenance' ),
+						$job['upload_index'],
+						count( $job['parts'] ),
+						$part['name']
+					);
+				}
+				if ( $job['upload_index'] >= count( $job['parts'] ) ) {
+					$job['phase'] = 'retention';
+				}
+				break;
+
+			case 'retention':
+				$purged = $this->apply_retention_policy();
+				$job['log'][] = sprintf( __( '[Retenção] %d backup(s) antigo(s) removido(s).', 'dd-maintenance' ), count( $purged ) );
+				$backup->cleanup_session_step( $session_id );
+				$job['phase'] = 'plugins';
+				break;
+
+			case 'plugins':
+				$updater = new DD_Maintenance_Updater();
+				$result  = $updater->update_plugins();
+				if ( is_wp_error( $result ) ) {
+					$job['log'][] = '[ERRO] Plugins: ' . $result->get_error_message();
+					$result       = true;
+				} else {
+					$job['log'][] = '[OK] Plugins atualizados: ' . $result['updated'];
+				}
+				$job['phase'] = 'core';
+				break;
+
+			case 'core':
+				$updater = new DD_Maintenance_Updater();
+				$result  = $updater->update_core();
+				if ( is_wp_error( $result ) ) {
+					$job['log'][] = '[ERRO] Core: ' . $result->get_error_message();
+				} else {
+					$job['log'][] = '[Core] ' . $result['message'];
+				}
+				$job['log'][]     = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
+				$job['phase']     = 'done';
+				$job['status']    = 'completed';
+				$job['finished_at'] = time();
+				$result = true;
+				break;
+		}
+
+		if ( is_wp_error( $result ) ) {
+			$job['status']      = 'error';
+			$job['finished_at'] = time();
+			$job['log'][]       = '[ERRO] ' . $result->get_error_message();
+			$job['log'][]       = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
+		}
+
+		update_option( 'dd_maintenance_background_job', $job, false );
+		set_transient( 'dd_maintenance_last_log', $job['log'], DAY_IN_SECONDS );
+		set_transient( 'backuper_last_log', $job['log'], DAY_IN_SECONDS );
+
+		if ( 'running' === $job['status'] ) {
+			$this->schedule_backup_continuation( $session_id );
+		}
+	}
+
+	/**
+	 * Agenda a próxima unidade de trabalho sem manter a requisição atual aberta.
+	 *
+	 * @param string $session_id ID da sessão.
+	 */
+	private function schedule_backup_continuation( $session_id ) {
+		if ( ! wp_next_scheduled( 'dd_maintenance_backup_continue', array( $session_id ) ) ) {
+			wp_schedule_single_event( time() + 1, 'dd_maintenance_backup_continue', array( $session_id ) );
+		}
 	}
 
 	/**

@@ -650,19 +650,19 @@ class DD_Maintenance_Settings {
 
 				sendAjax('dd_maintenance_ajax_action', { step: 'backup_init' }, function(initData) {
 					var sessionId = initData.session_id;
-					setProgress(8, 'Passo 2: Gerando dump SQL do banco de dados...', '[Sessão] ' + sessionId);
+					setProgress(8, 'Passo 2: Gerando dump SQL do banco de dados em lotes...', '[Sessão] ' + sessionId);
 
-					sendAjax('dd_maintenance_ajax_action', { step: 'backup_db', session_id: sessionId }, function(dbData) {
-						setProgress(18, 'Passo 3: Catalogando arquivos do site...', dbData.log);
+					loopDatabaseBatches(sessionId, function() {
+						setProgress(18, 'Passo 3: Catalogando arquivos do site em lotes...');
 
-						sendAjax('dd_maintenance_ajax_action', { step: 'backup_index', session_id: sessionId }, function(indexData) {
+						loopIndexBatches(sessionId, function(indexData) {
 							var totalFiles = indexData.total_files || 0;
 							setProgress(25, 'Passo 4: Compactando arquivos em lotes (0/' + totalFiles + ')...', indexData.log);
 
 							loopZipBatches(sessionId, 0, totalFiles, function() {
 								setProgress(65, 'Passo 5: Finalizando arquivo e gerando partes de 25MB...', '[Compactação] Todos os lotes foram adicionados ao arquivo.');
 
-								sendAjax('dd_maintenance_ajax_action', { step: 'backup_finalize', session_id: sessionId }, function(finalData) {
+								loopFinalizeBatches(sessionId, function(finalData) {
 									var parts = finalData.parts || [];
 									var folder = finalData.folder || 'site';
 									setProgress(70, 'Passo 6: Enviando ' + parts.length + ' parte(s) para o S3 / Spaces...', finalData.log);
@@ -670,7 +670,7 @@ class DD_Maintenance_Settings {
 									uploadS3PartsSequentially(parts, folder, 0, function() {
 										setProgress(90, 'Passo 7: Aplicando política de retenção...', '[S3] Todas as partes foram enviadas com sucesso.');
 
-										sendAjax('dd_maintenance_ajax_action', { step: 'retention' }, function(retData) {
+										sendAjax('dd_maintenance_ajax_action', { step: 'retention', session_id: sessionId }, function(retData) {
 											if (retData.log) {
 												consoleOut.innerText += '\n' + retData.log;
 												consoleOut.scrollTop = consoleOut.scrollHeight;
@@ -680,36 +680,65 @@ class DD_Maintenance_Settings {
 											setProgress(90, 'Aviso na retenção', '[Aviso] ' + err);
 											if (onSuccess) onSuccess(finalData);
 										});
-
 									}, function(uploadErr) {
 										setProgress(70, 'Erro no envio de partes ao S3', '[ERRO] ' + uploadErr, false, true);
 										if (onError) onError(uploadErr);
 									});
-
 								}, function(err) {
 									setProgress(65, 'Erro ao finalizar backup', '[ERRO] ' + err, false, true);
 									if (onError) onError(err);
 								});
-
 							}, function(batchErr) {
 								setProgress(35, 'Erro na compactação de arquivos', '[ERRO] ' + batchErr, false, true);
 								if (onError) onError(batchErr);
 							});
-
 						}, function(err) {
 							setProgress(18, 'Erro ao indexar arquivos', '[ERRO] ' + err, false, true);
 							if (onError) onError(err);
 						});
-
 					}, function(err) {
 						setProgress(8, 'Erro no dump SQL', '[ERRO] ' + err, false, true);
 						if (onError) onError(err);
 					});
-
 				}, function(err) {
 					setProgress(3, 'Erro ao iniciar sessão', '[ERRO] ' + err, false, true);
 					if (onError) onError(err);
 				});
+			}
+
+			function loopDatabaseBatches(sessionId, onDone, onBatchError) {
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup_db', session_id: sessionId }, function(res) {
+					var pct = 8 + Math.round(((res.percent || 0) / 100) * 10);
+					setProgress(pct, 'Passo 2: Gerando dump SQL (' + (res.percent || 0) + '%)...', res.log);
+					if (res.completed) {
+						if (onDone) onDone(res);
+					} else {
+						setTimeout(function() { loopDatabaseBatches(sessionId, onDone, onBatchError); }, 50);
+					}
+				}, onBatchError);
+			}
+
+			function loopIndexBatches(sessionId, onDone, onBatchError) {
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup_index', session_id: sessionId }, function(res) {
+					setProgress(18, 'Passo 3: Catalogando arquivos (' + (res.total_files || 0) + ' encontrados)...', res.log);
+					if (res.completed) {
+						if (onDone) onDone(res);
+					} else {
+						setTimeout(function() { loopIndexBatches(sessionId, onDone, onBatchError); }, 50);
+					}
+				}, onBatchError);
+			}
+
+			function loopFinalizeBatches(sessionId, onDone, onBatchError) {
+				sendAjax('dd_maintenance_ajax_action', { step: 'backup_finalize', session_id: sessionId }, function(res) {
+					var pct = 65 + Math.round(((res.percent || 0) / 100) * 5);
+					setProgress(pct, 'Passo 5: Gerando partes de 25MB...', res.log);
+					if (res.completed) {
+						if (onDone) onDone(res);
+					} else {
+						setTimeout(function() { loopFinalizeBatches(sessionId, onDone, onBatchError); }, 50);
+					}
+				}, onBatchError);
 			}
 
 			function loopZipBatches(sessionId, offset, totalFiles, onDone, onBatchError) {
@@ -729,11 +758,12 @@ class DD_Maintenance_Settings {
 				});
 			}
 
-			function uploadS3PartsSequentially(parts, folder, index, onAllUploaded, onPartError) {
+			function uploadS3PartsSequentially(parts, folder, index, onAllUploaded, onPartError, attempt) {
 				if (!parts || parts.length === 0 || index >= parts.length) {
 					if (onAllUploaded) onAllUploaded();
 					return;
 				}
+				attempt = attempt || 0;
 
 				var part = parts[index];
 				var totalParts = parts.length;
@@ -756,9 +786,16 @@ class DD_Maintenance_Settings {
 						consoleOut.scrollTop = consoleOut.scrollHeight;
 					}
 
-					uploadS3PartsSequentially(parts, folder, index + 1, onAllUploaded, onPartError);
+					uploadS3PartsSequentially(parts, folder, index + 1, onAllUploaded, onPartError, 0);
 				}, function(err) {
-					if (onPartError) onPartError('Falha ao enviar parte ' + currentNum + '/' + totalParts + ': ' + err);
+					if (attempt < 2) {
+						setProgress(progressPct, 'Tentando novamente a parte ' + currentNum + ' de ' + totalParts + '...', '[S3] Tentativa ' + (attempt + 2) + '/3 após falha: ' + err);
+						setTimeout(function() {
+							uploadS3PartsSequentially(parts, folder, index, onAllUploaded, onPartError, attempt + 1);
+						}, Math.pow(2, attempt) * 1000);
+					} else if (onPartError) {
+						onPartError('Falha ao enviar parte ' + currentNum + '/' + totalParts + ' após 3 tentativas: ' + err);
+					}
 				});
 			}
 
@@ -784,13 +821,33 @@ class DD_Maintenance_Settings {
 				});
 			}
 
-			// Intercepta formulários de Restauração (Upload e Local)
+			// Mantém operações longas fora de uma única requisição ao admin-post.php.
 			document.querySelectorAll('form[action*="admin-post.php"]').forEach(function(f) {
 				var actInput = f.querySelector('input[name="action"]');
 				if (!actInput) return;
 				var actVal = actInput.value;
 
-				if (actVal === 'dd_maintenance_restore_upload') {
+				if (actVal === 'dd_maintenance_run_full') {
+					f.addEventListener('submit', function(e) {
+						e.preventDefault();
+						runFullSequence();
+					});
+				} else if (actVal === 'dd_maintenance_run_backup') {
+					f.addEventListener('submit', function(e) {
+						e.preventDefault();
+						runBackupSequence();
+					});
+				} else if (actVal === 'dd_maintenance_update_plugins') {
+					f.addEventListener('submit', function(e) {
+						e.preventDefault();
+						runPluginsUpdate();
+					});
+				} else if (actVal === 'dd_maintenance_update_core') {
+					f.addEventListener('submit', function(e) {
+						e.preventDefault();
+						runCoreUpdate();
+					});
+				} else if (actVal === 'dd_maintenance_restore_upload') {
 					f.addEventListener('submit', function(e) {
 						e.preventDefault();
 						var fileInput = f.querySelector('input[name="backup_zip[]"]') || f.querySelector('input[name="backup_zip"]');
@@ -2080,15 +2137,8 @@ class DD_Maintenance_Settings {
 				$site_slug = $site_slug ? $site_slug : 'site';
 				$folder    = $site_slug . '/' . current_time( 'Y-m-d' );
 
-				wp_send_json_success(
-					array(
-						'parts'       => $result['parts'],
-						'folder'      => $folder,
-						'total_parts' => $result['total_parts'],
-						'total_size'  => $result['total_size'],
-						'log'         => $result['log'],
-					)
-				);
+				$result['folder'] = $folder;
+				wp_send_json_success( $result );
 				break;
 
 			case 's3_upload_part':
@@ -2104,9 +2154,13 @@ class DD_Maintenance_Settings {
 				$total_parts = isset( $_POST['total_parts'] ) ? (int) $_POST['total_parts'] : 1;
 				$folder      = isset( $_POST['folder'] ) ? sanitize_text_field( wp_unslash( $_POST['folder'] ) ) : 'site/' . current_time( 'Y-m-d' );
 
-				if ( empty( $part_file ) || ! file_exists( $part_file ) ) {
+				$backup_dir = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+				$real_file  = $part_file ? realpath( $part_file ) : false;
+				$real_file  = $real_file ? wp_normalize_path( $real_file ) : '';
+				if ( empty( $real_file ) || 0 !== strpos( $real_file, $backup_dir . '/' ) || basename( $real_file ) !== $part_name ) {
 					wp_send_json_error( array( 'message' => __( 'Arquivo da parte de backup não encontrado no servidor.', 'dd-maintenance' ) ) );
 				}
+				$part_file = $real_file;
 
 				$key    = $folder . '/' . $part_name;
 				$upload = $s3->put_object( $key, $part_file );
@@ -2131,6 +2185,12 @@ class DD_Maintenance_Settings {
 				$log    = ! empty( $purged )
 					? sprintf( __( '[OK] Retenção: %d backup(s) antigo(s) removido(s).', 'dd-maintenance' ), count( $purged ) )
 					: __( '[OK] Retenção verificada (nenhum backup antigo para expurgar).', 'dd-maintenance' );
+
+				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				if ( $session_id ) {
+					$backup = new DD_Maintenance_Backup();
+					$backup->cleanup_session_step( $session_id );
+				}
 
 				wp_send_json_success( array( 'log' => $log ) );
 				break;

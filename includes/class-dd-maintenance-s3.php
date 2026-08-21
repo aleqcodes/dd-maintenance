@@ -391,6 +391,9 @@ class DD_Maintenance_S3 {
 	 * @return array|WP_Error
 	 */
 	private function stream_put( $url, $headers, $file, $size ) {
+		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
+			@set_time_limit( 90 );
+		}
 		if ( function_exists( 'curl_init' ) ) {
 			$handle = fopen( $file, 'rb' );
 			if ( ! $handle ) {
@@ -419,8 +422,8 @@ class DD_Maintenance_S3 {
 					CURLOPT_INFILESIZE     => $size,
 					CURLOPT_RETURNTRANSFER => true,
 					CURLOPT_FOLLOWLOCATION => true,
-					CURLOPT_CONNECTTIMEOUT => 30,
-					CURLOPT_TIMEOUT        => 3600,
+					CURLOPT_CONNECTTIMEOUT => 10,
+					CURLOPT_TIMEOUT        => 75,
 					CURLOPT_SSL_VERIFYPEER => true,
 					CURLOPT_SSL_VERIFYHOST => 2,
 				)
@@ -444,7 +447,7 @@ class DD_Maintenance_S3 {
 			$url,
 			array(
 				'method'  => 'PUT',
-				'timeout' => 3600,
+				'timeout' => 75,
 				'headers' => $headers,
 				'body'    => file_get_contents( $file ),
 			)

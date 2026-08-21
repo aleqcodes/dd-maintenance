@@ -17,11 +17,12 @@ class DD_Maintenance_Backup {
 	const CHUNK_SIZE = 26214400;
 
 	/**
-	 * Quantidade de arquivos adicionados ao zip por lote AJAX (mantém a execução abaixo de 10s).
-	 *
-	 * @var int
+	 * Limites de trabalho por requisição. O relógio, e não apenas a quantidade de
+	 * arquivos, mantém cada resposta bem abaixo do timeout do proxy.
 	 */
-	const BATCH_FILE_COUNT = 800;
+	const BATCH_FILE_COUNT = 100;
+	const DB_BATCH_SIZE    = 250;
+	const STEP_TIME_LIMIT  = 8;
 
 	/**
 	 * Extensões de mídia pré-compactadas que usam CM_STORE para máxima velocidade.
@@ -67,16 +68,36 @@ class DD_Maintenance_Backup {
 		);
 
 		$session_data = array(
-			'session_id'   => $session_id,
-			'session_dir'  => $session_dir,
-			'base_name'    => $base,
-			'settings'     => $settings,
-			'db_file'      => $session_dir . '/database.sql',
-			'zip_file'     => $session_dir . '/' . $base . '.raw.zip',
-			'manifest_file'=> $session_dir . '/manifest.json',
-			'total_files'  => 0,
-			'processed'    => 0,
-			'created_at'   => time(),
+			'session_id'         => $session_id,
+			'session_dir'        => $session_dir,
+			'base_name'          => $base,
+			'settings'           => $settings,
+			'db_file'            => $session_dir . '/database.sql',
+			'zip_file'           => $session_dir . '/' . $base . '.raw.zip',
+			'manifest_file'      => $session_dir . '/manifest.jsonl',
+			'index_queue_file'   => $session_dir . '/index-queue.jsonl',
+			'total_files'        => 0,
+			'processed'          => 0,
+			'db_initialized'      => false,
+			'db_completed'        => false,
+			'db_table_index'      => 0,
+			'db_row_offset'       => 0,
+			'db_schema_written'   => false,
+			'db_position'         => 0,
+			'index_initialized'   => false,
+			'index_completed'     => false,
+			'index_queue_offset'  => 0,
+			'index_queue_size'    => 0,
+			'manifest_size'       => 0,
+			'indexed_dirs'        => 0,
+			'zip_manifest_offset' => 0,
+			'archive_finalized'   => false,
+			'split_completed'     => false,
+			'split_offset'        => 0,
+			'split_part'          => 1,
+			'total_size'          => 0,
+			'parts'               => array(),
+			'created_at'          => time(),
 		);
 
 		$this->save_session_data( $session_dir, $session_data );
@@ -92,7 +113,15 @@ class DD_Maintenance_Backup {
 	 * @return bool
 	 */
 	private function save_session_data( string $session_dir, array $data ): bool {
-		return (bool) file_put_contents( $session_dir . '/state.json', wp_json_encode( $data ) );
+		$state_file = $session_dir . '/state.json';
+		$temp_file  = $state_file . '.tmp';
+		$json       = wp_json_encode( $data );
+
+		if ( false === $json || false === file_put_contents( $temp_file, $json, LOCK_EX ) ) {
+			return false;
+		}
+
+		return rename( $temp_file, $state_file );
 	}
 
 	/**
@@ -126,6 +155,8 @@ class DD_Maintenance_Backup {
 	 * @return array|WP_Error
 	 */
 	public function dump_database_step( string $session_id ) {
+		global $wpdb;
+
 		$session = $this->get_session_data( $session_id );
 		if ( is_wp_error( $session ) ) {
 			return $session;
@@ -133,31 +164,124 @@ class DD_Maintenance_Backup {
 
 		if ( empty( $session['settings']['include_db'] ) ) {
 			return array(
-				'skipped' => true,
-				'log'     => __( '[Banco] Dump do banco de dados desmarcado nas opções.', 'dd-maintenance' ),
+				'completed' => true,
+				'skipped'   => true,
+				'log'       => __( '[Banco] Dump do banco de dados desmarcado nas opções.', 'dd-maintenance' ),
 			);
 		}
 
-		$start_time = microtime( true );
-		$dump_ok    = $this->dump_database( $session['db_file'] );
-
-		if ( is_wp_error( $dump_ok ) ) {
-			return $dump_ok;
+		if ( ! empty( $session['db_completed'] ) ) {
+			return array(
+				'completed' => true,
+				'percent'   => 100,
+				'size'      => file_exists( $session['db_file'] ) ? (int) filesize( $session['db_file'] ) : 0,
+				'log'       => __( '[OK] Dump do banco gerado com sucesso.', 'dd-maintenance' ),
+			);
 		}
 
-		$elapsed = round( microtime( true ) - $start_time, 2 );
-		$size    = (int) filesize( $session['db_file'] );
+		$tables      = $wpdb->get_col( 'SHOW TABLES' );
+		$total       = count( $tables );
+		$deadline    = microtime( true ) + self::STEP_TIME_LIMIT;
+		$initialized = ! empty( $session['db_initialized'] );
+		$handle      = fopen( $session['db_file'], $initialized ? 'c+b' : 'w+b' );
+
+		if ( ! $handle ) {
+			return new WP_Error( 'db_file', __( 'Não foi possível criar o arquivo do banco de dados.', 'dd-maintenance' ) );
+		}
+
+		if ( ! $initialized ) {
+			$header = "-- DD Maintenance database dump\n"
+				. '-- Site: ' . ( function_exists( 'home_url' ) ? home_url() : '' ) . "\n"
+				. '-- Data: ' . date( 'Y-m-d H:i:s' ) . "\n\n"
+				. "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n";
+			fwrite( $handle, $header );
+			$session['db_initialized'] = true;
+			$session['db_position']    = ftell( $handle );
+			$this->save_session_data( $session['session_dir'], $session );
+		} else {
+			$position = isset( $session['db_position'] ) ? (int) $session['db_position'] : 0;
+			ftruncate( $handle, $position );
+			fseek( $handle, $position );
+		}
+
+		while ( $session['db_table_index'] < $total && microtime( true ) < $deadline ) {
+			$table       = $tables[ $session['db_table_index'] ];
+			$quoted_name = str_replace( '`', '``', $table );
+
+			if ( empty( $session['db_schema_written'] ) ) {
+				$create = $wpdb->get_row( "SHOW CREATE TABLE `{$quoted_name}`", ARRAY_N );
+				if ( empty( $create[1] ) ) {
+					$session['db_table_index']++;
+					continue;
+				}
+
+				fwrite( $handle, "\nDROP TABLE IF EXISTS `{$quoted_name}`;\n" . $create[1] . ";\n\n" );
+				fflush( $handle );
+				$session['db_schema_written'] = true;
+				$session['db_position']       = ftell( $handle );
+				$this->save_session_data( $session['session_dir'], $session );
+			}
+
+			$offset = (int) $session['db_row_offset'];
+			$rows   = $wpdb->get_results(
+				"SELECT * FROM `{$quoted_name}` LIMIT {$offset}, " . self::DB_BATCH_SIZE,
+				ARRAY_A
+			);
+
+			if ( ! empty( $wpdb->last_error ) ) {
+				fclose( $handle );
+				return new WP_Error( 'db_query', $wpdb->last_error );
+			}
+
+			$sql = '';
+			foreach ( $rows as $row ) {
+				$values = array();
+				foreach ( $row as $value ) {
+					$values[] = null === $value ? 'NULL' : "'" . $wpdb->_real_escape( (string) $value ) . "'";
+				}
+				$sql .= "INSERT INTO `{$quoted_name}` VALUES (" . implode( ', ', $values ) . ");\n";
+			}
+
+			if ( '' !== $sql ) {
+				fwrite( $handle, $sql );
+				fflush( $handle );
+			}
+
+			$row_count = count( $rows );
+			if ( $row_count < self::DB_BATCH_SIZE ) {
+				$session['db_table_index']++;
+				$session['db_row_offset']     = 0;
+				$session['db_schema_written'] = false;
+			} else {
+				$session['db_row_offset'] += $row_count;
+			}
+
+			$session['db_position'] = ftell( $handle );
+			$this->save_session_data( $session['session_dir'], $session );
+		}
+
+		$completed = $session['db_table_index'] >= $total;
+		if ( $completed ) {
+			fwrite( $handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n-- Fim do dump\n" );
+			fflush( $handle );
+			$session['db_completed'] = true;
+			$session['db_position']  = ftell( $handle );
+			$this->save_session_data( $session['session_dir'], $session );
+		}
+		fclose( $handle );
+
+		$processed = min( $total, (int) $session['db_table_index'] );
+		$percent   = $total > 0 ? (int) floor( ( $processed / $total ) * 100 ) : 100;
 
 		return array(
-			'success' => true,
-			'size'    => $size,
-			'elapsed' => $elapsed,
-			'log'     => sprintf(
-				/* translators: 1: Tamanho do dump SQL, 2: Tempo em segundos */
-				__( '[OK] Dump do banco gerado com sucesso: %1$s em %2$ss.', 'dd-maintenance' ),
-				size_format( $size ),
-				$elapsed
-			),
+			'completed'        => $completed,
+			'processed_tables' => $processed,
+			'total_tables'     => $total,
+			'percent'          => $percent,
+			'size'             => file_exists( $session['db_file'] ) ? (int) filesize( $session['db_file'] ) : 0,
+			'log'              => $completed
+				? __( '[OK] Dump do banco gerado com sucesso.', 'dd-maintenance' )
+				: sprintf( __( '[Banco] %1$d/%2$d tabelas processadas (%3$d%%).', 'dd-maintenance' ), $processed, $total, $percent ),
 		);
 	}
 
@@ -173,89 +297,161 @@ class DD_Maintenance_Backup {
 			return $session;
 		}
 
-		$sources     = array();
+		if ( ! empty( $session['index_completed'] ) ) {
+			return array(
+				'completed'   => true,
+				'total_files' => (int) $session['total_files'],
+				'log'         => sprintf( __( '[OK] %d arquivos catalogados para compactação.', 'dd-maintenance' ), $session['total_files'] ),
+			);
+		}
+
 		$backup_dirs = array(
-			wp_normalize_path( DD_Maintenance::backup_dir() ),
-			wp_normalize_path( WP_CONTENT_DIR . '/uploads/backuper' ),
-			wp_normalize_path( WP_CONTENT_DIR . '/cache' ),
+			rtrim( wp_normalize_path( DD_Maintenance::backup_dir() ), '/' ),
+			rtrim( wp_normalize_path( WP_CONTENT_DIR . '/uploads/backuper' ), '/' ),
+			rtrim( wp_normalize_path( WP_CONTENT_DIR . '/cache' ), '/' ),
 		);
 
-		if ( ! empty( $session['settings']['include_entire'] ) ) {
-			$sources['site'] = ABSPATH;
-		} else {
-			if ( ! empty( $session['settings']['include_wpconfig'] ) && file_exists( ABSPATH . 'wp-config.php' ) ) {
-				$sources['wp-config.php'] = ABSPATH . 'wp-config.php';
+		if ( empty( $session['index_initialized'] ) ) {
+			$sources = array();
+			if ( ! empty( $session['settings']['include_entire'] ) ) {
+				$sources['site'] = ABSPATH;
+			} else {
+				if ( ! empty( $session['settings']['include_wpconfig'] ) && file_exists( ABSPATH . 'wp-config.php' ) ) {
+					$sources['wp-config.php'] = ABSPATH . 'wp-config.php';
+				}
+				if ( ! empty( $session['settings']['include_wpcontent'] ) ) {
+					$sources['wp-content'] = WP_CONTENT_DIR;
+				}
 			}
-			if ( ! empty( $session['settings']['include_wpcontent'] ) ) {
-				$sources['wp-content'] = WP_CONTENT_DIR;
+
+			$manifest = fopen( $session['manifest_file'], 'wb' );
+			$queue    = fopen( $session['index_queue_file'], 'wb' );
+			if ( ! $manifest || ! $queue ) {
+				if ( $manifest ) {
+					fclose( $manifest );
+				}
+				if ( $queue ) {
+					fclose( $queue );
+				}
+				return new WP_Error( 'index_file', __( 'Não foi possível criar os arquivos de índice do backup.', 'dd-maintenance' ) );
+			}
+
+			foreach ( $sources as $archive_name => $path ) {
+				$path         = rtrim( wp_normalize_path( $path ), '/' );
+				$archive_name = trim( $archive_name, '/' );
+				$entry        = array( 'path' => $path, 'target' => $archive_name );
+				if ( is_file( $path ) ) {
+					fwrite( $manifest, wp_json_encode( $entry ) . "\n" );
+					$session['total_files']++;
+				} elseif ( is_dir( $path ) ) {
+					fwrite( $queue, wp_json_encode( $entry ) . "\n" );
+				}
+			}
+
+			fclose( $manifest );
+			fclose( $queue );
+			$session['index_initialized'] = true;
+			$session['manifest_size']     = (int) filesize( $session['manifest_file'] );
+			$session['index_queue_size']  = (int) filesize( $session['index_queue_file'] );
+			$this->save_session_data( $session['session_dir'], $session );
+		} else {
+			if ( ! $this->truncate_file( $session['manifest_file'], (int) $session['manifest_size'] )
+				|| ! $this->truncate_file( $session['index_queue_file'], (int) $session['index_queue_size'] ) ) {
+				return new WP_Error( 'index_recover', __( 'Não foi possível recuperar o último checkpoint da indexação.', 'dd-maintenance' ) );
 			}
 		}
 
-		$file_list = array();
+		$deadline  = microtime( true ) + self::STEP_TIME_LIMIT;
+		$completed = false;
 
-		foreach ( $sources as $archive_name => $path ) {
-			$archive_name = trim( $archive_name, '/' );
+		while ( microtime( true ) < $deadline ) {
+			$reader = fopen( $session['index_queue_file'], 'rb' );
+			if ( ! $reader ) {
+				return new WP_Error( 'index_queue_read', __( 'Não foi possível ler a fila de indexação.', 'dd-maintenance' ) );
+			}
+			fseek( $reader, (int) $session['index_queue_offset'] );
+			$line        = fgets( $reader );
+			$next_offset = ftell( $reader );
+			fclose( $reader );
 
-			if ( is_file( $path ) ) {
-				$file_list[] = array(
-					'path'   => wp_normalize_path( $path ),
-					'target' => $archive_name,
-				);
-			} elseif ( is_dir( $path ) ) {
-				$abs_path = wp_normalize_path( $path );
+			if ( false === $line ) {
+				$completed = true;
+				break;
+			}
 
-				$iterator = new RecursiveIteratorIterator(
-					new RecursiveDirectoryIterator( $abs_path, FilesystemIterator::SKIP_DOTS ),
-					RecursiveIteratorIterator::SELF_FIRST
-				);
+			$directory = json_decode( $line, true );
+			if ( ! is_array( $directory ) || empty( $directory['path'] ) || empty( $directory['target'] ) ) {
+				$session['index_queue_offset'] = $next_offset;
+				continue;
+			}
 
-				foreach ( $iterator as $item ) {
-					$item_path = wp_normalize_path( $item->getPathname() );
+			$children = @scandir( $directory['path'] );
+			$manifest = fopen( $session['manifest_file'], 'ab' );
+			$queue    = fopen( $session['index_queue_file'], 'ab' );
+			if ( ! $manifest || ! $queue ) {
+				if ( $manifest ) {
+					fclose( $manifest );
+				}
+				if ( $queue ) {
+					fclose( $queue );
+				}
+				return new WP_Error( 'index_append', __( 'Não foi possível atualizar o índice do backup.', 'dd-maintenance' ) );
+			}
 
-					// Ignora pastas de backup e cache
-					$is_ignored = false;
-					foreach ( $backup_dirs as $b_dir ) {
-						if ( $item_path === $b_dir || 0 === strpos( $item_path, $b_dir . '/' ) ) {
-							$is_ignored = true;
-							break;
-						}
-					}
-
-					$filename = $item->getFilename();
-					if ( '.git' === $filename || 'node_modules' === $filename || '.temp' === $filename ) {
-						$is_ignored = true;
-					}
-
-					if ( $is_ignored || ! $item->isFile() ) {
+			if ( is_array( $children ) ) {
+				foreach ( $children as $filename ) {
+					if ( '.' === $filename || '..' === $filename || in_array( $filename, array( '.git', 'node_modules', '.temp' ), true ) ) {
 						continue;
 					}
 
-					$relative = ltrim( substr( $item_path, strlen( $abs_path ) ), '/' );
-					$relative = str_replace( '\\', '/', $relative );
-					$target   = $archive_name . '/' . $relative;
+					$item_path = wp_normalize_path( rtrim( $directory['path'], '/' ) . '/' . $filename );
+					$ignored   = false;
+					foreach ( $backup_dirs as $backup_dir ) {
+						if ( $item_path === $backup_dir || 0 === strpos( $item_path, $backup_dir . '/' ) ) {
+							$ignored = true;
+							break;
+						}
+					}
+					if ( $ignored || is_link( $item_path ) ) {
+						continue;
+					}
 
-					$file_list[] = array(
+					$entry = array(
 						'path'   => $item_path,
-						'target' => $target,
+						'target' => trim( $directory['target'], '/' ) . '/' . $filename,
 					);
+					if ( is_file( $item_path ) ) {
+						fwrite( $manifest, wp_json_encode( $entry ) . "\n" );
+						$session['total_files']++;
+					} elseif ( is_dir( $item_path ) ) {
+						fwrite( $queue, wp_json_encode( $entry ) . "\n" );
+					}
 				}
 			}
+
+			fclose( $manifest );
+			fclose( $queue );
+			clearstatcache( true, $session['index_queue_file'] );
+			clearstatcache( true, $session['manifest_file'] );
+			$session['index_queue_offset'] = $next_offset;
+			$session['index_queue_size']   = (int) filesize( $session['index_queue_file'] );
+			$session['manifest_size']      = (int) filesize( $session['manifest_file'] );
+			$session['indexed_dirs']++;
+			$this->save_session_data( $session['session_dir'], $session );
 		}
 
-		$total = count( $file_list );
-		file_put_contents( $session['manifest_file'], wp_json_encode( $file_list ) );
-
-		$session['total_files'] = $total;
-		$this->save_session_data( $session['session_dir'], $session );
+		if ( $completed ) {
+			$session['index_completed'] = true;
+			$this->save_session_data( $session['session_dir'], $session );
+		}
 
 		return array(
-			'total_files' => $total,
-			'total_batches' => ceil( $total / self::BATCH_FILE_COUNT ),
-			'log'         => sprintf(
-				/* translators: %d: Quantidade de arquivos catalogados */
-				__( '[OK] %d arquivos catalogados para compactação.', 'dd-maintenance' ),
-				$total
-			),
+			'completed'    => $completed,
+			'total_files'  => (int) $session['total_files'],
+			'indexed_dirs' => (int) $session['indexed_dirs'],
+			'log'          => $completed
+				? sprintf( __( '[OK] %d arquivos catalogados para compactação.', 'dd-maintenance' ), $session['total_files'] )
+				: sprintf( __( '[Indexando] %1$d arquivos encontrados em %2$d pastas...', 'dd-maintenance' ), $session['total_files'], $session['indexed_dirs'] ),
 		);
 	}
 
@@ -273,78 +469,98 @@ class DD_Maintenance_Backup {
 		if ( is_wp_error( $session ) ) {
 			return $session;
 		}
-
 		if ( ! file_exists( $session['manifest_file'] ) ) {
 			return new WP_Error( 'manifest_missing', __( 'Manifesto de arquivos não encontrado.', 'dd-maintenance' ) );
 		}
-
-		$file_list = json_decode( (string) file_get_contents( $session['manifest_file'] ), true );
-		if ( ! is_array( $file_list ) ) {
-			return new WP_Error( 'manifest_invalid', __( 'Lista de arquivos inválida.', 'dd-maintenance' ) );
-		}
-
-		$total_files = count( $file_list );
-		if ( $offset >= $total_files ) {
-			return array(
-				'completed'   => true,
-				'processed'   => $total_files,
-				'total_files' => $total_files,
-				'percent'     => 100,
-				'log'         => __( '[OK] Todos os arquivos foram compactados no pacote.', 'dd-maintenance' ),
-			);
-		}
-
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'zip_missing', __( 'Extensão ZipArchive não disponível.', 'dd-maintenance' ) );
 		}
 
+		$manifest_size   = (int) filesize( $session['manifest_file'] );
+		$manifest_offset = isset( $session['zip_manifest_offset'] ) ? (int) $session['zip_manifest_offset'] : 0;
+		if ( $manifest_offset >= $manifest_size ) {
+			return array(
+				'completed'   => true,
+				'processed'   => (int) $session['processed'],
+				'total_files' => (int) $session['total_files'],
+				'percent'     => 100,
+				'next_offset' => (int) $session['processed'],
+				'log'         => __( '[OK] Todos os arquivos foram compactados no pacote.', 'dd-maintenance' ),
+			);
+		}
+
+		$manifest = fopen( $session['manifest_file'], 'rb' );
+		if ( ! $manifest ) {
+			return new WP_Error( 'manifest_read', __( 'Não foi possível ler o manifesto de arquivos.', 'dd-maintenance' ) );
+		}
+		fseek( $manifest, $manifest_offset );
+
 		$zip   = new ZipArchive();
 		$flags = file_exists( $session['zip_file'] ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
-
 		if ( true !== $zip->open( $session['zip_file'], $flags ) ) {
+			fclose( $manifest );
 			return new WP_Error( 'zip_open_failed', __( 'Não foi possível abrir o arquivo zip para adicionar o lote.', 'dd-maintenance' ) );
 		}
 
-		$batch_items = array_slice( $file_list, $offset, self::BATCH_FILE_COUNT );
-		$batch_count = count( $batch_items );
+		$deadline    = microtime( true ) + self::STEP_TIME_LIMIT;
+		$batch_count = 0;
+		while ( $batch_count < self::BATCH_FILE_COUNT && microtime( true ) < $deadline ) {
+			$line = fgets( $manifest );
+			if ( false === $line ) {
+				break;
+			}
 
-		foreach ( $batch_items as $item ) {
-			if ( ! file_exists( $item['path'] ) ) {
+			$manifest_offset = ftell( $manifest );
+			$item            = json_decode( $line, true );
+			$batch_count++;
+
+			if ( ! is_array( $item ) || empty( $item['path'] ) || empty( $item['target'] ) || ! is_file( $item['path'] ) ) {
+				continue;
+			}
+			if ( false !== $zip->locateName( $item['target'] ) ) {
 				continue;
 			}
 
 			$ext = strtolower( pathinfo( $item['path'], PATHINFO_EXTENSION ) );
-			$zip->addFile( $item['path'], $item['target'] );
+			if ( ! $zip->addFile( $item['path'], $item['target'] ) ) {
+				$zip->close();
+				fclose( $manifest );
+				return new WP_Error( 'zip_add_failed', sprintf( __( 'Não foi possível adicionar %s ao backup.', 'dd-maintenance' ), $item['target'] ) );
+			}
 
-			// Se for mídia pré-compactada (imagens, vídeos, pdfs, zips), usa CM_STORE para velocidade instantânea (zero delay de CPU).
-			if ( in_array( $ext, self::PRECOMPRESSED_EXTENSIONS, true ) && method_exists( $zip, 'setCompressionName' ) ) {
+			$is_large = filesize( $item['path'] ) >= 8 * 1024 * 1024;
+			if ( method_exists( $zip, 'setCompressionName' ) && ( $is_large || in_array( $ext, self::PRECOMPRESSED_EXTENSIONS, true ) ) ) {
 				$zip->setCompressionName( $item['target'], ZipArchive::CM_STORE );
 			}
 		}
 
-		$zip->close();
+		fclose( $manifest );
+		if ( ! $zip->close() ) {
+			return new WP_Error( 'zip_close_failed', __( 'Não foi possível concluir o lote de compactação.', 'dd-maintenance' ) );
+		}
 
-		$new_offset = $offset + $batch_count;
-		$is_done    = $new_offset >= $total_files;
-		$pct        = $total_files > 0 ? min( 100, round( ( $new_offset / $total_files ) * 100 ) ) : 100;
-
-		$session['processed'] = $new_offset;
+		$session['zip_manifest_offset'] = $manifest_offset;
+		$session['processed']           = min( (int) $session['total_files'], (int) $session['processed'] + $batch_count );
 		$this->save_session_data( $session['session_dir'], $session );
 
+		$completed = $manifest_offset >= $manifest_size;
+		$percent   = $manifest_size > 0 ? min( 100, (int) floor( ( $manifest_offset / $manifest_size ) * 100 ) ) : 100;
+
 		return array(
-			'completed'   => $is_done,
-			'processed'   => $new_offset,
-			'total_files' => $total_files,
+			'completed'   => $completed,
+			'processed'   => (int) $session['processed'],
+			'total_files' => (int) $session['total_files'],
 			'batch_count' => $batch_count,
-			'next_offset' => $new_offset,
-			'percent'     => $pct,
-			'log'         => sprintf(
-				/* translators: 1: Processados, 2: Total, 3: Porcentagem */
-				__( '[Compactando] %1$d / %2$d arquivos adicionados ao zip (%3$d%%)...', 'dd-maintenance' ),
-				$new_offset,
-				$total_files,
-				$pct
-			),
+			'next_offset' => (int) $session['processed'],
+			'percent'     => $percent,
+			'log'         => $completed
+				? __( '[OK] Todos os arquivos foram compactados no pacote.', 'dd-maintenance' )
+				: sprintf(
+					__( '[Compactando] %1$d / %2$d arquivos adicionados ao zip (%3$d%%)...', 'dd-maintenance' ),
+					$session['processed'],
+					$session['total_files'],
+					$percent
+				),
 		);
 	}
 
@@ -361,68 +577,103 @@ class DD_Maintenance_Backup {
 		if ( is_wp_error( $session ) ) {
 			return $session;
 		}
+		if ( ! empty( $session['split_completed'] ) ) {
+			return $this->format_final_result( $session, true );
+		}
 
 		$backup_dir = DD_Maintenance::backup_dir();
 		$zip_file   = $session['zip_file'];
-
-		if ( ! class_exists( 'ZipArchive' ) ) {
-			return new WP_Error( 'zip_missing', __( 'Extensão ZipArchive não disponível.', 'dd-maintenance' ) );
-		}
-
-		$zip   = new ZipArchive();
-		$flags = file_exists( $zip_file ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
-
-		if ( true !== $zip->open( $zip_file, $flags ) ) {
-			return new WP_Error( 'zip_finalize_open_failed', __( 'Falha ao abrir zip para inclusão do banco de dados.', 'dd-maintenance' ) );
-		}
-
-		// Adiciona o dump SQL na raiz do arquivo zip (database.sql)
-		if ( ! empty( $session['settings']['include_db'] ) && file_exists( $session['db_file'] ) ) {
-			$zip->addFile( $session['db_file'], 'database.sql' );
-		}
-
-		$zip->close();
-
-		if ( ! file_exists( $zip_file ) || filesize( $zip_file ) <= 0 ) {
-			$this->clean_session_directory( $session['session_dir'] );
-			return new WP_Error( 'zip_empty', __( 'O arquivo zip gerado está vazio.', 'dd-maintenance' ) );
-		}
-
-		$total_size = (int) filesize( $zip_file );
 		$base_name  = $session['base_name'];
 
-		// Move o SQL para retenção local se configurado
-		if ( ! empty( $session['settings']['keep_local'] ) && file_exists( $session['db_file'] ) ) {
-			@copy( $session['db_file'], $backup_dir . '/' . $base_name . '.sql' );
+		if ( empty( $session['archive_finalized'] ) ) {
+			if ( ! class_exists( 'ZipArchive' ) ) {
+				return new WP_Error( 'zip_missing', __( 'Extensão ZipArchive não disponível.', 'dd-maintenance' ) );
+			}
+
+			$zip   = new ZipArchive();
+			$flags = file_exists( $zip_file ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
+			if ( true !== $zip->open( $zip_file, $flags ) ) {
+				return new WP_Error( 'zip_finalize_open_failed', __( 'Falha ao abrir zip para inclusão do banco de dados.', 'dd-maintenance' ) );
+			}
+
+			if ( ! empty( $session['settings']['include_db'] ) && file_exists( $session['db_file'] ) && false === $zip->locateName( 'database.sql' ) ) {
+				$zip->addFile( $session['db_file'], 'database.sql' );
+			}
+			if ( ! $zip->close() || ! file_exists( $zip_file ) || filesize( $zip_file ) <= 0 ) {
+				return new WP_Error( 'zip_empty', __( 'O arquivo zip gerado está vazio.', 'dd-maintenance' ) );
+			}
+
+			$session['archive_finalized'] = true;
+			$session['total_size']        = (int) filesize( $zip_file );
+			if ( ! empty( $session['settings']['keep_local'] ) && file_exists( $session['db_file'] ) ) {
+				copy( $session['db_file'], $backup_dir . '/' . $base_name . '.sql' );
+			}
+			$this->save_session_data( $session['session_dir'], $session );
 		}
 
-		// Divide o arquivo .zip em partes de 25MB e move para a pasta principal de backups
-		$parts = $this->split_file_if_needed( $zip_file, $base_name, $backup_dir );
+		$total_size = (int) $session['total_size'];
+		if ( $total_size <= self::CHUNK_SIZE ) {
+			$final_zip = $backup_dir . '/' . $base_name . '.zip';
+			if ( $zip_file !== $final_zip && file_exists( $zip_file ) && ! rename( $zip_file, $final_zip ) ) {
+				return new WP_Error( 'zip_move_failed', __( 'Não foi possível mover o backup final para a pasta de backups.', 'dd-maintenance' ) );
+			}
 
-		// Limpa a pasta temporária da sessão
-		$this->clean_session_directory( $session['session_dir'] );
-
-		if ( is_wp_error( $parts ) ) {
-			return $parts;
+			$session['parts'] = array(
+				array(
+					'file' => $final_zip,
+					'name' => basename( $final_zip ),
+					'size' => $total_size,
+					'part' => 1,
+				),
+			);
+			$session['split_completed'] = true;
+			$session['split_offset'] = $total_size;
+			$this->save_session_data( $session['session_dir'], $session );
+			return $this->format_final_result( $session, true );
 		}
 
-		$total_parts = count( $parts );
+		$part_index = (int) $session['split_part'];
+		$part_name  = sprintf( '%s.part%03d.zip', $base_name, $part_index );
+		$part_path  = $backup_dir . '/' . $part_name;
+		$input      = fopen( $zip_file, 'rb' );
+		$output     = fopen( $part_path, 'wb' );
+		if ( ! $input || ! $output ) {
+			if ( $input ) {
+				fclose( $input );
+			}
+			if ( $output ) {
+				fclose( $output );
+			}
+			return new WP_Error( 'split_file', __( 'Não foi possível abrir os arquivos para divisão do backup.', 'dd-maintenance' ) );
+		}
 
-		return array(
-			'base'        => $base_name,
-			'parts'       => $parts,
-			'total_size'  => $total_size,
-			'total_parts' => $total_parts,
-			'file'        => $parts[0]['file'],
-			'name'        => $parts[0]['name'],
-			'size'        => $total_size,
-			'log'         => sprintf(
-				/* translators: 1: Quantidade de partes, 2: Tamanho formatado */
-				__( '[OK] Backup finalizado: %1$d parte(s) de até 25MB geradas (Total: %2$s)', 'dd-maintenance' ),
-				$total_parts,
-				size_format( $total_size )
-			),
+		fseek( $input, (int) $session['split_offset'] );
+		$copied = stream_copy_to_stream( $input, $output, self::CHUNK_SIZE );
+		fclose( $input );
+		fclose( $output );
+		if ( false === $copied || $copied <= 0 ) {
+			@unlink( $part_path );
+			return new WP_Error( 'split_write', __( 'Não foi possível gravar a próxima parte do backup.', 'dd-maintenance' ) );
+		}
+
+		$session['parts'][] = array(
+			'file' => $part_path,
+			'name' => $part_name,
+			'size' => (int) $copied,
+			'part' => $part_index,
 		);
+		$session['split_offset'] += (int) $copied;
+		$session['split_part']++;
+		$completed = $session['split_offset'] >= $total_size;
+		if ( $completed ) {
+			$session['split_completed'] = true;
+		}
+		$this->save_session_data( $session['session_dir'], $session );
+		if ( $completed ) {
+			@unlink( $zip_file );
+		}
+
+		return $this->format_final_result( $session, $completed );
 	}
 
 	/**
@@ -438,191 +689,113 @@ class DD_Maintenance_Backup {
 		}
 
 		$session_id = $session['session_id'];
-
-		// 1. Dump do banco
-		$db_res = $this->dump_database_step( $session_id );
-		if ( is_wp_error( $db_res ) ) {
-			$this->clean_session_directory( $session['session_dir'] );
-			return $db_res;
-		}
-
-		// 2. Indexa arquivos
-		$idx_res = $this->index_files_step( $session_id );
-		if ( is_wp_error( $idx_res ) ) {
-			$this->clean_session_directory( $session['session_dir'] );
-			return $idx_res;
-		}
-
-		// 3. Compacta em loop de lotes
-		$offset = 0;
-		while ( $offset < $idx_res['total_files'] ) {
-			$batch_res = $this->zip_batch_step( $session_id, $offset );
-			if ( is_wp_error( $batch_res ) ) {
+		do {
+			$result = $this->dump_database_step( $session_id );
+			if ( is_wp_error( $result ) ) {
 				$this->clean_session_directory( $session['session_dir'] );
-				return $batch_res;
+				return $result;
 			}
-			$offset = $batch_res['next_offset'];
-		}
+		} while ( empty( $result['completed'] ) );
 
-		// 4. Finaliza e divide em 25MB
-		return $this->finalize_and_split_step( $session_id );
+		do {
+			$result = $this->index_files_step( $session_id );
+			if ( is_wp_error( $result ) ) {
+				$this->clean_session_directory( $session['session_dir'] );
+				return $result;
+			}
+		} while ( empty( $result['completed'] ) );
+
+		do {
+			$result = $this->zip_batch_step( $session_id );
+			if ( is_wp_error( $result ) ) {
+				$this->clean_session_directory( $session['session_dir'] );
+				return $result;
+			}
+		} while ( empty( $result['completed'] ) );
+
+		do {
+			$result = $this->finalize_and_split_step( $session_id );
+			if ( is_wp_error( $result ) ) {
+				$this->clean_session_directory( $session['session_dir'] );
+				return $result;
+			}
+		} while ( empty( $result['completed'] ) );
+
+		$this->clean_session_directory( $session['session_dir'] );
+		return $result;
 	}
 
 	/**
-	 * Divide o arquivo .zip em partes de 25MB caso o tamanho exceda o limite.
+	 * Remove os temporários após todas as partes terem sido enviadas.
 	 *
-	 * @param string $source_zip Caminho do arquivo zip original.
-	 * @param string $base       Nome base do backup (ex: site-2026-08-20-1330).
-	 * @param string $dir        Diretório onde salvar as partes.
-	 * @return array|WP_Error Lista de partes geradas.
-	 */
-	public function split_file_if_needed( string $source_zip, string $base, string $dir ) {
-		$size = (int) filesize( $source_zip );
-
-		// Se o arquivo for menor ou igual a 25MB, renomeia para nome final .zip simples.
-		if ( $size <= self::CHUNK_SIZE ) {
-			$final_zip = $dir . '/' . $base . '.zip';
-			if ( $source_zip !== $final_zip ) {
-				@rename( $source_zip, $final_zip );
-			}
-
-			return array(
-				array(
-					'file' => $final_zip,
-					'name' => basename( $final_zip ),
-					'size' => $size,
-					'part' => 1,
-				),
-			);
-		}
-
-		// Divide em partes de 25MB.
-		$in_handle = fopen( $source_zip, 'rb' );
-		if ( ! $in_handle ) {
-			return new WP_Error( 'split_read_failed', __( 'Não foi possível ler o arquivo zip para divisão.', 'dd-maintenance' ) );
-		}
-
-		$parts       = array();
-		$part_index  = 1;
-		$buffer_size = 1048576; // 1 MB buffer de leitura
-
-		while ( ! feof( $in_handle ) ) {
-			$part_name = sprintf( '%s.part%03d.zip', $base, $part_index );
-			$part_path = $dir . '/' . $part_name;
-
-			$out_handle = fopen( $part_path, 'wb' );
-			if ( ! $out_handle ) {
-				fclose( $in_handle );
-				return new WP_Error( 'split_write_failed', sprintf( __( 'Não foi possível gravar a parte %s.', 'dd-maintenance' ), $part_name ) );
-			}
-
-			$bytes_written_this_part = 0;
-
-			while ( ! feof( $in_handle ) && $bytes_written_this_part < self::CHUNK_SIZE ) {
-				$bytes_to_read = min( $buffer_size, self::CHUNK_SIZE - $bytes_written_this_part );
-				$chunk = fread( $in_handle, $bytes_to_read );
-				if ( false === $chunk || '' === $chunk ) {
-					break;
-				}
-
-				$written = fwrite( $out_handle, $chunk );
-				if ( false === $written ) {
-					fclose( $out_handle );
-					fclose( $in_handle );
-					return new WP_Error( 'split_write_chunk_failed', __( 'Erro ao escrever dados na parte do arquivo.', 'dd-maintenance' ) );
-				}
-
-				$bytes_written_this_part += $written;
-			}
-
-			fclose( $out_handle );
-
-			if ( $bytes_written_this_part > 0 ) {
-				$parts[] = array(
-					'file' => $part_path,
-					'name' => $part_name,
-					'size' => $bytes_written_this_part,
-					'part' => $part_index,
-				);
-				$part_index++;
-			} else {
-				@unlink( $part_path );
-			}
-		}
-
-		fclose( $in_handle );
-
-		// Remove o zip temporário original não dividido para economizar espaço em disco.
-		@unlink( $source_zip );
-
-		return $parts;
-	}
-
-	/**
-	 * Gera um dump SQL completo do banco de dados em chunks.
-	 *
-	 * @param string $file Caminho do arquivo SQL de saída.
+	 * @param string $session_id ID da sessão.
 	 * @return true|WP_Error
 	 */
-	private function dump_database( $file ) {
-		global $wpdb;
-
-		$handle = fopen( $file, 'w' );
-		if ( ! $handle ) {
-			return new WP_Error( 'db_file', __( 'Não foi possível criar o arquivo do banco de dados.', 'dd-maintenance' ) );
+	public function cleanup_session_step( string $session_id ) {
+		$session = $this->get_session_data( $session_id );
+		if ( is_wp_error( $session ) ) {
+			return $session;
 		}
 
-		fwrite( $handle, "-- DD Maintenance database dump\n" );
-		fwrite( $handle, '-- Site: ' . ( function_exists( 'home_url' ) ? home_url() : '' ) . "\n" );
-		fwrite( $handle, '-- Data: ' . date( 'Y-m-d H:i:s' ) . "\n\n" );
-		fwrite( $handle, 'SET NAMES utf8mb4;' . "\n" );
-		fwrite( $handle, 'SET FOREIGN_KEY_CHECKS = 0;' . "\n\n" );
-
-		$tables = $wpdb->get_col( 'SHOW TABLES' );
-
-		foreach ( $tables as $table ) {
-			$create = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
-			if ( empty( $create[1] ) ) {
-				continue;
-			}
-
-			fwrite( $handle, "\nDROP TABLE IF EXISTS `{$table}`;\n" );
-			fwrite( $handle, $create[1] . ";\n\n" );
-
-			$offset = 0;
-			$chunk  = 500;
-
-			while ( true ) {
-				$rows = $wpdb->get_results( "SELECT * FROM `{$table}` LIMIT {$offset}, {$chunk}", ARRAY_A );
-				if ( empty( $rows ) ) {
-					break;
-				}
-
-				foreach ( $rows as $row ) {
-					$values = array();
-					foreach ( $row as $value ) {
-						if ( null === $value ) {
-							$values[] = 'NULL';
-						} else {
-							$values[] = "'" . $wpdb->_real_escape( (string) $value ) . "'";
-						}
-					}
-					fwrite( $handle, "INSERT INTO `{$table}` VALUES (" . implode( ', ', $values ) . ");\n" );
-				}
-
-				$offset += $chunk;
-				if ( count( $rows ) < $chunk ) {
-					break;
-				}
-			}
-		}
-
-		fwrite( $handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n" );
-		fwrite( $handle, '-- Fim do dump' . "\n" );
-
-		fclose( $handle );
-
+		$this->clean_session_directory( $session['session_dir'] );
 		return true;
+	}
+
+	/**
+	 * Monta a resposta da divisão sem perder o progresso persistido.
+	 *
+	 * @param array $session   Estado atual.
+	 * @param bool  $completed Divisão concluída.
+	 * @return array
+	 */
+	private function format_final_result( array $session, bool $completed ): array {
+		$total_size  = (int) $session['total_size'];
+		$total_parts = $total_size > 0 ? (int) ceil( $total_size / self::CHUNK_SIZE ) : 0;
+		$parts       = isset( $session['parts'] ) && is_array( $session['parts'] ) ? $session['parts'] : array();
+		$result      = array(
+			'completed'   => $completed,
+			'base'        => $session['base_name'],
+			'parts'       => $parts,
+			'total_size'  => $total_size,
+			'total_parts' => $total_parts,
+			'percent'     => $completed ? 100 : ( $total_size > 0 ? min( 100, (int) floor( ( (int) $session['split_offset'] / $total_size ) * 100 ) ) : 100 ),
+			'log'         => $completed
+				? sprintf(
+					__( '[OK] Backup finalizado: %1$d parte(s) de até 25MB geradas (Total: %2$s)', 'dd-maintenance' ),
+					count( $parts ),
+					size_format( $total_size )
+				)
+				: sprintf(
+					__( '[Dividindo] %1$d/%2$d parte(s) de 25MB geradas...', 'dd-maintenance' ),
+					count( $parts ),
+					$total_parts
+				),
+		);
+
+		if ( $completed && ! empty( $parts ) ) {
+			$result['file'] = $parts[0]['file'];
+			$result['name'] = $parts[0]['name'];
+			$result['size'] = $total_size;
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Reverte uma gravação incompleta para o último checkpoint persistido.
+	 *
+	 * @param string $file Caminho do arquivo.
+	 * @param int    $size Tamanho confirmado.
+	 * @return bool
+	 */
+	private function truncate_file( string $file, int $size ): bool {
+		$handle = fopen( $file, 'c+b' );
+		if ( ! $handle ) {
+			return false;
+		}
+		$result = ftruncate( $handle, $size );
+		fclose( $handle );
+		return $result;
 	}
 
 	/**
@@ -658,11 +831,11 @@ class DD_Maintenance_Backup {
 	 */
 	private function set_time_and_memory_limits() {
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
-			@set_time_limit( 0 );
+			@set_time_limit( 30 );
 		}
 		if ( function_exists( 'ini_set' ) ) {
 			@ini_set( 'memory_limit', '512M' );
-			@ini_set( 'max_execution_time', '3600' );
+			@ini_set( 'max_execution_time', '30' );
 		}
 		@ignore_user_abort( true );
 	}
