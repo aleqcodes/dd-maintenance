@@ -34,6 +34,7 @@ class DD_Maintenance_Settings {
 		add_action( 'admin_post_dd_maintenance_delete_s3_backup', array( $this, 'handle_delete_s3_backup' ) );
 		add_action( 'wp_ajax_dd_maintenance_ajax_action', array( $this, 'ajax_handle_action' ) );
 		add_action( 'wp_ajax_dd_maintenance_ajax_restore', array( $this, 'ajax_handle_restore' ) );
+		add_action( 'wp_ajax_nopriv_dd_maintenance_ajax_restore', array( $this, 'ajax_handle_restore' ) );
 		// Compatibilidade com ações legadas do Backuper.
 		add_action( 'admin_post_backuper_save_settings', array( $this, 'save_settings' ) );
 		add_action( 'admin_post_backuper_run_backup', array( $this, 'handle_backup' ) );
@@ -3670,12 +3671,19 @@ class DD_Maintenance_Settings {
 	 * Handler AJAX: restauração com progresso.
 	 */
 	public function ajax_handle_restore() {
-		if ( ! check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false ) ) {
-			wp_send_json_error( array( 'message' => __( 'Sessão expirada ou nonce inválido. Recarregue a página.', 'dd-maintenance' ) ) );
-		}
+		$has_valid_admin_session = is_user_logged_in() && current_user_can( 'manage_options' ) && check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false );
 
-		if ( ! current_user_can( 'manage_options' ) ) {
-			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'dd-maintenance' ) ) );
+		$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+		$upload_session_id  = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
+		$backup_dir         = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+
+		$is_valid_restore_token = (
+			( ! empty( $restore_session_id ) && 0 === strpos( $restore_session_id, 'rst_' ) && is_dir( $backup_dir . '/restore_exec_' . $restore_session_id ) )
+			|| ( ! empty( $upload_session_id ) && 0 === strpos( $upload_session_id, 'upload_restore_' ) && is_dir( $backup_dir . '/' . $upload_session_id ) )
+		);
+
+		if ( ! $has_valid_admin_session && ! $is_valid_restore_token ) {
+			wp_send_json_error( array( 'message' => __( 'Sessão expirada ou sem permissão.', 'dd-maintenance' ) ) );
 		}
 
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
