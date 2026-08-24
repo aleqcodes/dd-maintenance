@@ -477,6 +477,11 @@ class DD_Maintenance_Restore {
 				return new WP_Error( 'restore_extract_failed', sprintf( __( 'Falha ao extrair o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
 
+			// Se o lote veio de um upload temporário, remove o .zip imediatamente após extrair para economizar espaço em disco
+			$temp_upload_dir = $session['temp_upload_dir'] ?? '';
+			if ( ! empty( $temp_upload_dir ) && 0 === strpos( wp_normalize_path( $zip_path ), wp_normalize_path( $temp_upload_dir ) ) ) {
+				@unlink( $zip_path );
+			}
 			$current_index++;
 			$processed++;
 
@@ -833,6 +838,17 @@ class DD_Maintenance_Restore {
 			$this->delete_directory( $temp_upload_dir );
 		}
 
+		if ( class_exists( 'DD_Maintenance_Backup' ) ) {
+			DD_Maintenance_Backup::purge_orphaned_sessions( 300 );
+		}
+
+		if ( function_exists( 'wp_cache_flush' ) ) {
+			@wp_cache_flush();
+		}
+		if ( function_exists( 'opcache_reset' ) ) {
+			@opcache_reset();
+		}
+
 		$session['log'][] = '[Fim da Restauração] ' . current_time( 'Y-m-d H:i:s' );
 
 		return array(
@@ -856,6 +872,9 @@ class DD_Maintenance_Restore {
 			if ( ! empty( $session['temp_upload_dir'] ) && is_dir( $session['temp_upload_dir'] ) ) {
 				$this->delete_directory( $session['temp_upload_dir'] );
 			}
+		}
+		if ( class_exists( 'DD_Maintenance_Backup' ) ) {
+			DD_Maintenance_Backup::purge_orphaned_sessions( 300 );
 		}
 	}
 

@@ -832,7 +832,7 @@ class DD_Maintenance_Backup {
 		$now        = time();
 		$cleaned    = 0;
 
-		$dirs = glob( $backup_dir . '/{session_*,upload-temp-*,temp-restore-*}', GLOB_BRACE | GLOB_ONLYDIR );
+		$dirs = glob( $backup_dir . '/{session_*,upload-temp-*,temp-restore-*,upload_restore_*,restore_exec_*,bk_*}', GLOB_BRACE | GLOB_ONLYDIR );
 		if ( is_array( $dirs ) ) {
 			foreach ( $dirs as $dir ) {
 				$mtime = filemtime( $dir );
@@ -844,9 +844,22 @@ class DD_Maintenance_Backup {
 			}
 		}
 
-		$temp_files = glob( $backup_dir . '/*.{volume*.zip,tmp}', GLOB_BRACE );
+		$temp_files = glob( $backup_dir . '/*.{volume*.zip,tmp,uploading}', GLOB_BRACE );
 		if ( is_array( $temp_files ) ) {
 			foreach ( $temp_files as $file ) {
+				if ( is_file( $file ) ) {
+					$mtime = filemtime( $file );
+					if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds ) {
+						@unlink( $file );
+						$cleaned++;
+					}
+				}
+			}
+		}
+
+		$sub_temp_files = glob( $backup_dir . '/*/*.{tmp,uploading}', GLOB_BRACE );
+		if ( is_array( $sub_temp_files ) ) {
+			foreach ( $sub_temp_files as $file ) {
 				if ( is_file( $file ) ) {
 					$mtime = filemtime( $file );
 					if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds ) {
