@@ -126,6 +126,7 @@ class DD_Maintenance_Settings {
 				'include_wpconfig'  => 1,
 				'include_entire'    => 1,
 				'keep_local'        => 1,
+				'split_size_mb'     => 200,
 				'schedule_enabled'  => 0,
 			)
 		);
@@ -1756,7 +1757,7 @@ class DD_Maintenance_Settings {
 									<strong style="font-family:monospace;font-size:13px;"><?php echo esc_html( $b['identifier'] ); ?></strong>
 									<div style="margin-top:2px;">
 										<?php if ( ! empty( $b['is_multipart'] ) ) : ?>
-											<span class="dd-maint-part-badge"><?php printf( esc_html__( '%d volumes de 25MB', 'dd-maintenance' ), $b['total_parts'] ); ?></span>
+											<span class="dd-maint-part-badge"><?php printf( esc_html__( '%d volumes', 'dd-maintenance' ), $b['total_parts'] ); ?></span>
 										<?php elseif ( ! empty( $b['parts'] ) ) : ?>
 											<span class="dd-maint-part-badge"><?php esc_html_e( 'Volume Único (.zip)', 'dd-maintenance' ); ?></span>
 										<?php endif; ?>
@@ -2071,8 +2072,24 @@ class DD_Maintenance_Settings {
 							</label>
 						</td>
 					</tr>
+					<tr>
+						<th scope="row"><label for="split_size_mb"><?php esc_html_e( 'Divisão de Volumes (Tamanho por Parte)', 'dd-maintenance' ); ?></label></th>
+						<td>
+							<?php $curr_split = isset( $settings['split_size_mb'] ) ? (int) $settings['split_size_mb'] : 200; ?>
+							<select id="split_size_mb" name="split_size_mb">
+								<option value="25" <?php selected( $curr_split, 25 ); ?>><?php esc_html_e( '25 MB (Ultra leve / servidores restritivos)', 'dd-maintenance' ); ?></option>
+								<option value="50" <?php selected( $curr_split, 50 ); ?>><?php esc_html_e( '50 MB', 'dd-maintenance' ); ?></option>
+								<option value="100" <?php selected( $curr_split, 100 ); ?>><?php esc_html_e( '100 MB (Ideal para Cloudflare Free)', 'dd-maintenance' ); ?></option>
+								<option value="200" <?php selected( $curr_split, 200 ); ?>><?php esc_html_e( '200 MB (Recomendado - Rápido)', 'dd-maintenance' ); ?></option>
+								<option value="400" <?php selected( $curr_split, 400 ); ?>><?php esc_html_e( '400 MB (Padrão UpdraftPlus - Ultra Rápido)', 'dd-maintenance' ); ?></option>
+								<option value="500" <?php selected( $curr_split, 500 ); ?>><?php esc_html_e( '500 MB (Arquivos grandes)', 'dd-maintenance' ); ?></option>
+							</select>
+							<p class="description">
+								<?php esc_html_e( 'Tamanhos maiores (200MB a 400MB) reduzem drasticamente o tempo total gerando menos arquivos.', 'dd-maintenance' ); ?>
+							</p>
+						</td>
+					</tr>
 				</table>
-
 				<?php submit_button( __( 'Salvar Configurações de Backup & S3', 'dd-maintenance' ), 'primary' ); ?>
 			</form>
 
@@ -2498,7 +2515,7 @@ class DD_Maintenance_Settings {
 									<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
 										<?php if ( ! empty( $backup['is_multipart'] ) ) : ?>
 											<span class="dd-maint-part-badge">
-												<?php printf( esc_html__( '%d partes de 25MB', 'dd-maintenance' ), $backup['total_parts'] ); ?>
+												<?php printf( esc_html__( '%d volumes / partes', 'dd-maintenance' ), $backup['total_parts'] ); ?>
 											</span>
 										<?php elseif ( ! empty( $backup['parts'] ) ) : ?>
 											<span class="dd-maint-part-badge">
@@ -2902,6 +2919,9 @@ class DD_Maintenance_Settings {
 			if ( preg_match( '/^([01]?[0-9]|2[0-3]):([0-5][0-9])$/', $time_str ) ) {
 				$settings['schedule_time'] = $time_str;
 			}
+		}
+		if ( isset( $_POST['split_size_mb'] ) ) {
+			$settings['split_size_mb'] = max( 25, min( 1000, (int) $_POST['split_size_mb'] ) );
 		}
 
 		if ( isset( $_POST['retention_local'] ) ) {

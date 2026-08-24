@@ -21,10 +21,9 @@ class DD_Maintenance_Backup {
 	 * compressão; a margem cobre cabeçalhos e o índice central do ZIP.
 	 */
 	const BATCH_FILE_COUNT    = 1000;
-	const DB_BATCH_SIZE       = 250;
+	const DB_BATCH_SIZE       = 1000;
 	const STEP_TIME_LIMIT     = 8;
 	const VOLUME_PAYLOAD_SIZE = 25165824;
-
 	/**
 	 * Inicializa uma sessão de backup em lotes (cria pasta e metadados da sessão).
 	 *
@@ -55,9 +54,9 @@ class DD_Maintenance_Backup {
 				'include_wpconfig'  => 1,
 				'include_entire'    => 1,
 				'keep_local'        => 1,
+				'split_size_mb'     => 200,
 			)
 		);
-
 		$session_data = array(
 			'session_id'         => $session_id,
 			'session_dir'        => $session_dir,
@@ -226,21 +225,26 @@ class DD_Maintenance_Backup {
 				fclose( $handle );
 				return new WP_Error( 'db_query', $wpdb->last_error );
 			}
-
 			$sql = '';
-			foreach ( $rows as $row ) {
-				$values = array();
-				foreach ( $row as $value ) {
-					$values[] = null === $value ? 'NULL' : "'" . $wpdb->_real_escape( (string) $value ) . "'";
+			if ( ! empty( $rows ) ) {
+				$chunks = array_chunk( $rows, 100 );
+				foreach ( $chunks as $chunk ) {
+					$row_sqls = array();
+					foreach ( $chunk as $row ) {
+						$values = array();
+						foreach ( $row as $value ) {
+							$values[] = null === $value ? 'NULL' : "'" . $wpdb->_real_escape( (string) $value ) . "'";
+						}
+						$row_sqls[] = '(' . implode( ', ', $values ) . ')';
+					}
+					$sql .= "INSERT INTO `{$quoted_name}` VALUES\n" . implode( ",\n", $row_sqls ) . ";\n";
 				}
-				$sql .= "INSERT INTO `{$quoted_name}` VALUES (" . implode( ', ', $values ) . ");\n";
 			}
 
 			if ( '' !== $sql ) {
 				fwrite( $handle, $sql );
 				fflush( $handle );
 			}
-
 			$row_count = count( $rows );
 			if ( $row_count < self::DB_BATCH_SIZE ) {
 				$session['db_table_index']++;
@@ -512,10 +516,11 @@ class DD_Maintenance_Backup {
 				continue;
 			}
 
-			$file_size = (int) filesize( $item['path'] );
-			if ( $file_size > self::VOLUME_PAYLOAD_SIZE ) {
+			$payload_limit = $this->get_payload_size( $session );
+			$file_size     = (int) filesize( $item['path'] );
+			if ( $file_size > $payload_limit ) {
 				if ( $zip instanceof ZipArchive ) {
-					$closed = $this->close_volume( $zip, $volume_path );
+					$closed = $this->close_volume( $zip, $volume_path, $session );
 					if ( is_wp_error( $closed ) ) {
 						fclose( $manifest );
 						return $closed;
@@ -525,7 +530,6 @@ class DD_Maintenance_Backup {
 					}
 					$zip = null;
 				}
-
 				$large_result = $this->store_large_file_chunk( $session, $item, $line_offset, $next_offset );
 				if ( is_wp_error( $large_result ) ) {
 					fclose( $manifest );
@@ -549,8 +553,8 @@ class DD_Maintenance_Backup {
 				$estimated_size = file_exists( $volume_path ) ? (int) filesize( $volume_path ) : 22;
 			}
 
-			if ( $zip->numFiles > 0 && $estimated_size + $entry_size > self::VOLUME_PAYLOAD_SIZE ) {
-				$closed = $this->close_volume( $zip, $volume_path );
+			if ( $zip->numFiles > 0 && $estimated_size + $entry_size > $payload_limit ) {
+				$closed = $this->close_volume( $zip, $volume_path, $session );
 				if ( is_wp_error( $closed ) ) {
 					fclose( $manifest );
 					return $closed;
@@ -631,7 +635,8 @@ class DD_Maintenance_Backup {
 				);
 				$last_volume = end( $volume_files );
 				$entry_size  = strlen( $metadata ) + 1024;
-				if ( filesize( $last_volume ) + $entry_size > self::VOLUME_PAYLOAD_SIZE ) {
+				$payload_limit = $this->get_payload_size( $session );
+				if ( filesize( $last_volume ) + $entry_size > $payload_limit ) {
 					$session['volume_index'] = count( $volume_files ) + 1;
 					$last_volume = $this->volume_path( $session, (int) $session['volume_index'] );
 				}
@@ -644,7 +649,7 @@ class DD_Maintenance_Backup {
 					$zip->addFromString( '__dd_chunks__/manifest.json', $metadata );
 					$zip->setCompressionName( '__dd_chunks__/manifest.json', ZipArchive::CM_STORE );
 				}
-				$closed = $this->close_volume( $zip, $last_volume );
+				$closed = $this->close_volume( $zip, $last_volume, $session );
 				if ( is_wp_error( $closed ) ) {
 					return $closed;
 				}
@@ -674,9 +679,10 @@ class DD_Maintenance_Backup {
 				return new WP_Error( 'volume_missing', sprintf( __( 'O lote %s não foi encontrado.', 'dd-maintenance' ), $name ) );
 			}
 
-			$size = (int) filesize( $target );
-			if ( $size > self::CHUNK_SIZE ) {
-				return new WP_Error( 'volume_oversize', sprintf( __( 'O lote %1$s excedeu 25MB (%2$s).', 'dd-maintenance' ), $name, size_format( $size ) ) );
+			$size        = (int) filesize( $target );
+			$chunk_limit = $this->get_chunk_size( $session );
+			if ( $size > $chunk_limit ) {
+				return new WP_Error( 'volume_oversize', sprintf( __( 'O lote %1$s excedeu o limite configurado (%2$s).', 'dd-maintenance' ), $name, size_format( $size ) ) );
 			}
 			$parts[] = array(
 				'file' => $target,
@@ -906,7 +912,7 @@ class DD_Maintenance_Backup {
 			'total_parts' => count( $parts ),
 			'percent'     => 100,
 			'log'         => sprintf(
-				__( '[OK] Backup finalizado: %1$d lote(s) ZIP sem compressão, cada um com até 25MB (Total: %2$s)', 'dd-maintenance' ),
+				__( '[OK] Backup finalizado: %1$d lote(s) ZIP sem compressão (Total: %2$s)', 'dd-maintenance' ),
 				count( $parts ),
 				size_format( $total_size )
 			),
@@ -959,17 +965,19 @@ class DD_Maintenance_Backup {
 	/**
 	 * Fecha e valida o limite físico do volume.
 	 *
-	 * @param ZipArchive $zip  Volume aberto.
-	 * @param string     $path Caminho do volume.
+	 * @param ZipArchive $zip     Volume aberto.
+	 * @param string     $path    Caminho do volume.
+	 * @param array      $session Dados da sessão.
 	 * @return true|WP_Error
 	 */
-	private function close_volume( $zip, string $path ) {
+	private function close_volume( $zip, string $path, array $session = array() ) {
 		if ( ! $zip->close() ) {
 			return new WP_Error( 'volume_close_failed', __( 'Não foi possível concluir um lote ZIP.', 'dd-maintenance' ) );
 		}
 		clearstatcache( true, $path );
-		if ( ! is_file( $path ) || filesize( $path ) > self::CHUNK_SIZE ) {
-			return new WP_Error( 'volume_oversize', __( 'Um lote ultrapassou o limite físico de 25MB.', 'dd-maintenance' ) );
+		$chunk_limit = $this->get_chunk_size( $session );
+		if ( ! is_file( $path ) || filesize( $path ) > $chunk_limit ) {
+			return new WP_Error( 'volume_oversize', sprintf( __( 'Um lote ultrapassou o limite físico configurado (%s).', 'dd-maintenance' ), size_format( $chunk_limit ) ) );
 		}
 		return true;
 	}
@@ -984,16 +992,15 @@ class DD_Maintenance_Backup {
 	 * @return array|WP_Error
 	 */
 	private function store_large_file_chunk( array $session, array $item, int $line_offset, int $next_offset ) {
-		$file_size = (int) filesize( $item['path'] );
-		$offset    = $session['large_file_target'] === $item['target'] ? (int) $session['large_file_offset'] : 0;
-		$hash      = sha1( $item['target'] );
-		$chunk_name = sprintf( '__dd_chunks__/%s.part%06d', $hash, 1 );
-		$max_data   = self::VOLUME_PAYLOAD_SIZE - ( 2 * strlen( $chunk_name ) ) - 512;
-		$part       = (int) floor( $offset / $max_data ) + 1;
-		$chunk_name = sprintf( '__dd_chunks__/%s.part%06d', $hash, $part );
-		$length     = min( $max_data, $file_size - $offset );
-
-		$handle = fopen( $item['path'], 'rb' );
+		$file_size     = (int) filesize( $item['path'] );
+		$offset        = $session['large_file_target'] === $item['target'] ? (int) $session['large_file_offset'] : 0;
+		$hash          = sha1( $item['target'] );
+		$chunk_name    = sprintf( '__dd_chunks__/%s.part%06d', $hash, 1 );
+		$payload_limit = $this->get_payload_size( $session );
+		$max_data      = $payload_limit - ( 2 * strlen( $chunk_name ) ) - 512;
+		$part          = (int) floor( $offset / $max_data ) + 1;
+		$chunk_name    = sprintf( '__dd_chunks__/%s.part%06d', $hash, $part );
+		$length        = min( $max_data, $file_size - $offset );
 		if ( ! $handle ) {
 			return new WP_Error( 'large_file_read', sprintf( __( 'Não foi possível ler o arquivo grande %s.', 'dd-maintenance' ), $item['target'] ) );
 		}
@@ -1131,5 +1138,31 @@ class DD_Maintenance_Backup {
 			@ini_set( 'max_execution_time', '30' );
 		}
 		@ignore_user_abort( true );
+	}
+
+	/**
+	 * Retorna o tamanho máximo de cada volume em bytes (configurável pelo usuário).
+	 *
+	 * @param array $session Dados da sessão.
+	 * @return int
+	 */
+	public function get_chunk_size( array $session = array() ): int {
+		$split_mb = isset( $session['settings']['split_size_mb'] ) ? (int) $session['settings']['split_size_mb'] : 0;
+		if ( $split_mb < 25 ) {
+			$settings = get_option( 'dd_maintenance_settings', array() );
+			$split_mb = isset( $settings['split_size_mb'] ) ? (int) $settings['split_size_mb'] : 200;
+		}
+		$split_mb = max( 25, min( 1000, $split_mb ) );
+		return $split_mb * 1048576;
+	}
+
+	/**
+	 * Retorna o tamanho útil de payload por volume em bytes.
+	 *
+	 * @param array $session Dados da sessão.
+	 * @return int
+	 */
+	public function get_payload_size( array $session = array() ): int {
+		return (int) round( $this->get_chunk_size( $session ) * 0.96 );
 	}
 }
