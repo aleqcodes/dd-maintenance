@@ -332,39 +332,48 @@ class DD_Maintenance_Settings {
 					border-radius: 10px;
 					border: 1px solid #c8d7e1;
 				}
+				@keyframes ddMaintFadeIn {
 					from { opacity: 0; transform: translateY(-15px); }
 					to { opacity: 1; transform: translateY(0); }
 				}
 				.dd-maint-modal-header {
-					display: flex;
-					align-items: center;
-					justify-content: space-between;
-					padding: 16px 20px;
-					border-bottom: 1px solid #dcdcde;
-					background: #f6f7f7;
+					display: flex !important;
+					align-items: center !important;
+					justify-content: space-between !important;
+					padding: 16px 20px !important;
+					border-bottom: 1px solid #dcdcde !important;
+					background: #f6f7f7 !important;
+					box-sizing: border-box !important;
 				}
 				.dd-maint-modal-header h3 {
-					margin: 0;
-					display: flex;
-					align-items: center;
-					gap: 8px;
-					font-size: 15px;
-					font-weight: 600;
+					margin: 0 !important;
+					padding: 0 !important;
+					display: flex !important;
+					align-items: center !important;
+					gap: 8px !important;
+					font-size: 15px !important;
+					font-weight: 600 !important;
+					color: #1d2327 !important;
+					line-height: 1.4 !important;
 				}
 				.dd-maint-badge {
-					background: #2271b1;
-					color: #ffffff;
-					font-weight: 700;
-					font-size: 13px;
-					padding: 3px 10px;
-					border-radius: 12px;
-					letter-spacing: 0.5px;
+					display: inline-block !important;
+					background: #2271b1 !important;
+					color: #ffffff !important;
+					font-weight: 700 !important;
+					font-size: 13px !important;
+					padding: 3px 10px !important;
+					border-radius: 12px !important;
+					letter-spacing: 0.5px !important;
+					line-height: 1.4 !important;
+					flex-shrink: 0 !important;
+					box-sizing: border-box !important;
 				}
 				.dd-maint-badge.success {
-					background: #46b450;
+					background: #46b450 !important;
 				}
 				.dd-maint-badge.error {
-					background: #d63638;
+					background: #d63638 !important;
 				}
 				.dd-maint-modal-body {
 					padding: 20px;
@@ -572,6 +581,7 @@ class DD_Maintenance_Settings {
 						</button>
 					</div>
 				</div>
+			</div>
 		</div>
 
 		<script>
