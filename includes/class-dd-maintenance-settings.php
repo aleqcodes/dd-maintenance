@@ -1252,7 +1252,7 @@ class DD_Maintenance_Settings {
 							var uploadSessionId = initData.upload_session_id;
 							setProgress(4, 'Iniciando envio sequencial dos ' + totalFiles + ' arquivo(s)...', '[Sessão] Upload temporário ID: ' + uploadSessionId);
 
-							// Passo 2: Envia cada arquivo individualmente (25MB por requisição - zero risco de 413 ou timeout)
+							// Passo 2: Divide cada volume em trechos de 20MB por requisição para respeitar limites do servidor.
 							uploadFilesSequentially(files, uploadSessionId, pwd, 0, function() {
 								setProgress(60, 'Todos os ' + totalFiles + ' arquivos enviados! Iniciando extração dos volumes...', '[Upload] Concluído o envio dos ' + totalFiles + ' arquivos.');
 
@@ -1304,91 +1304,95 @@ class DD_Maintenance_Settings {
 					if (onComplete) onComplete();
 					return;
 				}
-				attempt = attempt || 0;
 
 				var file       = files[index];
 				var total      = files.length;
 				var currentNum = index + 1;
 				var basePct    = 4 + Math.round((index / total) * 56);
+				var chunkSize  = 20 * 1024 * 1024;
+				var chunkTotal = Math.max(1, Math.ceil(file.size / chunkSize));
 
-				setProgress(basePct, 'Enviando arquivo ' + currentNum + ' de ' + total + ' (' + file.name + ')...');
+				setProgress(basePct, 'Enviando arquivo ' + currentNum + ' de ' + total + ' em ' + chunkTotal + ' trecho(s) (' + file.name + ')...');
 
-				var fd = new FormData();
-				fd.append('action', 'dd_maintenance_ajax_restore');
-				fd.append('mode', 'upload_chunk');
-				fd.append('upload_session_id', sessionId);
-				fd.append('file_index', currentNum);
-				fd.append('total_files', total);
-				fd.append('restore_password', password);
-				fd.append('file_chunk', file);
-				fd.append('nonce', nonce);
+				function sendChunk(chunkIndex, chunkAttempt) {
+					var chunkStart = chunkIndex * chunkSize;
+					var chunkEnd   = Math.min(file.size, chunkStart + chunkSize);
+					var chunk       = file.slice(chunkStart, chunkEnd);
+					var fd          = new FormData();
+					fd.append('action', 'dd_maintenance_ajax_restore');
+					fd.append('mode', 'upload_chunk');
+					fd.append('upload_session_id', sessionId);
+					fd.append('file_index', currentNum);
+					fd.append('total_files', total);
+					fd.append('file_name', file.name);
+					fd.append('file_size', String(file.size));
+					fd.append('chunk_index', String(chunkIndex));
+					fd.append('chunk_total', String(chunkTotal));
+					fd.append('chunk_offset', String(chunkStart));
+					fd.append('restore_password', password);
+					fd.append('file_chunk', chunk, file.name);
+					fd.append('nonce', nonce);
 
-				var xhr = new XMLHttpRequest();
-				xhr.open('POST', ajaxUrl, true);
-				xhr.withCredentials = true;
+					var xhr = new XMLHttpRequest();
+					xhr.open('POST', ajaxUrl, true);
+					xhr.withCredentials = true;
 
-				xhr.upload.onprogress = function(pe) {
-					if (pe.lengthComputable) {
-						var fileProgress = pe.loaded / pe.total;
-						var currentPct   = 4 + Math.round(((index + fileProgress) / total) * 56);
-						var fileMb       = Math.round((pe.loaded / 1024 / 1024) * 10) / 10;
-						var totalMb      = Math.round((pe.total / 1024 / 1024) * 10) / 10;
-						setProgress(currentPct, 'Enviando arquivo ' + currentNum + '/' + total + ' (' + file.name + ' - ' + fileMb + '/' + totalMb + ' MB)...');
-					}
-				};
-
-				xhr.onload = function() {
-					if (xhr.status >= 200 && xhr.status < 300) {
-						try {
-							var res = JSON.parse(xhr.responseText);
-							if (res && res.success) {
-								if (consoleOut) {
-									var sizeStr = file.size > 1048576 ? Math.round(file.size / 1048576 * 10) / 10 + ' MB' : Math.round(file.size / 1024) + ' KB';
-									consoleOut.innerText += (consoleOut.innerText ? '\n' : '') + '[Upload ' + currentNum + '/' + total + '] ' + file.name + ' (' + sizeStr + ')';
-									consoleOut.scrollTop = consoleOut.scrollHeight;
-								}
-								uploadFilesSequentially(files, sessionId, password, index + 1, onComplete, onError, 0);
-							} else {
-								var errMsg = (res && res.data && res.data.message) ? res.data.message : 'Erro ao enviar parte ' + currentNum;
-								if (attempt < 2) {
-									setTimeout(function() {
-										uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
-									}, 1500);
-								} else if (onError) {
-									onError(errMsg);
-								}
-							}
-						} catch (e) {
-							if (attempt < 2) {
-								setTimeout(function() {
-									uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
-								}, 1500);
-							} else if (onError) {
-								onError('Resposta inválida do servidor ao enviar ' + file.name);
-							}
+					xhr.upload.onprogress = function(pe) {
+						if (pe.lengthComputable) {
+							var uploaded       = Math.min(file.size, chunkStart + pe.loaded);
+							var fileProgress   = file.size > 0 ? uploaded / file.size : 1;
+							var currentPct     = 4 + Math.round(((index + fileProgress) / total) * 56);
+							var uploadedMb     = Math.round((uploaded / 1024 / 1024) * 10) / 10;
+							var totalMb        = Math.round((file.size / 1024 / 1024) * 10) / 10;
+							setProgress(currentPct, 'Enviando arquivo ' + currentNum + '/' + total + ' (' + file.name + ' - ' + uploadedMb + '/' + totalMb + ' MB)...');
 						}
-					} else {
-						if (attempt < 2) {
+					};
+
+					function retryOrFail(message) {
+						if (chunkAttempt < 2) {
 							setTimeout(function() {
-								uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
+								sendChunk(chunkIndex, chunkAttempt + 1);
 							}, 1500);
 						} else if (onError) {
-							onError('Erro HTTP ' + xhr.status + ' ao enviar ' + file.name);
+							onError(message);
 						}
 					}
-				};
 
-				xhr.onerror = function() {
-					if (attempt < 2) {
-						setTimeout(function() {
-							uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
-						}, 1500);
-					} else if (onError) {
-						onError('Falha de conexão ao enviar ' + file.name);
-					}
-				};
+					xhr.onload = function() {
+						if (xhr.status >= 200 && xhr.status < 300) {
+							try {
+								var res = JSON.parse(xhr.responseText);
+								if (res && res.success) {
+									if (chunkIndex + 1 < chunkTotal) {
+										sendChunk(chunkIndex + 1, 0);
+										return;
+									}
 
-				xhr.send(fd);
+									if (consoleOut) {
+										var sizeStr = file.size > 1048576 ? Math.round(file.size / 1048576 * 10) / 10 + ' MB' : Math.round(file.size / 1024) + ' KB';
+										consoleOut.innerText += (consoleOut.innerText ? '\n' : '') + '[Upload ' + currentNum + '/' + total + '] ' + file.name + ' (' + sizeStr + ')';
+										consoleOut.scrollTop = consoleOut.scrollHeight;
+									}
+									uploadFilesSequentially(files, sessionId, password, index + 1, onComplete, onError, 0);
+								} else {
+									retryOrFail((res && res.data && res.data.message) ? res.data.message : 'Erro ao enviar trecho de ' + file.name);
+								}
+							} catch (e) {
+								retryOrFail('Resposta inválida do servidor ao enviar ' + file.name);
+							}
+						} else {
+							retryOrFail('Erro HTTP ' + xhr.status + ' ao enviar ' + file.name);
+						}
+					};
+
+					xhr.onerror = function() {
+						retryOrFail('Falha de conexão ao enviar trecho de ' + file.name);
+					};
+
+					xhr.send(fd);
+				}
+
+				sendChunk(0, attempt || 0);
 			}
 
 			function executeRestorePipeline(sourceParams, startPct, onDone, onError) {
@@ -3683,21 +3687,103 @@ class DD_Maintenance_Settings {
 				wp_send_json_error( array( 'message' => __( 'Pasta temporária de upload não encontrada no servidor.', 'dd-maintenance' ) ) );
 			}
 
-			if ( empty( $_FILES['file_chunk']['tmp_name'] ) || ! is_uploaded_file( $_FILES['file_chunk']['tmp_name'] ) ) {
-				wp_send_json_error( array( 'message' => __( 'Arquivo não recebido nesta etapa.', 'dd-maintenance' ) ) );
+			$upload       = isset( $_FILES['file_chunk'] ) && is_array( $_FILES['file_chunk'] ) ? $_FILES['file_chunk'] : array();
+			$tmp_name     = isset( $upload['tmp_name'] ) && is_string( $upload['tmp_name'] ) ? $upload['tmp_name'] : '';
+			$upload_error = isset( $upload['error'] ) ? (int) $upload['error'] : UPLOAD_ERR_NO_FILE;
+			if ( UPLOAD_ERR_OK !== $upload_error || '' === $tmp_name || ! is_uploaded_file( $tmp_name ) ) {
+				$error_messages = array(
+					UPLOAD_ERR_INI_SIZE   => __( 'o arquivo excedeu upload_max_filesize', 'dd-maintenance' ),
+					UPLOAD_ERR_FORM_SIZE  => __( 'o arquivo excedeu o limite do formulário', 'dd-maintenance' ),
+					UPLOAD_ERR_PARTIAL    => __( 'o upload foi recebido apenas parcialmente', 'dd-maintenance' ),
+					UPLOAD_ERR_NO_FILE    => __( 'nenhum arquivo foi recebido', 'dd-maintenance' ),
+					UPLOAD_ERR_NO_TMP_DIR => __( 'a pasta temporária do PHP não existe', 'dd-maintenance' ),
+					UPLOAD_ERR_CANT_WRITE => __( 'o PHP não conseguiu gravar o arquivo temporário', 'dd-maintenance' ),
+					UPLOAD_ERR_EXTENSION  => __( 'uma extensão do PHP interrompeu o upload', 'dd-maintenance' ),
+				);
+				$reason = $error_messages[ $upload_error ] ?? __( 'o arquivo temporário não foi reconhecido como upload HTTP', 'dd-maintenance' );
+				wp_send_json_error(
+					array(
+						'message' => sprintf(
+							__( 'Upload rejeitado pelo servidor: %s (código %d). Limites atuais: upload_max_filesize=%s, post_max_size=%s.', 'dd-maintenance' ),
+							$reason,
+							$upload_error,
+							ini_get( 'upload_max_filesize' ),
+							ini_get( 'post_max_size' )
+						),
+					)
+				);
 			}
 
-			$orig_name = sanitize_file_name( wp_unslash( $_FILES['file_chunk']['name'] ) );
-			$dest_path = $real_temp . '/' . $orig_name;
+			$posted_name = isset( $_POST['file_name'] ) && is_string( $_POST['file_name'] ) ? wp_unslash( $_POST['file_name'] ) : '';
+			$upload_name = isset( $upload['name'] ) && is_string( $upload['name'] ) ? wp_unslash( $upload['name'] ) : '';
+			$orig_name  = sanitize_file_name( '' !== $posted_name ? $posted_name : $upload_name );
+			if ( '' === $orig_name ) {
+				wp_send_json_error( array( 'message' => __( 'Nome de arquivo inválido nesta etapa do upload.', 'dd-maintenance' ) ) );
+			}
 
-			if ( ! move_uploaded_file( $_FILES['file_chunk']['tmp_name'], $dest_path ) ) {
-				wp_send_json_error( array( 'message' => sprintf( __( 'Falha ao salvar %s na pasta temporária.', 'dd-maintenance' ), $orig_name ) ) );
+			$chunk_index = isset( $_POST['chunk_index'] ) ? max( 0, (int) $_POST['chunk_index'] ) : 0;
+			$chunk_total = isset( $_POST['chunk_total'] ) ? max( 1, (int) $_POST['chunk_total'] ) : 1;
+			$chunk_offset = isset( $_POST['chunk_offset'] ) ? max( 0, (int) $_POST['chunk_offset'] ) : 0;
+			$file_size   = isset( $_POST['file_size'] ) ? max( 0, (int) $_POST['file_size'] ) : 0;
+			$dest_path   = $real_temp . '/' . $orig_name;
+			$part_path   = $real_temp . '/.' . $orig_name . '.uploading';
+
+			// Se a resposta final foi perdida, um retry do último trecho pode reaproveitar o arquivo concluído.
+			if ( $chunk_index + 1 >= $chunk_total && is_file( $dest_path ) && ( 0 === $file_size || filesize( $dest_path ) === $file_size ) ) {
+				wp_send_json_success(
+					array(
+						'filename'       => $orig_name,
+						'chunk_index'    => $chunk_index,
+						'complete'       => true,
+						'received_size'  => (int) filesize( $dest_path ),
+					)
+				);
+			}
+
+			$input  = fopen( $tmp_name, 'rb' );
+			$output = fopen( $part_path, 'c+b' );
+			if ( ! $input || ! $output ) {
+				if ( $input ) {
+					fclose( $input );
+				}
+				if ( $output ) {
+					fclose( $output );
+				}
+				wp_send_json_error( array( 'message' => __( 'Não foi possível abrir os arquivos temporários desta etapa.', 'dd-maintenance' ) ) );
+			}
+
+			if ( 0 !== fseek( $output, $chunk_offset, SEEK_SET ) ) {
+				fclose( $input );
+				fclose( $output );
+				wp_send_json_error( array( 'message' => __( 'Não foi possível posicionar o trecho no arquivo temporário.', 'dd-maintenance' ) ) );
+			}
+
+			$copied = stream_copy_to_stream( $input, $output );
+			fflush( $output );
+			fclose( $input );
+			fclose( $output );
+			$tmp_size = (int) filesize( $tmp_name );
+			if ( false === $copied || (int) $copied !== $tmp_size ) {
+				wp_send_json_error( array( 'message' => __( 'O trecho recebido não pôde ser gravado integralmente no servidor.', 'dd-maintenance' ) ) );
+			}
+
+			$complete = $chunk_index + 1 >= $chunk_total;
+			if ( $complete ) {
+				$stored_size = (int) filesize( $part_path );
+				if ( $file_size > 0 && $stored_size !== $file_size ) {
+					wp_send_json_error( array( 'message' => sprintf( __( 'Tamanho final inválido para %s: esperado %s, recebido %s.', 'dd-maintenance' ), $orig_name, size_format( $file_size ), size_format( $stored_size ) ) ) );
+				}
+				if ( ! rename( $part_path, $dest_path ) ) {
+					wp_send_json_error( array( 'message' => sprintf( __( 'Não foi possível concluir o arquivo %s no servidor.', 'dd-maintenance' ), $orig_name ) ) );
+				}
 			}
 
 			wp_send_json_success(
 				array(
-					'filename' => $orig_name,
-					'size'     => filesize( $dest_path ),
+					'filename'      => $orig_name,
+					'chunk_index'   => $chunk_index,
+					'complete'      => $complete,
+					'received_size' => $complete ? (int) filesize( $dest_path ) : (int) filesize( $part_path ),
 				)
 			);
 		} elseif ( 'restore_init' === $mode ) {
