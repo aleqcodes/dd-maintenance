@@ -277,6 +277,9 @@ class DD_Maintenance_Settings {
 					background: #ffffff !important;
 					width: 92% !important;
 					max-width: 680px !important;
+					max-height: 88vh !important;
+					display: flex !important;
+					flex-direction: column !important;
 					border-radius: 8px !important;
 					box-shadow: 0 15px 35px rgba(0,0,0,0.35) !important;
 					overflow: hidden !important;
@@ -288,8 +291,30 @@ class DD_Maintenance_Settings {
 					border: 1px solid #c8d7e1;
 					border-left: 4px solid #46b450;
 					border-radius: 4px;
-					padding: 14px 16px;
-					margin-bottom: 16px;
+					padding: 12px 14px;
+					margin-bottom: 14px;
+				}
+				#dd-maint-downloads-list {
+					max-height: 220px !important;
+					overflow-y: auto !important;
+					padding-right: 4px !important;
+					display: flex !important;
+					flex-direction: column !important;
+					gap: 5px !important;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar {
+					width: 6px;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar-track {
+					background: #e7eef4;
+					border-radius: 3px;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar-thumb {
+					background: #90a4ae;
+					border-radius: 3px;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar-thumb:hover {
+					background: #607d8b;
 				}
 				.dd-maint-download-item {
 					display: flex;
@@ -298,8 +323,9 @@ class DD_Maintenance_Settings {
 					background: #ffffff;
 					border: 1px solid #dcdcde;
 					border-radius: 4px;
-					padding: 8px 12px;
-					gap: 12px;
+					padding: 6px 10px;
+					gap: 8px;
+					transition: border-color 0.15s ease, box-shadow 0.15s ease;
 				}
 				.dd-maint-download-item:hover {
 					border-color: #2271b1;
@@ -307,7 +333,7 @@ class DD_Maintenance_Settings {
 				}
 				.dd-maint-download-name {
 					font-family: Consolas, Monaco, monospace;
-					font-size: 12px;
+					font-size: 11.5px;
 					font-weight: 600;
 					color: #1d2327;
 					word-break: break-all;
@@ -321,6 +347,7 @@ class DD_Maintenance_Settings {
 					padding: 2px 8px;
 					border-radius: 10px;
 					border: 1px solid #b4e2be;
+					white-space: nowrap;
 				}
 				.dd-maint-sql-badge {
 					display: inline-block;
@@ -331,6 +358,7 @@ class DD_Maintenance_Settings {
 					padding: 2px 8px;
 					border-radius: 10px;
 					border: 1px solid #c8d7e1;
+					white-space: nowrap;
 				}
 				@keyframes ddMaintFadeIn {
 					from { opacity: 0; transform: translateY(-15px); }
@@ -340,10 +368,11 @@ class DD_Maintenance_Settings {
 					display: flex !important;
 					align-items: center !important;
 					justify-content: space-between !important;
-					padding: 16px 20px !important;
+					padding: 14px 20px !important;
 					border-bottom: 1px solid #dcdcde !important;
 					background: #f6f7f7 !important;
 					box-sizing: border-box !important;
+					flex-shrink: 0 !important;
 				}
 				.dd-maint-modal-header h3 {
 					margin: 0 !important;
@@ -376,7 +405,34 @@ class DD_Maintenance_Settings {
 					background: #d63638 !important;
 				}
 				.dd-maint-modal-body {
-					padding: 20px;
+					padding: 16px 20px !important;
+					overflow-y: auto !important;
+					flex: 1 1 auto !important;
+					max-height: calc(88vh - 125px) !important;
+					box-sizing: border-box !important;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar {
+					width: 7px;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar-track {
+					background: #f0f0f1;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar-thumb {
+					background: #c3c4c7;
+					border-radius: 4px;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar-thumb:hover {
+					background: #a7aaad;
+				}
+				.dd-maint-modal-footer {
+					padding: 12px 20px !important;
+					background: #f6f7f7 !important;
+					border-top: 1px solid #dcdcde !important;
+					display: flex !important;
+					justify-content: space-between !important;
+					align-items: center !important;
+					flex-shrink: 0 !important;
+					box-sizing: border-box !important;
 				}
 				.dd-maint-progress-container {
 					width: 100%;
@@ -437,17 +493,10 @@ class DD_Maintenance_Settings {
 					font-family: Consolas, Monaco, monospace;
 					font-size: 12px;
 					line-height: 1.55;
-					max-height: 180px;
+					max-height: 160px;
 					overflow-y: auto;
 					white-space: pre-wrap;
 					word-break: break-all;
-				}
-				.dd-maint-modal-footer {
-					padding: 12px 20px;
-					background: #f6f7f7;
-					border-top: 1px solid #dcdcde;
-					display: flex;
-					justify-content: flex-end;
 				}
 				.dd-maint-spin {
 					animation: ddMaintSpin 1.2s linear infinite;
@@ -541,20 +590,21 @@ class DD_Maintenance_Settings {
 					<p id="dd-maint-status-text" class="dd-maint-status-text"><?php esc_html_e( 'Iniciando operação...', 'dd-maintenance' ); ?></p>
 					<!-- Painel de Downloads Imediatos (Exibido ao finalizar backup) -->
 					<div id="dd-maint-downloads-container" class="dd-maint-download-box" style="display:none;">
-						<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-							<strong style="font-size:13.5px;color:#1d2327;display:flex;align-items:center;gap:6px;">
-								<span class="dashicons dashicons-download" style="color:#46b450;font-size:18px;"></span>
-								<?php esc_html_e( 'Baixar Arquivos de Backup Agora', 'dd-maintenance' ); ?>
-							</strong>
+						<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+							<div style="display:flex;align-items:center;gap:6px;">
+								<span class="dashicons dashicons-download" style="color:#46b450;font-size:18px;width:18px;height:18px;"></span>
+								<strong style="font-size:13.5px;color:#1d2327;"><?php esc_html_e( 'Baixar Arquivos de Backup Agora', 'dd-maintenance' ); ?></strong>
+								<span id="dd-maint-downloads-summary-badge" class="dd-maint-part-badge" style="display:none;"></span>
+							</div>
 							<button type="button" id="dd-maint-download-all-btn" class="button button-primary button-small" style="display:none;">
 								<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
-								<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
+								<span id="dd-maint-download-all-btn-text"><?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?></span>
 							</button>
 						</div>
-						<p style="margin:0 0 10px 0;font-size:12px;color:#50575e;">
-							<?php esc_html_e( 'Seus arquivos de backup locais estão prontos para download no seu computador:', 'dd-maintenance' ); ?>
-						</p>
-						<div id="dd-maint-downloads-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+						<div id="dd-maint-downloads-filter-wrap" style="display:none;margin-bottom:8px;">
+							<input type="text" id="dd-maint-downloads-filter" placeholder="<?php esc_attr_e( 'Filtrar volumes (ex: part120, sql)...', 'dd-maintenance' ); ?>" style="width:100%;font-size:12px;padding:4px 8px;border-radius:4px;border:1px solid #ccd0d4;">
+						</div>
+						<div id="dd-maint-downloads-list"></div>
 					</div>
 
 					<div class="dd-maint-console-container">
@@ -642,53 +692,82 @@ class DD_Maintenance_Settings {
 
 			function renderModalDownloads(finalData) {
 				if (!finalData || !downloadsContainer || !downloadsList) return;
-				var parts   = finalData.parts || [];
-				var hasSql  = !!finalData.has_sql;
-				var sqlFile = finalData.sql_filename || '';
-				var sqlSize = finalData.sql_size_formatted || '';
+				var parts       = finalData.parts || [];
+				var hasSql      = !!finalData.has_sql;
+				var sqlFile     = finalData.sql_filename || '';
+				var sqlSize     = finalData.sql_size_formatted || '';
+				var totalSize   = finalData.total_size || 0;
+				var summaryBadge = document.getElementById('dd-maint-downloads-summary-badge');
+				var filterWrap  = document.getElementById('dd-maint-downloads-filter-wrap');
+				var filterInput = document.getElementById('dd-maint-downloads-filter');
+				var allBtnText  = document.getElementById('dd-maint-download-all-btn-text');
 
 				if (parts.length === 0 && !hasSql) return;
 
 				downloadsList.innerHTML = '';
 				var fileNamesToDownload = [];
 
+				if (summaryBadge) {
+					var totalSizeFormatted = finalData.total_size ? (Math.round((finalData.total_size / 1024 / 1024) * 10) / 10 + ' MB') : '';
+					summaryBadge.innerText = parts.length > 1 ? (parts.length + ' volumes' + (totalSizeFormatted ? ' &bull; ' + totalSizeFormatted : '')) : '1 arquivo';
+					summaryBadge.style.display = 'inline-block';
+				}
+
+				if (filterWrap) {
+					filterWrap.style.display = parts.length > 8 ? 'block' : 'none';
+					if (filterInput) {
+						filterInput.value = '';
+						filterInput.oninput = function() {
+							var q = this.value.toLowerCase().trim();
+							var items = downloadsList.querySelectorAll('.dd-maint-download-item');
+							items.forEach(function(el) {
+								var name = el.getAttribute('data-filename') || '';
+								el.style.display = (q === '' || name.toLowerCase().indexOf(q) !== -1) ? 'flex' : 'none';
+							});
+						};
+					}
+				}
+
 				parts.forEach(function(p, idx) {
 					fileNamesToDownload.push(p.name);
 					var item = document.createElement('div');
 					item.className = 'dd-maint-download-item';
+					item.setAttribute('data-filename', p.name);
 
 					var left = document.createElement('div');
 					left.style.display = 'flex';
 					left.style.alignItems = 'center';
-					left.style.gap = '8px';
+					left.style.gap = '6px';
+					left.style.minWidth = '0';
+					left.style.overflow = 'hidden';
 
 					var iconEl = document.createElement('span');
 					iconEl.className = 'dashicons dashicons-media-archive';
 					iconEl.style.color = '#2271b1';
-					iconEl.style.fontSize = '18px';
-					iconEl.style.width = '18px';
-					iconEl.style.height = '18px';
+					iconEl.style.fontSize = '16px';
+					iconEl.style.width = '16px';
+					iconEl.style.height = '16px';
+					iconEl.style.flexShrink = '0';
 
-					var textWrap = document.createElement('div');
 					var nameSpan = document.createElement('div');
 					nameSpan.className = 'dd-maint-download-name';
+					nameSpan.title = p.name;
 					nameSpan.innerText = p.name;
 
 					var sizeSpan = document.createElement('span');
 					sizeSpan.className = 'dd-maint-part-badge';
 					sizeSpan.innerText = p.size_formatted || (Math.round(((p.size || 0) / 1024 / 1024) * 10) / 10 + ' MB');
 
-					textWrap.appendChild(nameSpan);
-					textWrap.appendChild(sizeSpan);
-
 					left.appendChild(iconEl);
-					left.appendChild(textWrap);
+					left.appendChild(nameSpan);
+					left.appendChild(sizeSpan);
 
 					var btn = document.createElement('a');
 					btn.href = getBackupDownloadUrl(p.name);
 					btn.className = 'button button-primary button-small';
+					btn.style.flexShrink = '0';
 					btn.setAttribute('download', p.name);
-					btn.innerHTML = '<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span> Baixar ' + (parts.length > 1 ? 'Parte ' + (p.part || (idx + 1)) : 'Backup (.zip)');
+					btn.innerHTML = '<span class="dashicons dashicons-download" style="font-size:12px;vertical-align:middle;line-height:1.4;"></span> Baixar';
 
 					item.appendChild(left);
 					item.appendChild(btn);
@@ -698,39 +777,42 @@ class DD_Maintenance_Settings {
 				if (hasSql && sqlFile) {
 					var itemSql = document.createElement('div');
 					itemSql.className = 'dd-maint-download-item';
+					itemSql.setAttribute('data-filename', sqlFile);
 
 					var leftSql = document.createElement('div');
 					leftSql.style.display = 'flex';
 					leftSql.style.alignItems = 'center';
-					leftSql.style.gap = '8px';
+					leftSql.style.gap = '6px';
+					leftSql.style.minWidth = '0';
+					leftSql.style.overflow = 'hidden';
 
 					var iconSql = document.createElement('span');
 					iconSql.className = 'dashicons dashicons-database';
 					iconSql.style.color = '#0969da';
-					iconSql.style.fontSize = '18px';
-					iconSql.style.width = '18px';
-					iconSql.style.height = '18px';
+					iconSql.style.fontSize = '16px';
+					iconSql.style.width = '16px';
+					iconSql.style.height = '16px';
+					iconSql.style.flexShrink = '0';
 
-					var textWrapSql = document.createElement('div');
 					var nameSpanSql = document.createElement('div');
 					nameSpanSql.className = 'dd-maint-download-name';
+					nameSpanSql.title = sqlFile;
 					nameSpanSql.innerText = sqlFile;
 
 					var sizeSpanSql = document.createElement('span');
 					sizeSpanSql.className = 'dd-maint-sql-badge';
 					sizeSpanSql.innerText = sqlSize || 'Dump SQL';
 
-					textWrapSql.appendChild(nameSpanSql);
-					textWrapSql.appendChild(sizeSpanSql);
-
 					leftSql.appendChild(iconSql);
-					leftSql.appendChild(textWrapSql);
+					leftSql.appendChild(nameSpanSql);
+					leftSql.appendChild(sizeSpanSql);
 
 					var btnSql = document.createElement('a');
 					btnSql.href = getBackupDownloadUrl(sqlFile);
 					btnSql.className = 'button button-secondary button-small';
+					btnSql.style.flexShrink = '0';
 					btnSql.setAttribute('download', sqlFile);
-					btnSql.innerHTML = '<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span> Baixar Dump SQL';
+					btnSql.innerHTML = '<span class="dashicons dashicons-download" style="font-size:12px;vertical-align:middle;line-height:1.4;"></span> Baixar SQL';
 
 					itemSql.appendChild(leftSql);
 					itemSql.appendChild(btnSql);
@@ -739,6 +821,9 @@ class DD_Maintenance_Settings {
 
 				if (parts.length > 1) {
 					downloadAllBtn.style.display = 'inline-block';
+					if (allBtnText) {
+						allBtnText.innerText = 'Baixar Todos os ' + parts.length + ' Volumes';
+					}
 					downloadAllBtn.onclick = function() {
 						downloadAllParts(fileNamesToDownload);
 					};
@@ -752,7 +837,7 @@ class DD_Maintenance_Settings {
 				}
 
 				if (consoleOut) {
-					consoleOut.innerText += '\n[Download] Arquivos locais disponíveis para download imediato acima!';
+					consoleOut.innerText += '\n[Download] ' + (parts.length > 1 ? parts.length + ' volumes' : 'Arquivo') + ' prontos para download imediato acima!';
 					consoleOut.scrollTop = consoleOut.scrollHeight;
 				}
 			}
