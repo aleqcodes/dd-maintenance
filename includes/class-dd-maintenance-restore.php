@@ -511,12 +511,14 @@ class DD_Maintenance_Restore {
 	}
 
 	/**
-	 * Etapa: Restauração do banco de dados SQL.
+	 * Etapa: Restauração progressiva em lotes do banco de dados SQL.
 	 *
-	 * @param string $session_id ID da sessão.
+	 * @param string $session_id          ID da sessão.
+	 * @param float  $time_limit_seconds  Tempo máximo em segundos por chamada (padrão: 5.0s).
 	 * @return array|WP_Error
 	 */
-	public function restore_database_step( string $session_id ) {
+	public function restore_database_step( string $session_id, float $time_limit_seconds = 5.0 ) {
+		global $wpdb;
 		$this->set_time_and_memory_limits();
 
 		$session = $this->get_restore_session_data( $session_id );
@@ -524,36 +526,204 @@ class DD_Maintenance_Restore {
 			return $session;
 		}
 
-		$extract_dir = $session['extract_dir'];
-		$sql_file    = $this->find_sql_file( $extract_dir );
-		$db_stats    = null;
-		$log_line    = '';
-
-		if ( $sql_file ) {
-			$db_result = $this->restore_database( $sql_file );
-			if ( is_wp_error( $db_result ) ) {
-				return $db_result;
-			}
-			$db_stats = $db_result;
-			$log_line = sprintf(
-				__( '[OK] Banco restaurado: %1$d comandos executados (%2$d tabelas processadas).', 'dd-maintenance' ),
-				$db_result['queries'],
-				$db_result['tables']
+		if ( ! empty( $session['db_done'] ) ) {
+			return array(
+				'completed' => true,
+				'has_sql'   => ! empty( $session['db_file'] ),
+				'queries'   => $session['db_queries'] ?? 0,
+				'tables'    => $session['db_tables'] ?? 0,
+				'percent'   => 100,
+				'log'       => __( '[OK] Restauração do banco SQL já concluída.', 'dd-maintenance' ),
 			);
-		} else {
-			$log_line = __( '[Aviso] Nenhum arquivo .sql detectado no backup (banco de dados mantido).', 'dd-maintenance' );
 		}
 
-		$session['db_done']   = true;
-		$session['db_stats']  = $db_stats;
-		$session['log'][]     = $log_line;
+		$extract_dir = $session['extract_dir'];
+
+		// Inicializa metadados do SQL na primeira chamada desta etapa
+		if ( ! isset( $session['db_file'] ) ) {
+			$sql_file = $this->find_sql_file( $extract_dir );
+			if ( ! $sql_file || ! is_file( $sql_file ) || filesize( $sql_file ) <= 0 ) {
+				$session['db_done']  = true;
+				$session['db_file']  = '';
+				$session['log'][]    = __( '[Aviso] Nenhum arquivo .sql encontrado no backup (banco de dados mantido).', 'dd-maintenance' );
+				$this->save_restore_session_data( $extract_dir, $session );
+
+				return array(
+					'completed' => true,
+					'has_sql'   => false,
+					'queries'   => 0,
+					'tables'    => 0,
+					'percent'   => 100,
+					'log'       => __( '[Aviso] Nenhum arquivo .sql encontrado no backup (banco de dados mantido).', 'dd-maintenance' ),
+				);
+			}
+
+			$session['db_file']            = $sql_file;
+			$session['db_file_size']       = (int) filesize( $sql_file );
+			$session['db_offset']          = 0;
+			$session['db_queries']         = 0;
+			$session['db_tables']          = 0;
+			$session['db_errors']          = 0;
+			$session['db_current_siteurl'] = get_option( 'siteurl', '' );
+			$session['db_current_home']    = get_option( 'home', '' );
+			$session['db_query_buffer']    = '';
+			$session['db_in_string']       = false;
+			$session['db_string_char']     = '';
+			$this->save_restore_session_data( $extract_dir, $session );
+		}
+
+		$sql_file    = $session['db_file'];
+		$file_size   = max( 1, (int) $session['db_file_size'] );
+		$offset      = (int) $session['db_offset'];
+		$queries     = (int) $session['db_queries'];
+		$tables      = (int) $session['db_tables'];
+		$errors      = (int) $session['db_errors'];
+		$buffer      = (string) ( $session['db_query_buffer'] ?? '' );
+		$in_string   = (bool) ( $session['db_in_string'] ?? false );
+		$string_char = (string) ( $session['db_string_char'] ?? '' );
+
+		$handle = fopen( $sql_file, 'r' );
+		if ( ! $handle ) {
+			return new WP_Error( 'restore_sql_open_failed', __( 'Não foi possível ler o arquivo SQL do banco de dados.', 'dd-maintenance' ) );
+		}
+
+		fseek( $handle, $offset );
+
+		// Desativa temporariamente checagem de foreign keys durante o lote
+		$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0;' );
+
+		$deadline    = microtime( true ) + $time_limit_seconds;
+		$batch_count = 0;
+		$eof_reached = false;
+
+		while ( ! feof( $handle ) && ( microtime( true ) < $deadline || $batch_count < 50 ) ) {
+			$line = fgets( $handle );
+			if ( false === $line ) {
+				$eof_reached = true;
+				break;
+			}
+
+			$trimmed = trim( $line );
+
+			// Pula linhas de comentário simples caso não esteja dentro de uma string
+			if ( ! $in_string ) {
+				if ( '' === $trimmed || 0 === strpos( $trimmed, '--' ) || 0 === strpos( $trimmed, '/*' ) || 0 === strpos( $trimmed, '#' ) ) {
+					continue;
+				}
+			}
+
+			$buffer .= $line;
+
+			// Verifica fim de comando SQL delimitado por ponto e vírgula
+			$len = strlen( $line );
+			for ( $i = 0; $i < $len; $i++ ) {
+				$char = $line[ $i ];
+
+				if ( "'" === $char || '"' === $char || '`' === $char ) {
+					if ( ! $in_string ) {
+						$in_string   = true;
+						$string_char = $char;
+					} elseif ( $string_char === $char ) {
+						$escaped = false;
+						$j       = $i - 1;
+						while ( $j >= 0 && '\\' === $line[ $j ] ) {
+							$escaped = ! $escaped;
+							$j--;
+						}
+						if ( ! $escaped ) {
+							$in_string   = false;
+							$string_char = '';
+						}
+					}
+				}
+			}
+
+			if ( ! $in_string && preg_match( '/;\s*$/', $trimmed ) ) {
+				$sql    = trim( $buffer );
+				$buffer = '';
+
+				if ( '' !== $sql ) {
+					// Ignora comandos de criação ou troca de banco de dados
+					if ( ! preg_match( '/^(CREATE DATABASE|DROP DATABASE|USE\s+)/i', $sql ) ) {
+						if ( preg_match( '/^(CREATE TABLE|DROP TABLE)/i', $sql ) ) {
+							$tables++;
+						}
+
+						$res = $wpdb->query( $sql );
+						if ( false === $res && ! empty( $wpdb->last_error ) ) {
+							$errors++;
+						}
+						$queries++;
+						$batch_count++;
+					}
+				}
+			}
+		}
+
+		if ( feof( $handle ) ) {
+			$eof_reached = true;
+		}
+
+		$current_offset = ftell( $handle );
+		fclose( $handle );
+
+		$session['db_offset']       = $current_offset;
+		$session['db_queries']      = $queries;
+		$session['db_tables']       = $tables;
+		$session['db_errors']       = $errors;
+		$session['db_query_buffer'] = $buffer;
+		$session['db_in_string']    = $in_string;
+		$session['db_string_char']  = $string_char;
+
+		$percent = min( 100, max( 0, (int) round( ( $current_offset / $file_size ) * 100 ) ) );
+
+		if ( $eof_reached ) {
+			// Restaura checagem de foreign keys
+			$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
+
+			// Garante que o site continue acessível no domínio atual
+			$siteurl = $session['db_current_siteurl'] ?? '';
+			$home    = $session['db_current_home'] ?? '';
+			if ( ! empty( $siteurl ) ) {
+				$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", $siteurl ) );
+			}
+			if ( ! empty( $home ) ) {
+				$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $home ) );
+			}
+
+			$session['db_done']  = true;
+			$session['db_stats'] = array(
+				'queries' => $queries,
+				'tables'  => $tables,
+				'errors'  => $errors,
+			);
+			$final_line          = sprintf( __( '[OK] Banco restaurado: %1$d comandos executados (%2$d tabelas).', 'dd-maintenance' ), $queries, $tables );
+			$session['log'][]    = $final_line;
+			$this->save_restore_session_data( $extract_dir, $session );
+
+			return array(
+				'completed' => true,
+				'has_sql'   => true,
+				'queries'   => $queries,
+				'tables'    => $tables,
+				'percent'   => 100,
+				'log'       => $final_line,
+			);
+		}
+
 		$this->save_restore_session_data( $extract_dir, $session );
 
+		$progress_line = sprintf( __( '[Banco] Dump SQL: %1$d%% (%2$d comandos executados, %3$d tabelas)...', 'dd-maintenance' ), $percent, $queries, $tables );
+
 		return array(
-			'completed' => true,
-			'has_sql'   => (bool) $sql_file,
-			'db_stats'  => $db_stats,
-			'log'       => $log_line,
+			'completed' => false,
+			'has_sql'   => true,
+			'queries'   => $queries,
+			'tables'    => $tables,
+			'percent'   => $percent,
+			'log'       => $progress_line,
 		);
 	}
 

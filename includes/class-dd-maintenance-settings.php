@@ -1414,13 +1414,9 @@ class DD_Maintenance_Settings {
 					setProgress(startPct, 'Passo 1/4: Extraindo ' + totalVolumes + ' volume(s) de backup (0%)...', '[Sessão] ' + currentRestoreSessionId + ' (' + totalVolumes + ' volume(s))');
 
 					loopRestoreExtractBatches(currentRestoreSessionId, totalVolumes, startPct, extractSpan, function() {
-						setProgress(dbPct, 'Passo 2/4: Restaurando banco de dados (tabelas SQL)...', '[Banco] Executando comandos do dump SQL...');
+						setProgress(dbPct, 'Passo 2/4: Restaurando banco de dados (tabelas SQL 0%)...', '[Banco] Executando comandos do dump SQL...');
 
-						sendAjax('dd_maintenance_ajax_restore', {
-							mode: 'restore_db',
-							restore_session_id: currentRestoreSessionId,
-							restore_password: sourceParams.restore_password || ''
-						}, function(dbRes) {
+						loopRestoreDbBatches(currentRestoreSessionId, dbPct, 7, sourceParams.restore_password || '', function(dbRes) {
 							if (dbRes.log) {
 								consoleOut.innerText += '\n' + dbRes.log;
 								consoleOut.scrollTop = consoleOut.scrollHeight;
@@ -1506,6 +1502,42 @@ class DD_Maintenance_Settings {
 				});
 			}
 
+
+			function loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, attempt) {
+				attempt = attempt || 0;
+
+				sendAjax('dd_maintenance_ajax_restore', {
+					mode: 'restore_db',
+					restore_session_id: sessionId,
+					restore_password: password || ''
+				}, function(res) {
+					if (!res.has_sql || res.completed) {
+						if (res.log) {
+							consoleOut.innerText += '\n' + res.log;
+							consoleOut.scrollTop = consoleOut.scrollHeight;
+						}
+						if (onDone) onDone(res);
+					} else {
+						var sqlPct      = res.percent || 0;
+						var currentPct  = startPct + Math.round((sqlPct / 100) * dbSpan);
+						var queriesText = res.queries ? ' (' + res.queries.toLocaleString() + ' comandos)' : '';
+						setProgress(currentPct, 'Passo 2/4: Restaurando banco de dados SQL (' + sqlPct + '%' + queriesText + ')...', res.log);
+
+						setTimeout(function() {
+							loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, 0);
+						}, 40);
+					}
+				}, function(err) {
+					if (attempt < 2) {
+						setProgress(startPct, 'Tentando retomar lote do banco SQL...', '[Aviso] Retentando SQL após: ' + err);
+						setTimeout(function() {
+							loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, attempt + 1);
+						}, 1500);
+					} else if (onError) {
+						onError(err);
+					}
+				});
+			}
 			function handleRestoreError(sessionId, errMsg, onError) {
 				sendAjax('dd_maintenance_ajax_restore', {
 					mode: 'restore_fail_cleanup',
