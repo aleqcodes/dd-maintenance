@@ -731,8 +731,8 @@ class DD_Maintenance_Restore {
 				$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
 			}
 
-			// 1. Detecta o prefixo das tabelas que acabaram de ser restauradas no banco
-			$dump_prefix = null;
+			// 1. Detecta o prefixo das tabelas restauradas no banco
+			$dump_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
 			$detected_tables = $wpdb->get_col( "SHOW TABLES LIKE '%options'" );
 			if ( ! empty( $detected_tables ) ) {
 				foreach ( $detected_tables as $tbl ) {
@@ -742,11 +742,8 @@ class DD_Maintenance_Restore {
 					}
 				}
 			}
-			if ( empty( $dump_prefix ) ) {
-				$dump_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
-			}
 
-			// Se o prefixo do backup for diferente do wp-config.php atual, sincroniza no wp-config.php
+			// 2. Se o prefixo do backup for diferente do wp-config.php atual, sincroniza no wp-config.php
 			if ( $dump_prefix !== $wpdb->prefix && class_exists( 'DD_Maintenance_Config' ) ) {
 				$config_res = DD_Maintenance_Config::update_table_prefix( $dump_prefix );
 				if ( ! is_wp_error( $config_res ) ) {
@@ -756,14 +753,10 @@ class DD_Maintenance_Restore {
 				}
 			}
 
-			// 2. Lê a URL original do backup para fazer Search & Replace
+			// 3. Atualiza siteurl e home na tabela de opções restaurada para o domínio atual
 			$options_table = $dump_prefix . 'options';
-			$old_siteurl   = (string) $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'siteurl' LIMIT 1" );
-
 			$siteurl = $session['db_current_siteurl'] ?? '';
 			$home    = $session['db_current_home'] ?? '';
-
-			// Atualiza siteurl e home para o domínio atual onde o site está sendo restaurado
 			if ( ! empty( $siteurl ) ) {
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", $siteurl ) );
 			}
@@ -771,11 +764,6 @@ class DD_Maintenance_Restore {
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $home ) );
 			}
 
-			// 3. Se a URL de origem do backup era diferente da URL atual, realiza Search & Replace seguro
-			// com suporte total a arrays serializados PHP (Elementor, ACF, Widgets) e JSON
-			if ( ! empty( $old_siteurl ) && ! empty( $siteurl ) && rtrim( $old_siteurl, '/' ) !== rtrim( $siteurl, '/' ) ) {
-				$this->perform_url_search_replace( $old_siteurl, $siteurl, $dump_prefix );
-			}
 			if ( function_exists( 'wp_cache_flush' ) ) {
 				@wp_cache_flush();
 			}
