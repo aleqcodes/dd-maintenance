@@ -715,11 +715,6 @@ class DD_Maintenance_Restore {
 		$session['db_errors']        = $errors;
 		$session['db_error_samples'] = $error_samples;
 		$session['db_query_buffer']  = $buffer;
-		$session['db_in_string']     = $in_string;
-		$session['db_string_char']   = $string_char;
-
-		$percent = min( 100, max( 0, (int) round( ( $current_offset / $file_size ) * 100 ) ) );
-
 		if ( $eof_reached ) {
 			if ( $use_mysqli ) {
 				@mysqli_query( $dbh, 'COMMIT;' );
@@ -730,16 +725,62 @@ class DD_Maintenance_Restore {
 				$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
 			}
 
-			// Garante que o site continue acessível no domínio atual
+			// 1. Detecta o prefixo das tabelas que acabaram de ser restauradas no banco
+			$dump_prefix = null;
+			$detected_tables = $wpdb->get_col( "SHOW TABLES LIKE '%options'" );
+			if ( ! empty( $detected_tables ) ) {
+				foreach ( $detected_tables as $tbl ) {
+					if ( preg_match( '/^(.+)options$/', $tbl, $m ) ) {
+						$dump_prefix = $m[1];
+						break;
+					}
+				}
+			}
+			if ( empty( $dump_prefix ) ) {
+				$dump_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
+			}
+
+			// Se o prefixo do backup for diferente do wp-config.php atual, sincroniza no wp-config.php
+			if ( $dump_prefix !== $wpdb->prefix && class_exists( 'DD_Maintenance_Config' ) ) {
+				$config_res = DD_Maintenance_Config::update_table_prefix( $dump_prefix );
+				if ( ! is_wp_error( $config_res ) ) {
+					$old_prefix = $wpdb->prefix;
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$dump_prefix}usermeta` SET `meta_key` = REPLACE(`meta_key`, %s, %s) WHERE `meta_key` LIKE %s", $old_prefix, $dump_prefix, $old_prefix . '%' ) );
+					$wpdb->set_prefix( $dump_prefix );
+				}
+			}
+
+			// 2. Lê a URL original do backup para fazer Search & Replace
+			$options_table = $dump_prefix . 'options';
+			$old_siteurl   = (string) $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'siteurl' LIMIT 1" );
+
 			$siteurl = $session['db_current_siteurl'] ?? '';
 			$home    = $session['db_current_home'] ?? '';
+
+			// Atualiza siteurl e home para o domínio atual onde o site está sendo restaurado
 			if ( ! empty( $siteurl ) ) {
-				$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", $siteurl ) );
 			}
 			if ( ! empty( $home ) ) {
-				$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $home ) );
+			}
+
+			// 3. Se a URL de origem do backup era diferente da URL atual, realiza Search & Replace
+			// para que imagens, galerias, posts, Elementor, links e temas venham 100% visíveis
+			if ( ! empty( $old_siteurl ) && ! empty( $siteurl ) && rtrim( $old_siteurl, '/' ) !== rtrim( $siteurl, '/' ) ) {
+				$from_url       = rtrim( $old_siteurl, '/' );
+				$to_url         = rtrim( $siteurl, '/' );
+				$posts_table    = $dump_prefix . 'posts';
+				$postmeta_table = $dump_prefix . 'postmeta';
+
+				// Posts e páginas (conteúdo, excerpt e guid)
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url ) );
+
+				// Metadados de posts (Elementor, galerias, custom fields)
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = REPLACE(`meta_value`, %s, %s) WHERE `meta_value` LIKE %s", $from_url, $to_url, '%' . $wpdb->esc_like( $from_url ) . '%' ) );
+
+				// Opções gerais do site (exceto siteurl/home que já foram atualizados)
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = REPLACE(`option_value`, %s, %s) WHERE `option_name` NOT IN ('siteurl', 'home') AND `option_value` LIKE %s", $from_url, $to_url, '%' . $wpdb->esc_like( $from_url ) . '%' ) );
 			}
 
 			if ( function_exists( 'wp_cache_flush' ) ) {
@@ -786,7 +827,7 @@ class DD_Maintenance_Restore {
 	}
 
 	/**
-	 * Etapa: Cópia e restauração dos arquivos do site na raiz.
+	 * Etapa: Cópia e restauração progressiva dos arquivos do site na raiz.
 	 *
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
@@ -799,25 +840,160 @@ class DD_Maintenance_Restore {
 			return $session;
 		}
 
-		$extract_dir  = $session['extract_dir'];
-		$files_result = $this->restore_files( $extract_dir );
-		if ( is_wp_error( $files_result ) ) {
-			return $files_result;
+		if ( ! empty( $session['files_done'] ) ) {
+			return array(
+				'completed' => true,
+				'copied'    => $session['files_copied'] ?? 0,
+				'total'     => $session['files_total'] ?? 0,
+				'percent'   => 100,
+				'log'       => __( '[OK] Arquivos já restaurados com sucesso.', 'dd-maintenance' ),
+			);
 		}
 
-		$log_line                = sprintf( __( '[OK] Arquivos restaurados: %d arquivos copiados com sucesso.', 'dd-maintenance' ), $files_result['copied'] );
-		$session['files_done']   = true;
-		$session['files_copied'] = $files_result['copied'];
-		$session['log'][]        = $log_line;
+		$extract_dir = $session['extract_dir'];
+		$queue_file  = $extract_dir . '/restore_queue.jsonl';
+
+		// Inicializa a fila de arquivos a serem restaurados na primeira chamada desta etapa
+		if ( empty( $session['files_queue_created'] ) ) {
+			$q_handle    = fopen( $queue_file, 'wb' );
+			$total_files = 0;
+
+			$backup_dirs = array(
+				wp_normalize_path( DD_Maintenance::backup_dir() ),
+				wp_normalize_path( $extract_dir ),
+			);
+
+			$copy_tasks = array();
+			if ( is_dir( $extract_dir . '/site' ) ) {
+				$copy_tasks[] = array( 'source' => $extract_dir . '/site', 'dest' => ABSPATH );
+			} elseif ( is_dir( $extract_dir . '/wp-content' ) ) {
+				$copy_tasks[] = array( 'source' => $extract_dir . '/wp-content', 'dest' => WP_CONTENT_DIR );
+			} else {
+				$copy_tasks[] = array( 'source' => $extract_dir, 'dest' => ABSPATH );
+			}
+
+			foreach ( $copy_tasks as $task ) {
+				$source_dir = wp_normalize_path( $task['source'] );
+				$dest_dir   = wp_normalize_path( $task['dest'] );
+				if ( ! is_dir( $source_dir ) ) {
+					continue;
+				}
+
+				$iterator = new RecursiveIteratorIterator(
+					new RecursiveDirectoryIterator( $source_dir, FilesystemIterator::SKIP_DOTS ),
+					RecursiveIteratorIterator::SELF_FIRST
+				);
+
+				foreach ( $iterator as $item ) {
+					$item_path      = wp_normalize_path( $item->getPathname() );
+					$filename_lower = strtolower( $item->getFilename() );
+
+					// NUNCA sobrescreve o wp-config.php e não copia arquivos SQL soltos
+					if ( 'wp-config.php' === $filename_lower || 'database.sql' === $filename_lower || preg_match( '/\.sql$/i', $filename_lower ) ) {
+						continue;
+					}
+
+					$relative = ltrim( substr( $item_path, strlen( $source_dir ) ), '/' );
+					$target   = $dest_dir . '/' . $relative;
+
+					$skip = false;
+					foreach ( $backup_dirs as $ignore ) {
+						if ( 0 === strpos( $target, $ignore ) ) {
+							$skip = true;
+							break;
+						}
+					}
+					if ( $skip ) {
+						continue;
+					}
+
+					if ( $item->isFile() ) {
+						fwrite( $q_handle, wp_json_encode( array( 'src' => $item_path, 'dst' => $target ) ) . "\n" );
+						$total_files++;
+					}
+				}
+			}
+			fclose( $q_handle );
+
+			$session['files_queue_created'] = true;
+			$session['files_total']         = $total_files;
+			$session['files_copied']        = 0;
+			$session['files_queue_offset']  = 0;
+			$this->save_restore_session_data( $extract_dir, $session );
+		}
+
+		$total_files  = max( 1, (int) ( $session['files_total'] ?? 1 ) );
+		$copied       = (int) ( $session['files_copied'] ?? 0 );
+		$queue_offset = (int) ( $session['files_queue_offset'] ?? 0 );
+
+		$deadline    = microtime( true ) + 6.0;
+		$batch_count = 0;
+		$completed   = false;
+
+		if ( file_exists( $queue_file ) ) {
+			$q_handle = fopen( $queue_file, 'rb' );
+			fseek( $q_handle, $queue_offset );
+
+			while ( ! feof( $q_handle ) && ( microtime( true ) < $deadline || $batch_count < 300 ) ) {
+				$line = fgets( $q_handle );
+				if ( false === $line ) {
+					$completed = true;
+					break;
+				}
+				$task = json_decode( $line, true );
+				if ( is_array( $task ) && ! empty( $task['src'] ) && ! empty( $task['dst'] ) ) {
+					if ( is_file( $task['src'] ) ) {
+						$parent = dirname( $task['dst'] );
+						if ( ! is_dir( $parent ) ) {
+							wp_mkdir_p( $parent );
+						}
+						if ( @copy( $task['src'], $task['dst'] ) ) {
+							$copied++;
+						}
+					}
+				}
+				$batch_count++;
+			}
+
+			$new_offset = ftell( $q_handle );
+			if ( feof( $q_handle ) ) {
+				$completed = true;
+			}
+			fclose( $q_handle );
+			$session['files_queue_offset'] = $new_offset;
+		} else {
+			$completed = true;
+		}
+
+		$session['files_copied'] = $copied;
+		$percent = min( 100, max( 0, (int) round( ( $copied / $total_files ) * 100 ) ) );
+
+		if ( $completed || $copied >= $total_files ) {
+			$session['files_done'] = true;
+			$log_line              = sprintf( __( '[OK] Arquivos restaurados: %1$s arquivos copiados com sucesso.', 'dd-maintenance' ), number_format_i18n( $copied ) );
+			$session['log'][]      = $log_line;
+			$this->save_restore_session_data( $extract_dir, $session );
+
+			return array(
+				'completed' => true,
+				'copied'    => $copied,
+				'total'     => $total_files,
+				'percent'   => 100,
+				'log'       => $log_line,
+			);
+		}
+
 		$this->save_restore_session_data( $extract_dir, $session );
+		$progress_line = sprintf( __( '[Arquivos] %1$s/%2$s arquivos copiados (%3$d%%)...', 'dd-maintenance' ), number_format_i18n( $copied ), number_format_i18n( $total_files ), $percent );
 
 		return array(
-			'completed' => true,
-			'copied'    => $files_result['copied'],
-			'log'       => $log_line,
+			'completed' => false,
+			'copied'    => $copied,
+			'total'     => $total_files,
+			'percent'   => $percent,
+			'log'       => $progress_line,
 		);
 	}
-
 	/**
 	 * Finaliza a restauração limpando pastas temporárias e consolidando o log final.
 	 *

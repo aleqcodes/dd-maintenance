@@ -1427,13 +1427,9 @@ class DD_Maintenance_Settings {
 								consoleOut.innerText += '\n' + dbRes.log;
 								consoleOut.scrollTop = consoleOut.scrollHeight;
 							}
-							setProgress(filesPct, 'Passo 3/4: Restaurando arquivos do site na raiz...', '[Arquivos] Copiando arquivos do site...');
+							setProgress(filesPct, 'Passo 3/4: Restaurando arquivos do site na raiz (0%)...', '[Arquivos] Copiando arquivos do site...');
 
-							sendAjax('dd_maintenance_ajax_restore', {
-								mode: 'restore_files',
-								restore_session_id: currentRestoreSessionId,
-								restore_password: sourceParams.restore_password || ''
-							}, function(filesRes) {
+							loopRestoreFilesBatches(currentRestoreSessionId, filesPct, 4, sourceParams.restore_password || '', function(filesRes) {
 								if (filesRes.log) {
 									consoleOut.innerText += '\n' + filesRes.log;
 									consoleOut.scrollTop = consoleOut.scrollHeight;
@@ -1538,6 +1534,42 @@ class DD_Maintenance_Settings {
 						setProgress(startPct, 'Tentando retomar lote do banco SQL...', '[Aviso] Retentando SQL após: ' + err);
 						setTimeout(function() {
 							loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, attempt + 1);
+						}, 1500);
+					} else if (onError) {
+						onError(err);
+					}
+				});
+			}
+
+			function loopRestoreFilesBatches(sessionId, startPct, filesSpan, password, onDone, onError, attempt) {
+				attempt = attempt || 0;
+
+				sendAjax('dd_maintenance_ajax_restore', {
+					mode: 'restore_files',
+					restore_session_id: sessionId,
+					restore_password: password || ''
+				}, function(res) {
+					if (res.completed) {
+						if (res.log) {
+							consoleOut.innerText += '\n' + res.log;
+							consoleOut.scrollTop = consoleOut.scrollHeight;
+						}
+						if (onDone) onDone(res);
+					} else {
+						var filePct    = res.percent || 0;
+						var currentPct = startPct + Math.round((filePct / 100) * filesSpan);
+						var filesText  = res.copied ? ' (' + res.copied.toLocaleString() + '/' + (res.total || 0).toLocaleString() + ' arquivos)' : '';
+						setProgress(currentPct, 'Passo 3/4: Restaurando arquivos do site na raiz (' + filePct + '%' + filesText + ')...', res.log);
+
+						setTimeout(function() {
+							loopRestoreFilesBatches(sessionId, startPct, filesSpan, password, onDone, onError, 0);
+						}, 30);
+					}
+				}, function(err) {
+					if (attempt < 2) {
+						setProgress(startPct, 'Tentando retomar cópia de arquivos...', '[Aviso] Retentando arquivos após: ' + err);
+						setTimeout(function() {
+							loopRestoreFilesBatches(sessionId, startPct, filesSpan, password, onDone, onError, attempt + 1);
 						}, 1500);
 					} else if (onError) {
 						onError(err);

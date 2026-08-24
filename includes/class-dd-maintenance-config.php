@@ -466,4 +466,47 @@ class DD_Maintenance_Config {
 	public static function get_select_value( array $status, string $constant ): bool {
 		return self::get_status_value( $status, $constant ) ?? false;
 	}
+
+	/**
+	 * Atualiza $table_prefix no wp-config.php de forma atômica e segura.
+	 *
+	 * @param string $new_prefix Novo prefixo de tabelas (ex: 'wp_').
+	 * @return bool|WP_Error
+	 */
+	public static function update_table_prefix( string $new_prefix ) {
+		$config_path = self::find_wp_config_path();
+		if ( is_wp_error( $config_path ) ) {
+			return $config_path;
+		}
+
+		if ( ! is_writable( $config_path ) ) {
+			return new WP_Error( 'dd_config_not_writable', __( 'O wp-config.php não tem permissão de escrita.', 'dd-maintenance' ) );
+		}
+
+		$contents = file_get_contents( $config_path );
+		if ( false === $contents ) {
+			return new WP_Error( 'dd_config_read_failed', __( 'Não foi possível ler o wp-config.php.', 'dd-maintenance' ) );
+		}
+
+		$pattern = '/(\$table_prefix\s*=\s*[\'"])(.*?)([\'"]\s*;)/i';
+		if ( preg_match( $pattern, $contents, $matches ) ) {
+			if ( $matches[2] === $new_prefix ) {
+				return true;
+			}
+			$updated = preg_replace( $pattern, '${1}' . addcslashes( $new_prefix, '\\$' ) . '${3}', $contents, 1 );
+		} else {
+			return false;
+		}
+
+		$backup_path = $config_path . '.dd-backup-prefix-' . gmdate( 'Ymd-His' );
+		@copy( $config_path, $backup_path );
+
+		$result = file_put_contents( $config_path, $updated, LOCK_EX );
+		if ( false === $result ) {
+			@copy( $backup_path, $config_path );
+			return new WP_Error( 'dd_config_write_failed', __( 'Falha ao salvar prefixo no wp-config.php.', 'dd-maintenance' ) );
+		}
+
+		return true;
+	}
 }
