@@ -1239,7 +1239,7 @@ class DD_Maintenance_Settings {
 						var pwd = pwdInput ? pwdInput.value : '';
 
 						openModal('Restauração de Backup (Upload)');
-						setProgress(3, 'Inicializando sessão de upload...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Upload] ' + totalFiles + ' arquivo(s) selecionado(s)...');
+						setProgress(2, 'Inicializando sessão de upload...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Upload] ' + totalFiles + ' arquivo(s) selecionado(s)...');
 
 						// Passo 1: Inicializa sessão de upload no servidor
 						sendAjax('dd_maintenance_ajax_restore', {
@@ -1248,21 +1248,21 @@ class DD_Maintenance_Settings {
 							restore_password: pwd
 						}, function(initData) {
 							var uploadSessionId = initData.upload_session_id;
-							setProgress(5, 'Iniciando envio sequencial dos ' + totalFiles + ' arquivo(s)...', '[Sessão] Upload temporário ID: ' + uploadSessionId);
+							setProgress(4, 'Iniciando envio sequencial dos ' + totalFiles + ' arquivo(s)...', '[Sessão] Upload temporário ID: ' + uploadSessionId);
 
 							// Passo 2: Envia cada arquivo individualmente (25MB por requisição - zero risco de 413 ou timeout)
 							uploadFilesSequentially(files, uploadSessionId, pwd, 0, function() {
-								setProgress(75, 'Todos os ' + totalFiles + ' arquivos enviados! Extraindo e restaurando...', '[Restauração] Iniciando extração e restauração do banco e arquivos...');
+								setProgress(60, 'Todos os ' + totalFiles + ' arquivos enviados! Iniciando extração dos volumes...', '[Upload] Concluído o envio dos ' + totalFiles + ' arquivos.');
 
-								// Passo 3: Finaliza e executa a restauração completa
-								sendAjax('dd_maintenance_ajax_restore', {
-									mode: 'upload_finalize',
+								// Passo 3: Executa o pipeline granular de extração com progresso em tempo real
+								executeRestorePipeline({
+									source: 'upload',
 									upload_session_id: uploadSessionId,
 									restore_password: pwd
-								}, function(finalRes) {
-									setProgress(100, 'Backup restaurado com sucesso!', finalRes.log || '[OK] Restauração concluída.', true);
-								}, function(errFinal) {
-									setProgress(50, 'Erro na restauração', '[ERRO] ' + errFinal, false, true);
+								}, 60, function() {
+									// Concluído com sucesso
+								}, function(err) {
+									// Erro já tratado no pipeline
 								});
 
 							}, function(uploadErr) {
@@ -1270,7 +1270,7 @@ class DD_Maintenance_Settings {
 							});
 
 						}, function(initErr) {
-							setProgress(10, 'Erro ao inicializar sessão', '[ERRO] ' + initErr, false, true);
+							setProgress(5, 'Erro ao inicializar sessão', '[ERRO] ' + initErr, false, true);
 						});
 					});
 				} else if (actVal === 'dd_maintenance_restore_local') {
@@ -1282,12 +1282,16 @@ class DD_Maintenance_Settings {
 						var pwd = pwdInput ? pwdInput.value : '';
 
 						openModal('Restauração de Backup Local');
-						setProgress(10, 'Reconstruindo e extraindo backup local...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Arquivo] ' + filename);
+						setProgress(5, 'Iniciando restauração do backup local...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Arquivo] ' + filename);
 
-						sendAjax('dd_maintenance_ajax_restore', { mode: 'local', backup_filename: filename, restore_password: pwd }, function(d) {
-							setProgress(100, 'Backup local restaurado com sucesso!', d.log || '[OK] Restauração concluída.', true);
+						executeRestorePipeline({
+							source: 'local',
+							backup_filename: filename,
+							restore_password: pwd
+						}, 5, function() {
+							// Concluído com sucesso
 						}, function(err) {
-							setProgress(40, 'Erro na restauração', '[ERRO] ' + err, false, true);
+							// Erro já tratado no pipeline
 						});
 					});
 				}
@@ -1300,10 +1304,10 @@ class DD_Maintenance_Settings {
 				}
 				attempt = attempt || 0;
 
-				var file = files[index];
-				var total = files.length;
+				var file       = files[index];
+				var total      = files.length;
 				var currentNum = index + 1;
-				var basePct = 5 + Math.round(((index) / total) * 65);
+				var basePct    = 4 + Math.round((index / total) * 56);
 
 				setProgress(basePct, 'Enviando arquivo ' + currentNum + ' de ' + total + ' (' + file.name + ')...');
 
@@ -1324,9 +1328,9 @@ class DD_Maintenance_Settings {
 				xhr.upload.onprogress = function(pe) {
 					if (pe.lengthComputable) {
 						var fileProgress = pe.loaded / pe.total;
-						var currentPct = 5 + Math.round(((index + fileProgress) / total) * 65);
-						var fileMb = Math.round((pe.loaded / 1024 / 1024) * 10) / 10;
-						var totalMb = Math.round((pe.total / 1024 / 1024) * 10) / 10;
+						var currentPct   = 4 + Math.round(((index + fileProgress) / total) * 56);
+						var fileMb       = Math.round((pe.loaded / 1024 / 1024) * 10) / 10;
+						var totalMb      = Math.round((pe.total / 1024 / 1024) * 10) / 10;
 						setProgress(currentPct, 'Enviando arquivo ' + currentNum + '/' + total + ' (' + file.name + ' - ' + fileMb + '/' + totalMb + ' MB)...');
 					}
 				};
@@ -1383,6 +1387,134 @@ class DD_Maintenance_Settings {
 				};
 
 				xhr.send(fd);
+			}
+
+			function executeRestorePipeline(sourceParams, startPct, onDone, onError) {
+				startPct = typeof startPct === 'number' ? startPct : 5;
+				var currentRestoreSessionId = '';
+				var totalVolumes            = 1;
+
+				var initData = { mode: 'restore_init' };
+				for (var k in sourceParams) {
+					if (sourceParams.hasOwnProperty(k)) {
+						initData[k] = sourceParams[k];
+					}
+				}
+
+				setProgress(startPct, 'Passo 1/4: Inicializando árvore de restauração no servidor...', '[Restauração] Preparando árvore de extração...');
+
+				sendAjax('dd_maintenance_ajax_restore', initData, function(initRes) {
+					currentRestoreSessionId = initRes.restore_session_id;
+					totalVolumes            = initRes.total_volumes || 1;
+
+					var extractSpan = (startPct >= 50) ? 26 : 60;
+					var dbPct       = startPct + extractSpan + 5;
+					var filesPct    = startPct + extractSpan + 9;
+
+					setProgress(startPct, 'Passo 1/4: Extraindo ' + totalVolumes + ' volume(s) de backup (0%)...', '[Sessão] ' + currentRestoreSessionId + ' (' + totalVolumes + ' volume(s))');
+
+					loopRestoreExtractBatches(currentRestoreSessionId, totalVolumes, startPct, extractSpan, function() {
+						setProgress(dbPct, 'Passo 2/4: Restaurando banco de dados (tabelas SQL)...', '[Banco] Executando comandos do dump SQL...');
+
+						sendAjax('dd_maintenance_ajax_restore', {
+							mode: 'restore_db',
+							restore_session_id: currentRestoreSessionId,
+							restore_password: sourceParams.restore_password || ''
+						}, function(dbRes) {
+							if (dbRes.log) {
+								consoleOut.innerText += '\n' + dbRes.log;
+								consoleOut.scrollTop = consoleOut.scrollHeight;
+							}
+							setProgress(filesPct, 'Passo 3/4: Restaurando arquivos do site na raiz...', '[Arquivos] Copiando arquivos do site...');
+
+							sendAjax('dd_maintenance_ajax_restore', {
+								mode: 'restore_files',
+								restore_session_id: currentRestoreSessionId,
+								restore_password: sourceParams.restore_password || ''
+							}, function(filesRes) {
+								if (filesRes.log) {
+									consoleOut.innerText += '\n' + filesRes.log;
+									consoleOut.scrollTop = consoleOut.scrollHeight;
+								}
+								setProgress(98, 'Passo 4/4: Finalizando restauração e limpando temporários...', '[Finalização] Limpando pastas temporárias...');
+
+								sendAjax('dd_maintenance_ajax_restore', {
+									mode: 'restore_finalize',
+									restore_session_id: currentRestoreSessionId,
+									restore_password: sourceParams.restore_password || ''
+								}, function(finRes) {
+									setProgress(100, 'Backup restaurado com sucesso!', (finRes.log ? finRes.log : '[OK] Restauração concluída.') + '\n[Fim] ' + new Date().toLocaleTimeString(), true);
+									if (onDone) onDone(finRes);
+								}, function(errFin) {
+									setProgress(98, 'Erro ao finalizar restauração', '[ERRO] ' + errFin, false, true);
+									if (onError) onError(errFin);
+								});
+
+							}, function(errFiles) {
+								setProgress(filesPct, 'Erro ao restaurar arquivos', '[ERRO] ' + errFiles, false, true);
+								handleRestoreError(currentRestoreSessionId, errFiles, onError);
+							});
+
+						}, function(errDb) {
+							setProgress(dbPct, 'Erro no banco de dados', '[ERRO] ' + errDb, false, true);
+							handleRestoreError(currentRestoreSessionId, errDb, onError);
+						});
+
+					}, function(errExt) {
+						setProgress(startPct + 5, 'Erro na extração de volumes', '[ERRO] ' + errExt, false, true);
+						handleRestoreError(currentRestoreSessionId, errExt, onError);
+					});
+
+				}, function(errInit) {
+					setProgress(startPct, 'Erro ao inicializar restauração', '[ERRO] ' + errInit, false, true);
+					if (onError) onError(errInit);
+				});
+			}
+
+			function loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, onDone, onError, attempt) {
+				attempt = attempt || 0;
+
+				sendAjax('dd_maintenance_ajax_restore', {
+					mode: 'restore_extract',
+					restore_session_id: sessionId,
+					batch_limit: 5
+				}, function(res) {
+					var currentIdx = res.current_index || 0;
+					var total      = res.total_volumes || totalVolumes;
+					var pctStep    = Math.round((currentIdx / total) * extractSpan);
+					var currentPct = Math.min(startPct + extractSpan, startPct + pctStep);
+					var pctText    = Math.round((currentIdx / total) * 100);
+
+					setProgress(currentPct, 'Passo 1/4: Extraindo volume ' + currentIdx + ' de ' + total + ' (' + pctText + '%)...', res.log);
+
+					if (res.completed) {
+						if (onDone) onDone(res);
+					} else {
+						setTimeout(function() {
+							loopRestoreExtractBatches(sessionId, total, startPct, extractSpan, onDone, onError, 0);
+						}, 40);
+					}
+				}, function(err) {
+					if (attempt < 2) {
+						setProgress(startPct, 'Tentando retomar lote de extração...', '[Aviso] Retentando após: ' + err);
+						setTimeout(function() {
+							loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, onDone, onError, attempt + 1);
+						}, 1500);
+					} else if (onError) {
+						onError(err);
+					}
+				});
+			}
+
+			function handleRestoreError(sessionId, errMsg, onError) {
+				sendAjax('dd_maintenance_ajax_restore', {
+					mode: 'restore_fail_cleanup',
+					restore_session_id: sessionId || ''
+				}, function() {
+					if (onError) onError(errMsg);
+				}, function() {
+					if (onError) onError(errMsg);
+				});
 			}
 		})();
 		</script>
@@ -3437,27 +3569,115 @@ class DD_Maintenance_Settings {
 					'size'     => filesize( $dest_path ),
 				)
 			);
-		} elseif ( 'upload_finalize' === $mode ) {
-			$upload_session_id = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
-			if ( empty( $upload_session_id ) || 0 !== strpos( $upload_session_id, 'upload_restore_' ) ) {
-				wp_send_json_error( array( 'message' => __( 'Identificador de sessão de upload inválido.', 'dd-maintenance' ) ) );
-			}
-
+		} elseif ( 'restore_init' === $mode ) {
+			$source     = isset( $_POST['source'] ) ? sanitize_key( wp_unslash( $_POST['source'] ) ) : 'upload';
 			$backup_dir = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
-			$temp_dir   = $backup_dir . '/' . $upload_session_id;
-			$real_temp  = file_exists( $temp_dir ) ? wp_normalize_path( realpath( $temp_dir ) ) : '';
+			$zip_paths  = array();
+			$temp_dir   = '';
 
-			if ( empty( $real_temp ) || 0 !== strpos( $real_temp, $backup_dir . '/' ) || ! is_dir( $real_temp ) ) {
-				wp_send_json_error( array( 'message' => __( 'Pasta temporária de upload não encontrada para finalização.', 'dd-maintenance' ) ) );
+			if ( 'upload' === $source ) {
+				$upload_session_id = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
+				if ( empty( $upload_session_id ) || 0 !== strpos( $upload_session_id, 'upload_restore_' ) ) {
+					wp_send_json_error( array( 'message' => __( 'Identificador de upload inválido.', 'dd-maintenance' ) ) );
+				}
+
+				$temp_dir  = $backup_dir . '/' . $upload_session_id;
+				$real_temp = file_exists( $temp_dir ) ? wp_normalize_path( realpath( $temp_dir ) ) : '';
+				if ( empty( $real_temp ) || 0 !== strpos( $real_temp, $backup_dir . '/' ) || ! is_dir( $real_temp ) ) {
+					wp_send_json_error( array( 'message' => __( 'Pasta temporária de upload não encontrada.', 'dd-maintenance' ) ) );
+				}
+
+				$zip_paths = glob( $real_temp . '/*.zip' );
+				if ( empty( $zip_paths ) ) {
+					wp_send_json_error( array( 'message' => __( 'Nenhum arquivo .zip encontrado na pasta de upload.', 'dd-maintenance' ) ) );
+				}
+			} elseif ( 'local' === $source ) {
+				$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
+				if ( empty( $filename ) ) {
+					wp_send_json_error( array( 'message' => __( 'Identificador de backup local inválido.', 'dd-maintenance' ) ) );
+				}
+
+				$base_name = preg_replace( '/\.part\d+\.zip$/i', '', $filename );
+				$base_name = preg_replace( '/\.zip$/i', '', $base_name );
+				$zip_paths = glob( $backup_dir . '/' . $base_name . '.part*.zip' );
+
+				if ( empty( $zip_paths ) && file_exists( $backup_dir . '/' . $base_name . '.zip' ) ) {
+					$zip_paths = array( $backup_dir . '/' . $base_name . '.zip' );
+				}
+
+				if ( empty( $zip_paths ) ) {
+					wp_send_json_error( array( 'message' => __( 'Arquivo(s) de backup local não encontrado(s).', 'dd-maintenance' ) ) );
+				}
+			} else {
+				wp_send_json_error( array( 'message' => __( 'Origem de restauração inválida.', 'dd-maintenance' ) ) );
 			}
 
-			$result = $restore->restore_from_temp_directory( $real_temp );
+			$session = $restore->init_restore_session( $zip_paths, $temp_dir );
+			if ( is_wp_error( $session ) ) {
+				wp_send_json_error( array( 'message' => $session->get_error_message() ) );
+			}
+
+			wp_send_json_success(
+				array(
+					'restore_session_id' => $session['session_id'],
+					'total_volumes'      => $session['total_volumes'],
+				)
+			);
+		} elseif ( 'restore_extract' === $mode ) {
+			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+			$batch_limit        = isset( $_POST['batch_limit'] ) ? max( 1, (int) $_POST['batch_limit'] ) : 5;
+
+			$result = $restore->extract_volume_step( $restore_session_id, $batch_limit );
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			}
+
+			wp_send_json_success( $result );
+		} elseif ( 'restore_db' === $mode ) {
+			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+
+			$result = $restore->restore_database_step( $restore_session_id );
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			}
+
+			wp_send_json_success( $result );
+		} elseif ( 'restore_files' === $mode ) {
+			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+
+			$result = $restore->restore_files_step( $restore_session_id );
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			}
+
+			wp_send_json_success( $result );
+		} elseif ( 'restore_finalize' === $mode ) {
+			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+
+			$result = $restore->finalize_restore_step( $restore_session_id );
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			}
+
+			$log_str = ! empty( $result['log'] ) ? implode( "\n", $result['log'] ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+			wp_send_json_success( array( 'log' => $log_str ) );
+		} elseif ( 'restore_fail_cleanup' === $mode ) {
+			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+			if ( ! empty( $restore_session_id ) ) {
+				$restore->cleanup_failed_restore( $restore_session_id );
+			}
+			wp_send_json_success( array( 'cleaned' => true ) );
 		} elseif ( 'upload' === $mode ) {
 			if ( empty( $_FILES['backup_zip'] ) ) {
 				wp_send_json_error( array( 'message' => __( 'Nenhum arquivo enviado.', 'dd-maintenance' ) ) );
 			}
 
 			$result = $restore->restore_from_upload( $_FILES['backup_zip'] );
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			}
+			$log_str = ! empty( $result['log'] ) ? implode( "\n", $result['log'] ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+			wp_send_json_success( array( 'log' => $log_str ) );
 		} elseif ( 'local' === $mode ) {
 			$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
 			if ( empty( $filename ) ) {
@@ -3465,15 +3685,13 @@ class DD_Maintenance_Settings {
 			}
 
 			$result = $restore->restore_from_local_file( $filename );
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			}
+			$log_str = ! empty( $result['log'] ) ? implode( "\n", $result['log'] ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+			wp_send_json_success( array( 'log' => $log_str ) );
 		} else {
 			wp_send_json_error( array( 'message' => __( 'Modo de restauração inválido.', 'dd-maintenance' ) ) );
 		}
-
-		if ( is_wp_error( $result ) ) {
-			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
-		}
-
-		$log_str = ! empty( $result['log'] ) ? implode( "\n", $result['log'] ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
-		wp_send_json_success( array( 'log' => $log_str ) );
 	}
 }

@@ -327,96 +327,351 @@ class DD_Maintenance_Restore {
 	}
 
 	/**
-	 * Extrai volumes ZIP independentes na mesma árvore e restaura o conteúdo.
+	 * Inicia uma sessão de restauração em etapas gravando o estado em disco.
 	 *
-	 * @param array $zip_paths Volumes em ordem.
+	 * @param array  $zip_paths       Caminhos dos volumes .zip.
+	 * @param string $temp_upload_dir Pasta temporária de upload (se houver).
 	 * @return array|WP_Error
 	 */
-	private function restore_archive_set( array $zip_paths ) {
+	public function init_restore_session( array $zip_paths, string $temp_upload_dir = '' ) {
 		$this->set_time_and_memory_limits();
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'restore_zip_missing', __( 'A extensão PHP ZipArchive não está disponível no servidor.', 'dd-maintenance' ) );
 		}
 
+		$zip_paths = $this->sort_part_files( $zip_paths );
+		if ( is_wp_error( $zip_paths ) ) {
+			return $zip_paths;
+		}
+
+		$session_id  = 'rst_' . time() . '_' . wp_generate_password( 8, false );
 		$backup_dir  = DD_Maintenance::backup_dir();
-		$extract_dir = $backup_dir . '/temp-restore-' . time() . '-' . wp_generate_password( 8, false );
+		$extract_dir = $backup_dir . '/restore_exec_' . $session_id;
+
 		if ( ! wp_mkdir_p( $extract_dir ) ) {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
 		}
 
-		$log = array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) );
-		foreach ( $zip_paths as $zip_path ) {
+		$session = array(
+			'session_id'        => $session_id,
+			'extract_dir'       => $extract_dir,
+			'temp_upload_dir'   => $temp_upload_dir,
+			'zip_paths'         => array_values( $zip_paths ),
+			'total_volumes'     => count( $zip_paths ),
+			'current_index'     => 0,
+			'large_rebuilt'     => false,
+			'db_done'           => false,
+			'db_stats'          => null,
+			'files_done'        => false,
+			'files_copied'      => 0,
+			'log'               => array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) ),
+			'created_at'        => time(),
+		);
+
+		$this->save_restore_session_data( $extract_dir, $session );
+		return $session;
+	}
+
+	/**
+	 * Carrega o estado da sessão de restauração.
+	 *
+	 * @param string $session_id ID da sessão.
+	 * @return array|WP_Error
+	 */
+	public function get_restore_session_data( string $session_id ) {
+		$session_id  = sanitize_file_name( $session_id );
+		$backup_dir  = DD_Maintenance::backup_dir();
+		$extract_dir = $backup_dir . '/restore_exec_' . $session_id;
+		$state_file  = $extract_dir . '/state.json';
+
+		if ( ! file_exists( $state_file ) ) {
+			return new WP_Error( 'restore_session_missing', __( 'Sessão de restauração não encontrada ou expirada.', 'dd-maintenance' ) );
+		}
+
+		$data = json_decode( (string) file_get_contents( $state_file ), true );
+		if ( ! is_array( $data ) ) {
+			return new WP_Error( 'restore_session_corrupted', __( 'Dados da sessão de restauração corrompidos.', 'dd-maintenance' ) );
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Grava o estado da sessão de restauração.
+	 *
+	 * @param string $extract_dir Pasta da sessão.
+	 * @param array  $session     Dados da sessão.
+	 * @return void
+	 */
+	public function save_restore_session_data( string $extract_dir, array $session ): void {
+		file_put_contents( $extract_dir . '/state.json', wp_json_encode( $session ) );
+	}
+
+	/**
+	 * Extrai um lote de volumes ZIP (ex: até 5 volumes ou 6 segundos por chamada).
+	 *
+	 * @param string $session_id  ID da sessão.
+	 * @param int    $batch_limit Quantidade máxima de volumes por lote.
+	 * @return array|WP_Error
+	 */
+	public function extract_volume_step( string $session_id, int $batch_limit = 5 ) {
+		$this->set_time_and_memory_limits();
+
+		$session = $this->get_restore_session_data( $session_id );
+		if ( is_wp_error( $session ) ) {
+			return $session;
+		}
+
+		$extract_dir   = $session['extract_dir'];
+		$zip_paths     = $session['zip_paths'];
+		$total_volumes = (int) $session['total_volumes'];
+		$current_index = (int) $session['current_index'];
+
+		if ( $current_index >= $total_volumes ) {
+			if ( empty( $session['large_rebuilt'] ) ) {
+				$rebuilt = $this->reassemble_large_files( $extract_dir );
+				if ( is_wp_error( $rebuilt ) ) {
+					return $rebuilt;
+				}
+				$session['large_rebuilt'] = true;
+				$this->save_restore_session_data( $extract_dir, $session );
+			}
+
+			return array(
+				'completed'     => true,
+				'current_index' => $total_volumes,
+				'total_volumes' => $total_volumes,
+				'percent'       => 100,
+				'log'           => sprintf( __( '[OK] Todos os %d volumes foram extraídos.', 'dd-maintenance' ), $total_volumes ),
+			);
+		}
+
+		$processed = 0;
+		$deadline  = microtime( true ) + 6.0;
+		$log_lines = array();
+
+		while ( $current_index < $total_volumes && $processed < $batch_limit && microtime( true ) < $deadline ) {
+			$zip_path = $zip_paths[ $current_index ];
+
 			if ( ! is_file( $zip_path ) || filesize( $zip_path ) <= 0 ) {
-				$this->delete_directory( $extract_dir );
-				return new WP_Error( 'restore_zip_invalid', __( 'Arquivo de backup inválido ou vazio.', 'dd-maintenance' ) );
+				return new WP_Error( 'restore_zip_invalid', sprintf( __( 'Arquivo de lote inválido: %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
 
 			$zip = new ZipArchive();
 			if ( true !== $zip->open( $zip_path ) ) {
-				$this->delete_directory( $extract_dir );
 				return new WP_Error( 'restore_zip_open_failed', sprintf( __( 'Falha ao abrir o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
 
-			for ( $index = 0; $index < $zip->numFiles; $index++ ) {
-				$entry_name = wp_normalize_path( (string) $zip->getNameIndex( $index ) );
+			for ( $idx = 0; $idx < $zip->numFiles; $idx++ ) {
+				$entry_name = wp_normalize_path( (string) $zip->getNameIndex( $idx ) );
 				if ( 0 === strpos( $entry_name, '/' ) || preg_match( '#(^|/)\.\.(/|$)#', $entry_name ) ) {
 					$zip->close();
-					$this->delete_directory( $extract_dir );
-					return new WP_Error( 'restore_zip_slip_detected', __( 'Arquivo de backup rejeitado por conter caminhos relativos inválidos (Zip Slip).', 'dd-maintenance' ) );
+					return new WP_Error( 'restore_zip_slip_detected', __( 'Arquivo de backup rejeitado por conter caminhos inválidos (Zip Slip).', 'dd-maintenance' ) );
 				}
 			}
 
 			$extracted = $zip->extractTo( $extract_dir );
 			$zip->close();
+
 			if ( ! $extracted ) {
-				$this->delete_directory( $extract_dir );
 				return new WP_Error( 'restore_extract_failed', sprintf( __( 'Falha ao extrair o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
-			$log[] = '[Lote] ' . basename( $zip_path ) . ' (' . size_format( filesize( $zip_path ) ) . ')';
+
+			$current_index++;
+			$processed++;
+
+			$line        = sprintf( '[Extração %d/%d] %s (%s)', $current_index, $total_volumes, basename( $zip_path ), size_format( (int) filesize( $zip_path ) ) );
+			$log_lines[] = $line;
+			$session['log'][] = $line;
 		}
 
-		$rebuilt = $this->reassemble_large_files( $extract_dir );
-		if ( is_wp_error( $rebuilt ) ) {
-			$this->delete_directory( $extract_dir );
-			return $rebuilt;
+		$session['current_index'] = $current_index;
+		$completed                = $current_index >= $total_volumes;
+
+		if ( $completed && empty( $session['large_rebuilt'] ) ) {
+			$rebuilt = $this->reassemble_large_files( $extract_dir );
+			if ( is_wp_error( $rebuilt ) ) {
+				return $rebuilt;
+			}
+			$session['large_rebuilt'] = true;
+			$log_lines[]              = __( '[OK] Arquivos grandes remontados com sucesso.', 'dd-maintenance' );
 		}
 
-		$sql_file = $this->find_sql_file( $extract_dir );
-		$db_stats = null;
+		$this->save_restore_session_data( $extract_dir, $session );
+
+		$percent = (int) round( ( $current_index / $total_volumes ) * 100 );
+
+		return array(
+			'completed'     => $completed,
+			'current_index' => $current_index,
+			'total_volumes' => $total_volumes,
+			'percent'       => $percent,
+			'log'           => implode( "\n", $log_lines ),
+		);
+	}
+
+	/**
+	 * Etapa: Restauração do banco de dados SQL.
+	 *
+	 * @param string $session_id ID da sessão.
+	 * @return array|WP_Error
+	 */
+	public function restore_database_step( string $session_id ) {
+		$this->set_time_and_memory_limits();
+
+		$session = $this->get_restore_session_data( $session_id );
+		if ( is_wp_error( $session ) ) {
+			return $session;
+		}
+
+		$extract_dir = $session['extract_dir'];
+		$sql_file    = $this->find_sql_file( $extract_dir );
+		$db_stats    = null;
+		$log_line    = '';
+
 		if ( $sql_file ) {
-			$log[]     = '[Banco] Arquivo SQL detectado: ' . basename( $sql_file );
 			$db_result = $this->restore_database( $sql_file );
 			if ( is_wp_error( $db_result ) ) {
-				$this->delete_directory( $extract_dir );
 				return $db_result;
 			}
 			$db_stats = $db_result;
-			$log[]    = sprintf(
-				__( '[OK] Banco restaurado com sucesso: %1$d comandos executados (%2$d tabelas processadas).', 'dd-maintenance' ),
+			$log_line = sprintf(
+				__( '[OK] Banco restaurado: %1$d comandos executados (%2$d tabelas processadas).', 'dd-maintenance' ),
 				$db_result['queries'],
 				$db_result['tables']
 			);
 		} else {
-			$log[] = '[Aviso] Nenhum arquivo .sql encontrado no backup (banco de dados não alterado).';
+			$log_line = __( '[Aviso] Nenhum arquivo .sql detectado no backup (banco de dados mantido).', 'dd-maintenance' );
 		}
 
-		$files_result = $this->restore_files( $extract_dir );
-		if ( is_wp_error( $files_result ) ) {
-			$this->delete_directory( $extract_dir );
-			return $files_result;
-		}
-		$log[] = sprintf( __( '[OK] Arquivos restaurados com sucesso: %d arquivos copiados.', 'dd-maintenance' ), $files_result['copied'] );
-		$this->delete_directory( $extract_dir );
-		$log[] = '[Fim da Restauração] ' . current_time( 'Y-m-d H:i:s' );
+		$session['db_done']   = true;
+		$session['db_stats']  = $db_stats;
+		$session['log'][]     = $log_line;
+		$this->save_restore_session_data( $extract_dir, $session );
 
 		return array(
-			'success'  => true,
-			'log'      => $log,
-			'db_stats' => $db_stats,
-			'files'    => $files_result['copied'],
+			'completed' => true,
+			'has_sql'   => (bool) $sql_file,
+			'db_stats'  => $db_stats,
+			'log'       => $log_line,
 		);
 	}
 
+	/**
+	 * Etapa: Cópia e restauração dos arquivos do site na raiz.
+	 *
+	 * @param string $session_id ID da sessão.
+	 * @return array|WP_Error
+	 */
+	public function restore_files_step( string $session_id ) {
+		$this->set_time_and_memory_limits();
+
+		$session = $this->get_restore_session_data( $session_id );
+		if ( is_wp_error( $session ) ) {
+			return $session;
+		}
+
+		$extract_dir  = $session['extract_dir'];
+		$files_result = $this->restore_files( $extract_dir );
+		if ( is_wp_error( $files_result ) ) {
+			return $files_result;
+		}
+
+		$log_line                = sprintf( __( '[OK] Arquivos restaurados: %d arquivos copiados com sucesso.', 'dd-maintenance' ), $files_result['copied'] );
+		$session['files_done']   = true;
+		$session['files_copied'] = $files_result['copied'];
+		$session['log'][]        = $log_line;
+		$this->save_restore_session_data( $extract_dir, $session );
+
+		return array(
+			'completed' => true,
+			'copied'    => $files_result['copied'],
+			'log'       => $log_line,
+		);
+	}
+
+	/**
+	 * Finaliza a restauração limpando pastas temporárias e consolidando o log final.
+	 *
+	 * @param string $session_id ID da sessão.
+	 * @return array|WP_Error
+	 */
+	public function finalize_restore_step( string $session_id ) {
+		$session = $this->get_restore_session_data( $session_id );
+		if ( is_wp_error( $session ) ) {
+			return $session;
+		}
+
+		$extract_dir     = $session['extract_dir'];
+		$temp_upload_dir = $session['temp_upload_dir'];
+
+		$this->delete_directory( $extract_dir );
+		if ( ! empty( $temp_upload_dir ) && is_dir( $temp_upload_dir ) ) {
+			$this->delete_directory( $temp_upload_dir );
+		}
+
+		$session['log'][] = '[Fim da Restauração] ' . current_time( 'Y-m-d H:i:s' );
+
+		return array(
+			'success'  => true,
+			'log'      => $session['log'],
+			'db_stats' => $session['db_stats'],
+			'files'    => $session['files_copied'],
+		);
+	}
+
+	/**
+	 * Limpa a sessão de restauração em caso de falha.
+	 *
+	 * @param string $session_id ID da sessão.
+	 * @return void
+	 */
+	public function cleanup_failed_restore( string $session_id ) {
+		$session = $this->get_restore_session_data( $session_id );
+		if ( ! is_wp_error( $session ) ) {
+			$this->delete_directory( $session['extract_dir'] );
+			if ( ! empty( $session['temp_upload_dir'] ) && is_dir( $session['temp_upload_dir'] ) ) {
+				$this->delete_directory( $session['temp_upload_dir'] );
+			}
+		}
+	}
+
+	/**
+	 * Executa a restauração completa em loop sequencial síncrono (para CLI/WP-Cron).
+	 *
+	 * @param array $zip_paths Caminhos dos volumes ZIP.
+	 * @return array|WP_Error
+	 */
+	private function restore_archive_set( array $zip_paths ) {
+		$session = $this->init_restore_session( $zip_paths );
+		if ( is_wp_error( $session ) ) {
+			return $session;
+		}
+
+		$session_id = $session['session_id'];
+
+		do {
+			$ext_res = $this->extract_volume_step( $session_id, 10 );
+			if ( is_wp_error( $ext_res ) ) {
+				$this->cleanup_failed_restore( $session_id );
+				return $ext_res;
+			}
+		} while ( empty( $ext_res['completed'] ) );
+
+		$db_res = $this->restore_database_step( $session_id );
+		if ( is_wp_error( $db_res ) ) {
+			$this->cleanup_failed_restore( $session_id );
+			return $db_res;
+		}
+
+		$files_res = $this->restore_files_step( $session_id );
+		if ( is_wp_error( $files_res ) ) {
+			$this->cleanup_failed_restore( $session_id );
+			return $files_res;
+		}
+
+		return $this->finalize_restore_step( $session_id );
+	}
 	/**
 	 * Reconstrói arquivos que atravessaram mais de um volume.
 	 *
