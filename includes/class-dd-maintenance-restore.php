@@ -352,6 +352,13 @@ class DD_Maintenance_Restore {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
 		}
 
+		$scheme = ( is_ssl() || ( isset( $_SERVER['HTTPS'] ) && 'on' === $_SERVER['HTTPS'] ) || ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) ) ? 'https://' : 'http://';
+		$host   = $_SERVER['HTTP_HOST'] ?? '';
+		$detected_url = ! empty( $host ) ? untrailingslashit( $scheme . $host ) : '';
+
+		$current_siteurl = get_option( 'siteurl', '' );
+		$current_home    = get_option( 'home', '' );
+
 		$session = array(
 			'session_id'        => $session_id,
 			'extract_dir'       => $extract_dir,
@@ -362,12 +369,13 @@ class DD_Maintenance_Restore {
 			'large_rebuilt'     => false,
 			'db_done'           => false,
 			'db_stats'          => null,
+			'target_siteurl'    => ! empty( $current_siteurl ) ? $current_siteurl : $detected_url,
+			'target_home'       => ! empty( $current_home ) ? $current_home : $detected_url,
 			'files_done'        => false,
 			'files_copied'      => 0,
 			'log'               => array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) ),
 			'created_at'        => time(),
 		);
-
 		$this->save_restore_session_data( $extract_dir, $session );
 		return $session;
 	}
@@ -753,15 +761,51 @@ class DD_Maintenance_Restore {
 				}
 			}
 
-			// 3. Atualiza siteurl e home na tabela de opções restaurada para o domínio atual
 			$options_table = $dump_prefix . 'options';
-			$siteurl = $session['db_current_siteurl'] ?? '';
-			$home    = $session['db_current_home'] ?? '';
-			if ( ! empty( $siteurl ) ) {
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", $siteurl ) );
+
+			// 3. Lê o siteurl antigo do backup antes de sobrescrever
+			$old_siteurl = (string) $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'siteurl' LIMIT 1" );
+
+			// 4. Garante que DD Maintenance e Backuper estejam SEMPRE ativos em active_plugins da nova tabela
+			$active_raw  = $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'active_plugins' LIMIT 1" );
+			$active_list = maybe_unserialize( $active_raw );
+			if ( ! is_array( $active_list ) ) {
+				$active_list = array();
 			}
-			if ( ! empty( $home ) ) {
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $home ) );
+			$our_plugins = array( 'dd-maintenance/dd-maintenance.php', 'backuper/backuper.php' );
+			$modified    = false;
+			foreach ( $our_plugins as $p_slug ) {
+				if ( ! in_array( $p_slug, $active_list, true ) ) {
+					$active_list[] = $p_slug;
+					$modified      = true;
+				}
+			}
+			if ( $modified ) {
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'active_plugins'", serialize( $active_list ) ) );
+			}
+
+			// 5. Atualiza siteurl e home na tabela de opções restaurada para o domínio atual do servidor
+			$target_siteurl = ! empty( $session['target_siteurl'] ) ? $session['target_siteurl'] : ( ! empty( $session['db_current_siteurl'] ) ? $session['db_current_siteurl'] : get_option( 'siteurl', '' ) );
+			$target_home    = ! empty( $session['target_home'] ) ? $session['target_home'] : ( ! empty( $session['db_current_home'] ) ? $session['db_current_home'] : get_option( 'home', '' ) );
+			if ( ! empty( $target_siteurl ) ) {
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", untrailingslashit( $target_siteurl ) ) );
+			}
+			if ( ! empty( $target_home ) ) {
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", untrailingslashit( $target_home ) ) );
+			}
+
+			// 6. Atualiza URLs de links e assets no banco
+			if ( ! empty( $old_siteurl ) && ! empty( $target_siteurl ) && rtrim( $old_siteurl, '/' ) !== rtrim( $target_siteurl, '/' ) ) {
+				$from_url       = rtrim( $old_siteurl, '/' );
+				$to_url         = rtrim( $target_siteurl, '/' );
+				$posts_table    = $dump_prefix . 'posts';
+				$postmeta_table = $dump_prefix . 'postmeta';
+
+				// Posts e páginas
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
+
+				// Elementor JSON data (_elementor_data)
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = REPLACE(`meta_value`, %s, %s) WHERE `meta_key` = '_elementor_data' AND `meta_value` LIKE %s", $from_url, $to_url, '%' . $wpdb->esc_like( $from_url ) . '%' ) );
 			}
 
 			if ( function_exists( 'wp_cache_flush' ) ) {
