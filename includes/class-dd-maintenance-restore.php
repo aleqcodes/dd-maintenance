@@ -676,66 +676,120 @@ class DD_Maintenance_Restore {
 	public static function get_local_backups(): array {
 		$backup_dir = DD_Maintenance::backup_dir();
 		$files      = glob( $backup_dir . '/*.zip' );
+		$sql_files  = glob( $backup_dir . '/*.sql' );
 		$groups     = array();
 
-		if ( empty( $files ) ) {
-			return array();
+		if ( ! empty( $files ) ) {
+			foreach ( $files as $file ) {
+				if ( ! is_file( $file ) ) {
+					continue;
+				}
+
+				$filename = basename( $file );
+				$size     = (int) filesize( $file );
+				$mtime    = filemtime( $file );
+
+				// Identifica se é uma parte de um backup multi-part (ex: site-2026-08-20-1330.part001.zip)
+				if ( preg_match( '/^(.+)\.part(\d+)\.zip$/i', $filename, $matches ) ) {
+					$base_name = $matches[1];
+					$part_num  = (int) $matches[2];
+
+					if ( ! isset( $groups[ $base_name ] ) ) {
+						$groups[ $base_name ] = array(
+							'base_name'     => $base_name,
+							'display_name'  => $base_name,
+							'is_multipart'  => true,
+							'parts'         => array(),
+							'total_size'    => 0,
+							'latest_mtime'  => $mtime,
+							'has_sql'       => false,
+							'sql_filename'  => '',
+							'sql_size'      => 0,
+						);
+					}
+
+					$groups[ $base_name ]['parts'][ $part_num ] = array(
+						'filename'       => $filename,
+						'path'           => $file,
+						'size'           => $size,
+						'size_formatted' => size_format( $size ),
+						'part'           => $part_num,
+					);
+					$groups[ $base_name ]['total_size'] += $size;
+					if ( $mtime > $groups[ $base_name ]['latest_mtime'] ) {
+						$groups[ $base_name ]['latest_mtime'] = $mtime;
+					}
+				} else {
+					// Arquivo zip simples de parte única
+					$base_name = preg_replace( '/\.zip$/i', '', $filename );
+
+					if ( ! isset( $groups[ $base_name ] ) ) {
+						$groups[ $base_name ] = array(
+							'base_name'     => $base_name,
+							'display_name'  => $filename,
+							'is_multipart'  => false,
+							'parts'         => array(
+								1 => array(
+									'filename'       => $filename,
+									'path'           => $file,
+									'size'           => $size,
+									'size_formatted' => size_format( $size ),
+									'part'           => 1,
+								),
+							),
+							'total_size'    => $size,
+							'latest_mtime'  => $mtime,
+							'has_sql'       => false,
+							'sql_filename'  => '',
+							'sql_size'      => 0,
+						);
+					} else {
+						$groups[ $base_name ]['parts'][1] = array(
+							'filename'       => $filename,
+							'path'           => $file,
+							'size'           => $size,
+							'size_formatted' => size_format( $size ),
+							'part'           => 1,
+						);
+						$groups[ $base_name ]['total_size'] += $size;
+					}
+				}
+			}
 		}
 
-		foreach ( $files as $file ) {
-			if ( ! is_file( $file ) ) {
-				continue;
-			}
-
-			$filename = basename( $file );
-			$size     = (int) filesize( $file );
-			$mtime    = filemtime( $file );
-
-			// Identifica se é uma parte de um backup multi-part (ex: site-2026-08-20-1330.part001.zip)
-			if ( preg_match( '/^(.+)\.part(\d+)\.zip$/i', $filename, $matches ) ) {
-				$base_name = $matches[1];
-				$part_num  = (int) $matches[2];
-
-				if ( ! isset( $groups[ $base_name ] ) ) {
-					$groups[ $base_name ] = array(
-						'base_name'     => $base_name,
-						'display_name'  => $base_name,
-						'is_multipart'  => true,
-						'parts'         => array(),
-						'total_size'    => 0,
-						'latest_mtime'  => $mtime,
-					);
+		// Detecta dumps SQL associados ou avulsos na pasta local
+		if ( ! empty( $sql_files ) ) {
+			foreach ( $sql_files as $sql_file ) {
+				if ( ! is_file( $sql_file ) ) {
+					continue;
 				}
 
-				$groups[ $base_name ]['parts'][ $part_num ] = array(
-					'filename' => $filename,
-					'path'     => $file,
-					'size'     => $size,
-					'part'     => $part_num,
-				);
-				$groups[ $base_name ]['total_size'] += $size;
-				if ( $mtime > $groups[ $base_name ]['latest_mtime'] ) {
-					$groups[ $base_name ]['latest_mtime'] = $mtime;
-				}
-			} else {
-				// Arquivo zip simples de parte única
-				$base_name = preg_replace( '/\.zip$/i', '', $filename );
+				$sql_filename = basename( $sql_file );
+				$sql_base     = preg_replace( '/\.sql$/i', '', $sql_filename );
+				$sql_size     = (int) filesize( $sql_file );
+				$sql_mtime    = filemtime( $sql_file );
 
-				if ( ! isset( $groups[ $base_name ] ) ) {
-					$groups[ $base_name ] = array(
-						'base_name'     => $base_name,
-						'display_name'  => $filename,
-						'is_multipart'  => false,
-						'parts'         => array(
-							1 => array(
-								'filename' => $filename,
-								'path'     => $file,
-								'size'     => $size,
-								'part'     => 1,
-							),
-						),
-						'total_size'    => $size,
-						'latest_mtime'  => $mtime,
+				if ( isset( $groups[ $sql_base ] ) ) {
+					$groups[ $sql_base ]['has_sql']           = true;
+					$groups[ $sql_base ]['sql_filename']      = $sql_filename;
+					$groups[ $sql_base ]['sql_size']          = $sql_size;
+					$groups[ $sql_base ]['sql_size_formatted'] = size_format( $sql_size );
+					$groups[ $sql_base ]['total_size']       += $sql_size;
+					if ( $sql_mtime > $groups[ $sql_base ]['latest_mtime'] ) {
+						$groups[ $sql_base ]['latest_mtime'] = $sql_mtime;
+					}
+				} else {
+					$groups[ $sql_base ] = array(
+						'base_name'          => $sql_base,
+						'display_name'       => $sql_filename . ' (' . __( 'Dump SQL', 'dd-maintenance' ) . ')',
+						'is_multipart'       => false,
+						'parts'              => array(),
+						'total_size'         => $sql_size,
+						'latest_mtime'       => $sql_mtime,
+						'has_sql'            => true,
+						'sql_filename'       => $sql_filename,
+						'sql_size'           => $sql_size,
+						'sql_size_formatted' => size_format( $sql_size ),
 					);
 				}
 			}
@@ -743,19 +797,25 @@ class DD_Maintenance_Restore {
 
 		$backups = array();
 		foreach ( $groups as $base => $data ) {
-			$count = count( $data['parts'] );
-			$mtime = $data['latest_mtime'];
+			ksort( $data['parts'], SORT_NUMERIC );
+			$parts_list = array_values( $data['parts'] );
+			$count      = count( $parts_list );
+			$mtime      = $data['latest_mtime'];
 
 			$backups[] = array(
-				'identifier'     => $base,
-				'display_name'   => $data['is_multipart'] ? sprintf( '%s (%d partes de 25MB)', $base, $count ) : $data['display_name'],
-				'is_multipart'   => $data['is_multipart'],
-				'total_parts'    => $count,
-				'parts'          => $data['parts'],
-				'size'           => $data['total_size'],
-				'size_formatted' => size_format( $data['total_size'] ),
-				'timestamp'      => $mtime,
-				'date_formatted' => get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $mtime ), 'd/m/Y H:i:s' ),
+				'identifier'         => $base,
+				'display_name'       => $data['is_multipart'] ? sprintf( '%s (%d partes de 25MB)', $base, $count ) : $data['display_name'],
+				'is_multipart'       => $data['is_multipart'],
+				'total_parts'        => $count,
+				'parts'              => $parts_list,
+				'has_sql'            => ! empty( $data['has_sql'] ),
+				'sql_filename'       => $data['sql_filename'] ?? '',
+				'sql_size'           => $data['sql_size'] ?? 0,
+				'sql_size_formatted' => $data['sql_size_formatted'] ?? ( ! empty( $data['sql_size'] ) ? size_format( $data['sql_size'] ) : '' ),
+				'size'               => $data['total_size'],
+				'size_formatted'     => size_format( $data['total_size'] ),
+				'timestamp'          => $mtime,
+				'date_formatted'     => get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $mtime ), 'd/m/Y H:i:s' ),
 			);
 		}
 

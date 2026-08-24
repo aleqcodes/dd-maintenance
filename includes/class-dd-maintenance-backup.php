@@ -890,7 +890,15 @@ class DD_Maintenance_Backup {
 	private function format_final_result( array $session ): array {
 		$parts      = isset( $session['parts'] ) && is_array( $session['parts'] ) ? $session['parts'] : array();
 		$total_size = (int) $session['total_size'];
-		$result     = array(
+
+		foreach ( $parts as &$p ) {
+			if ( ! isset( $p['size_formatted'] ) && isset( $p['size'] ) ) {
+				$p['size_formatted'] = size_format( (int) $p['size'] );
+			}
+		}
+		unset( $p );
+
+		$result = array(
 			'completed'   => true,
 			'base'        => $session['base_name'],
 			'parts'       => $parts,
@@ -903,6 +911,16 @@ class DD_Maintenance_Backup {
 				size_format( $total_size )
 			),
 		);
+
+		$backup_dir = DD_Maintenance::backup_dir();
+		$sql_file   = $backup_dir . '/' . $session['base_name'] . '.sql';
+		if ( file_exists( $sql_file ) && is_file( $sql_file ) ) {
+			$sql_size                    = (int) filesize( $sql_file );
+			$result['has_sql']           = true;
+			$result['sql_filename']      = $session['base_name'] . '.sql';
+			$result['sql_size']          = $sql_size;
+			$result['sql_size_formatted'] = size_format( $sql_size );
+		}
 
 		if ( ! empty( $parts ) ) {
 			$result['file'] = $parts[0]['file'];

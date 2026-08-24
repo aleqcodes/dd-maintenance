@@ -29,7 +29,7 @@ class DD_Maintenance_Settings {
 		add_action( 'admin_post_dd_maintenance_restore_upload', array( $this, 'handle_restore_upload' ) );
 		add_action( 'admin_post_dd_maintenance_restore_local', array( $this, 'handle_restore_local' ) );
 		add_action( 'admin_post_dd_maintenance_delete_backup', array( $this, 'handle_delete_backup' ) );
-
+		add_action( 'admin_post_dd_maintenance_download_backup', array( $this, 'handle_download_backup' ) );
 		// Handlers AJAX para barra de progresso visual em tempo real.
 		add_action( 'wp_ajax_dd_maintenance_ajax_action', array( $this, 'ajax_handle_action' ) );
 		add_action( 'wp_ajax_dd_maintenance_ajax_restore', array( $this, 'ajax_handle_restore' ) );
@@ -39,7 +39,7 @@ class DD_Maintenance_Settings {
 		add_action( 'admin_post_backuper_update_plugins', array( $this, 'handle_plugins' ) );
 		add_action( 'admin_post_backuper_update_core', array( $this, 'handle_core' ) );
 		add_action( 'admin_post_backuper_run_full', array( $this, 'handle_full' ) );
-
+		add_action( 'admin_post_backuper_download_backup', array( $this, 'handle_download_backup' ) );
 		add_action( 'admin_notices', array( $this, 'show_notice' ) );
 	}
 
@@ -105,6 +105,9 @@ class DD_Maintenance_Settings {
 		}
 
 		$current_tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'general';
+		if ( 'backups' === $current_tab ) {
+			$current_tab = 'restore';
+		}
 		$valid_tabs  = array( 'general', 'config', 's3', 'cron', 'restore', 'logs' );
 		if ( ! in_array( $current_tab, $valid_tabs, true ) ) {
 			$current_tab = 'general';
@@ -273,22 +276,62 @@ class DD_Maintenance_Settings {
 					position: relative !important;
 					background: #ffffff !important;
 					width: 92% !important;
-					max-width: 650px !important;
+					max-width: 680px !important;
 					border-radius: 8px !important;
 					box-shadow: 0 15px 35px rgba(0,0,0,0.35) !important;
 					overflow: hidden !important;
 					z-index: 10 !important;
 					animation: ddMaintFadeIn 0.25s ease-out;
 				}
-					width: 92%;
-					max-width: 650px;
-					border-radius: 8px;
-					box-shadow: 0 15px 35px rgba(0,0,0,0.35);
-					overflow: hidden;
-					z-index: 1;
-					animation: ddMaintFadeIn 0.25s ease-out;
+				.dd-maint-download-box {
+					background: #f0f6fc;
+					border: 1px solid #c8d7e1;
+					border-left: 4px solid #46b450;
+					border-radius: 4px;
+					padding: 14px 16px;
+					margin-bottom: 16px;
 				}
-				@keyframes ddMaintFadeIn {
+				.dd-maint-download-item {
+					display: flex;
+					align-items: center;
+					justify-content: space-between;
+					background: #ffffff;
+					border: 1px solid #dcdcde;
+					border-radius: 4px;
+					padding: 8px 12px;
+					gap: 12px;
+				}
+				.dd-maint-download-item:hover {
+					border-color: #2271b1;
+					box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+				}
+				.dd-maint-download-name {
+					font-family: Consolas, Monaco, monospace;
+					font-size: 12px;
+					font-weight: 600;
+					color: #1d2327;
+					word-break: break-all;
+				}
+				.dd-maint-part-badge {
+					display: inline-block;
+					background: #e7f5ea;
+					color: #1a7e37;
+					font-size: 11px;
+					font-weight: 600;
+					padding: 2px 8px;
+					border-radius: 10px;
+					border: 1px solid #b4e2be;
+				}
+				.dd-maint-sql-badge {
+					display: inline-block;
+					background: #f0f6fc;
+					color: #0969da;
+					font-size: 11px;
+					font-weight: 600;
+					padding: 2px 8px;
+					border-radius: 10px;
+					border: 1px solid #c8d7e1;
+				}
 					from { opacity: 0; transform: translateY(-15px); }
 					to { opacity: 1; transform: translateY(0); }
 				}
@@ -433,7 +476,7 @@ class DD_Maintenance_Settings {
 				</a>
 				<a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="nav-tab <?php echo 'restore' === $current_tab ? 'nav-tab-active' : ''; ?>">
 					<span class="dashicons dashicons-database-import"></span>
-					<?php esc_html_e( 'Restaurar Backup', 'dd-maintenance' ); ?>
+					<?php esc_html_e( 'Backups Locais & Restauração', 'dd-maintenance' ); ?>
 				</a>
 				<a href="<?php echo esc_url( $this->page_url( 'logs' ) ); ?>" class="nav-tab <?php echo 'logs' === $current_tab ? 'nav-tab-active' : ''; ?>">
 					<span class="dashicons dashicons-media-text"></span>
@@ -487,6 +530,23 @@ class DD_Maintenance_Settings {
 					</div>
 
 					<p id="dd-maint-status-text" class="dd-maint-status-text"><?php esc_html_e( 'Iniciando operação...', 'dd-maintenance' ); ?></p>
+					<!-- Painel de Downloads Imediatos (Exibido ao finalizar backup) -->
+					<div id="dd-maint-downloads-container" class="dd-maint-download-box" style="display:none;">
+						<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+							<strong style="font-size:13.5px;color:#1d2327;display:flex;align-items:center;gap:6px;">
+								<span class="dashicons dashicons-download" style="color:#46b450;font-size:18px;"></span>
+								<?php esc_html_e( 'Baixar Arquivos de Backup Agora', 'dd-maintenance' ); ?>
+							</strong>
+							<button type="button" id="dd-maint-download-all-btn" class="button button-primary button-small" style="display:none;">
+								<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+								<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
+							</button>
+						</div>
+						<p style="margin:0 0 10px 0;font-size:12px;color:#50575e;">
+							<?php esc_html_e( 'Seus arquivos de backup locais estão prontos para download no seu computador:', 'dd-maintenance' ); ?>
+						</p>
+						<div id="dd-maint-downloads-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+					</div>
 
 					<div class="dd-maint-console-container">
 						<div class="dd-maint-console-header">
@@ -496,27 +556,196 @@ class DD_Maintenance_Settings {
 					</div>
 				</div>
 
-				<div class="dd-maint-modal-footer">
-					<button type="button" id="dd-maint-modal-close-btn" class="button button-primary" style="display:none;" onclick="location.reload();">
-						<?php esc_html_e( 'Concluído (Atualizar Página)', 'dd-maintenance' ); ?>
-					</button>
+				<div class="dd-maint-modal-footer" style="display:flex;justify-content:space-between;align-items:center;">
+					<div>
+						<a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" id="dd-maint-modal-view-backups-btn" class="button button-secondary" style="display:none;">
+							<span class="dashicons dashicons-database-import" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span>
+							<?php esc_html_e( 'Ver Todos os Backups Locais', 'dd-maintenance' ); ?>
+						</a>
+					</div>
+					<div style="display:flex;gap:8px;">
+						<button type="button" id="dd-maint-modal-dismiss-btn" class="button button-secondary" style="display:none;">
+							<?php esc_html_e( 'Fechar', 'dd-maintenance' ); ?>
+						</button>
+						<button type="button" id="dd-maint-modal-close-btn" class="button button-primary" style="display:none;" onclick="location.reload();">
+							<?php esc_html_e( 'Concluído (Atualizar Página)', 'dd-maintenance' ); ?>
+						</button>
+					</div>
 				</div>
-			</div>
 		</div>
 
 		<script>
 		(function() {
-			var ajaxUrl = <?php echo json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
-			var nonce   = <?php echo json_encode( wp_create_nonce( 'dd_maint_ajax_nonce' ) ); ?>;
+			var ajaxUrl         = <?php echo json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+			var nonce           = <?php echo json_encode( wp_create_nonce( 'dd_maint_ajax_nonce' ) ); ?>;
+			var downloadBaseUrl = <?php echo json_encode( admin_url( 'admin-post.php' ) ); ?>;
+			var downloadNonce   = <?php echo json_encode( wp_create_nonce( 'dd_maintenance_download_backup' ) ); ?>;
 
-			var modal      = document.getElementById('dd-maint-progress-modal');
-			var icon       = document.getElementById('dd-maint-modal-icon');
-			var titleText  = document.getElementById('dd-maint-modal-title-text');
-			var percentEl  = document.getElementById('dd-maint-modal-percent');
-			var barEl      = document.getElementById('dd-maint-progress-bar');
-			var statusText = document.getElementById('dd-maint-status-text');
-			var consoleOut = document.getElementById('dd-maint-console-output');
-			var closeBtn   = document.getElementById('dd-maint-modal-close-btn');
+			var modal              = document.getElementById('dd-maint-progress-modal');
+			var icon               = document.getElementById('dd-maint-modal-icon');
+			var titleText          = document.getElementById('dd-maint-modal-title-text');
+			var percentEl          = document.getElementById('dd-maint-modal-percent');
+			var barEl              = document.getElementById('dd-maint-progress-bar');
+			var statusText         = document.getElementById('dd-maint-status-text');
+			var consoleOut         = document.getElementById('dd-maint-console-output');
+			var closeBtn           = document.getElementById('dd-maint-modal-close-btn');
+			var dismissBtn         = document.getElementById('dd-maint-modal-dismiss-btn');
+			var downloadsContainer = document.getElementById('dd-maint-downloads-container');
+			var downloadsList      = document.getElementById('dd-maint-downloads-list');
+			var downloadAllBtn     = document.getElementById('dd-maint-download-all-btn');
+			var viewBackupsBtn     = document.getElementById('dd-maint-modal-view-backups-btn');
+
+			if (dismissBtn) {
+				dismissBtn.addEventListener('click', function() {
+					modal.style.display = 'none';
+				});
+			}
+
+			function getBackupDownloadUrl(filename) {
+				return downloadBaseUrl + '?action=dd_maintenance_download_backup&file=' + encodeURIComponent(filename) + '&_wpnonce=' + encodeURIComponent(downloadNonce);
+			}
+
+			function triggerDownload(filename) {
+				var url = getBackupDownloadUrl(filename);
+				var a   = document.createElement('a');
+				a.href  = url;
+				a.download = filename;
+				a.style.display = 'none';
+				document.body.appendChild(a);
+				a.click();
+				setTimeout(function() {
+					if (a.parentNode) {
+						a.parentNode.removeChild(a);
+					}
+				}, 1000);
+			}
+
+			function downloadAllParts(files) {
+				if (!files || !files.length) return;
+				files.forEach(function(file, i) {
+					setTimeout(function() {
+						triggerDownload(file);
+					}, i * 600);
+				});
+			}
+			window.ddMaintDownloadAll = downloadAllParts;
+
+			function renderModalDownloads(finalData) {
+				if (!finalData || !downloadsContainer || !downloadsList) return;
+				var parts   = finalData.parts || [];
+				var hasSql  = !!finalData.has_sql;
+				var sqlFile = finalData.sql_filename || '';
+				var sqlSize = finalData.sql_size_formatted || '';
+
+				if (parts.length === 0 && !hasSql) return;
+
+				downloadsList.innerHTML = '';
+				var fileNamesToDownload = [];
+
+				parts.forEach(function(p, idx) {
+					fileNamesToDownload.push(p.name);
+					var item = document.createElement('div');
+					item.className = 'dd-maint-download-item';
+
+					var left = document.createElement('div');
+					left.style.display = 'flex';
+					left.style.alignItems = 'center';
+					left.style.gap = '8px';
+
+					var iconEl = document.createElement('span');
+					iconEl.className = 'dashicons dashicons-media-archive';
+					iconEl.style.color = '#2271b1';
+					iconEl.style.fontSize = '18px';
+					iconEl.style.width = '18px';
+					iconEl.style.height = '18px';
+
+					var textWrap = document.createElement('div');
+					var nameSpan = document.createElement('div');
+					nameSpan.className = 'dd-maint-download-name';
+					nameSpan.innerText = p.name;
+
+					var sizeSpan = document.createElement('span');
+					sizeSpan.className = 'dd-maint-part-badge';
+					sizeSpan.innerText = p.size_formatted || (Math.round(((p.size || 0) / 1024 / 1024) * 10) / 10 + ' MB');
+
+					textWrap.appendChild(nameSpan);
+					textWrap.appendChild(sizeSpan);
+
+					left.appendChild(iconEl);
+					left.appendChild(textWrap);
+
+					var btn = document.createElement('a');
+					btn.href = getBackupDownloadUrl(p.name);
+					btn.className = 'button button-primary button-small';
+					btn.setAttribute('download', p.name);
+					btn.innerHTML = '<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span> Baixar ' + (parts.length > 1 ? 'Parte ' + (p.part || (idx + 1)) : 'Backup (.zip)');
+
+					item.appendChild(left);
+					item.appendChild(btn);
+					downloadsList.appendChild(item);
+				});
+
+				if (hasSql && sqlFile) {
+					var itemSql = document.createElement('div');
+					itemSql.className = 'dd-maint-download-item';
+
+					var leftSql = document.createElement('div');
+					leftSql.style.display = 'flex';
+					leftSql.style.alignItems = 'center';
+					leftSql.style.gap = '8px';
+
+					var iconSql = document.createElement('span');
+					iconSql.className = 'dashicons dashicons-database';
+					iconSql.style.color = '#0969da';
+					iconSql.style.fontSize = '18px';
+					iconSql.style.width = '18px';
+					iconSql.style.height = '18px';
+
+					var textWrapSql = document.createElement('div');
+					var nameSpanSql = document.createElement('div');
+					nameSpanSql.className = 'dd-maint-download-name';
+					nameSpanSql.innerText = sqlFile;
+
+					var sizeSpanSql = document.createElement('span');
+					sizeSpanSql.className = 'dd-maint-sql-badge';
+					sizeSpanSql.innerText = sqlSize || 'Dump SQL';
+
+					textWrapSql.appendChild(nameSpanSql);
+					textWrapSql.appendChild(sizeSpanSql);
+
+					leftSql.appendChild(iconSql);
+					leftSql.appendChild(textWrapSql);
+
+					var btnSql = document.createElement('a');
+					btnSql.href = getBackupDownloadUrl(sqlFile);
+					btnSql.className = 'button button-secondary button-small';
+					btnSql.setAttribute('download', sqlFile);
+					btnSql.innerHTML = '<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span> Baixar Dump SQL';
+
+					itemSql.appendChild(leftSql);
+					itemSql.appendChild(btnSql);
+					downloadsList.appendChild(itemSql);
+				}
+
+				if (parts.length > 1) {
+					downloadAllBtn.style.display = 'inline-block';
+					downloadAllBtn.onclick = function() {
+						downloadAllParts(fileNamesToDownload);
+					};
+				} else {
+					downloadAllBtn.style.display = 'none';
+				}
+
+				downloadsContainer.style.display = 'block';
+				if (viewBackupsBtn) {
+					viewBackupsBtn.style.display = 'inline-block';
+				}
+
+				if (consoleOut) {
+					consoleOut.innerText += '\n[Download] Arquivos locais disponíveis para download imediato acima!';
+					consoleOut.scrollTop = consoleOut.scrollHeight;
+				}
+			}
 
 			function openModal(title) {
 				titleText.innerText = title || 'Processando...';
@@ -529,6 +758,11 @@ class DD_Maintenance_Settings {
 				icon.className       = 'dashicons dashicons-update dd-maint-spin';
 				icon.style.color     = '#2271b1';
 				closeBtn.style.display = 'none';
+				if (dismissBtn) dismissBtn.style.display = 'none';
+				if (downloadsContainer) downloadsContainer.style.display = 'none';
+				if (downloadsList) downloadsList.innerHTML = '';
+				if (downloadAllBtn) downloadAllBtn.style.display = 'none';
+				if (viewBackupsBtn) viewBackupsBtn.style.display = 'none';
 				modal.style.display    = 'flex';
 			}
 
@@ -549,12 +783,14 @@ class DD_Maintenance_Settings {
 					icon.className       = 'dashicons dashicons-yes-alt';
 					icon.style.color     = '#46b450';
 					closeBtn.style.display = 'inline-block';
+					if (dismissBtn) dismissBtn.style.display = 'inline-block';
 				} else if (isError) {
 					percentEl.className = 'dd-maint-badge error';
 					barEl.className     = 'dd-maint-progress-bar error';
 					icon.className       = 'dashicons dashicons-no-alt';
 					icon.style.color     = '#d63638';
 					closeBtn.style.display = 'inline-block';
+					if (dismissBtn) dismissBtn.style.display = 'inline-block';
 				}
 			}
 
@@ -625,12 +861,15 @@ class DD_Maintenance_Settings {
 
 						sendAjax('dd_maintenance_ajax_action', { step: 'core' }, function(dCore) {
 							setProgress(100, 'Manutenção completa concluída com sucesso!', dCore.log + '\n[Fim] ' + new Date().toLocaleTimeString(), true);
+							renderModalDownloads(finalBackupData);
 						}, function(err) {
 							setProgress(96, 'Erro na atualização do Core', '[ERRO] ' + err, false, true);
+							renderModalDownloads(finalBackupData);
 						});
 
 					}, function(err) {
 						setProgress(92, 'Erro na atualização de plugins', '[ERRO] ' + err, false, true);
+						renderModalDownloads(finalBackupData);
 					});
 
 				}, function(err) {
@@ -641,7 +880,8 @@ class DD_Maintenance_Settings {
 			function runBackupSequence() {
 				openModal('Backup & Envio para S3 / Spaces (Lotes de 25MB)');
 				executeBackupPipeline(function(finalBackupData) {
-					setProgress(100, 'Backup e envio ao S3 concluídos com sucesso!', '[OK] Todas as etapas foram finalizadas com sucesso.\n[Fim] ' + new Date().toLocaleTimeString(), true);
+					setProgress(100, 'Backup concluído com sucesso!', '[OK] Todas as etapas foram finalizadas com sucesso.\n[Fim] ' + new Date().toLocaleTimeString(), true);
+					renderModalDownloads(finalBackupData);
 				}, function(err) {
 					// Erro já tratado dentro do pipeline
 				});
@@ -969,14 +1209,21 @@ class DD_Maintenance_Settings {
 	 * Aba 1: Visão Geral & Ações Rápidas.
 	 */
 	private function render_tab_general( $s3_configured, $s3, $config_status, $settings, $last_log ) {
-		$file_mods = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_MODS' );
-		$file_edit = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_EDIT' );
+		$file_mods     = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_MODS' );
+		$file_edit     = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_EDIT' );
+		$local_backups = DD_Maintenance_Restore::get_local_backups();
+		$backup_count  = count( $local_backups );
+		$total_bytes   = 0;
+		foreach ( $local_backups as $b ) {
+			$total_bytes += $b['size'];
+		}
+
 		$next_cron = wp_next_scheduled( 'dd_maintenance_daily_maintenance' );
 		if ( ! $next_cron ) {
 			$next_cron = wp_next_scheduled( 'backuper_daily_maintenance' );
 		}
 		?>
-		<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;margin-bottom:24px;">
+		<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:16px;margin-bottom:24px;">
 			<!-- Card 1: Status do S3 -->
 			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
 				<h3 class="dd-maintenance-card-title">
@@ -1047,6 +1294,27 @@ class DD_Maintenance_Settings {
 					<p><a href="<?php echo esc_url( $this->page_url( 'cron' ) ); ?>" class="button button-small"><?php esc_html_e( 'Configurar agendamento', 'dd-maintenance' ); ?></a></p>
 				<?php endif; ?>
 			</div>
+
+			<!-- Card 4: Backups Locais no Servidor -->
+			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
+				<h3 class="dd-maintenance-card-title">
+					<span class="dashicons dashicons-database-import" style="color:#2271b1;"></span>
+					<?php esc_html_e( 'Backups Locais Salvos', 'dd-maintenance' ); ?>
+				</h3>
+				<?php if ( $backup_count > 0 ) : ?>
+					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span> <strong><?php printf( esc_html__( '%d pacote(s) disponível(is)', 'dd-maintenance' ), $backup_count ); ?></strong></p>
+					<p style="margin:4px 0;color:#666;font-size:12px;"><?php printf( esc_html__( 'Tamanho em disco: %s', 'dd-maintenance' ), esc_html( size_format( $total_bytes ) ) ); ?></p>
+					<p style="margin-top:8px;margin-bottom:0;">
+						<a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small button-primary">
+							<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+							<?php esc_html_e( 'Baixar Backups', 'dd-maintenance' ); ?> &rarr;
+						</a>
+					</p>
+				<?php else : ?>
+					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-marker" style="color:#666;"></span> <strong><?php esc_html_e( 'Nenhum backup local', 'dd-maintenance' ); ?></strong></p>
+					<p style="margin-top:8px;margin-bottom:0;"><a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small"><?php esc_html_e( 'Ver pasta de backups', 'dd-maintenance' ); ?></a></p>
+				<?php endif; ?>
+			</div>
 		</div>
 
 		<?php if ( true === $file_mods ) : ?>
@@ -1105,6 +1373,85 @@ class DD_Maintenance_Settings {
 				</form>
 			</div>
 		</div>
+
+		<?php if ( ! empty( $local_backups ) ) : ?>
+			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;margin-bottom:24px;">
+				<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+					<h2 style="margin:0;display:flex;align-items:center;gap:8px;">
+						<span class="dashicons dashicons-download" style="color:#2271b1;"></span>
+						<?php esc_html_e( 'Últimos Backups Locais (Downloads Rápidos)', 'dd-maintenance' ); ?>
+					</h2>
+					<a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small">
+						<?php esc_html_e( 'Ver todos os backups locais', 'dd-maintenance' ); ?> &rarr;
+					</a>
+				</div>
+				<p style="margin-top:0;color:#50575e;">
+					<?php esc_html_e( 'Baixe os arquivos de backup gerados no servidor diretamente para seu computador:', 'dd-maintenance' ); ?>
+				</p>
+
+				<table class="widefat striped" style="border:1px solid #c3c4c7;">
+					<thead>
+						<tr>
+							<th scope="col"><?php esc_html_e( 'Backup & Volumes', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="width:140px;"><?php esc_html_e( 'Data', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="width:110px;"><?php esc_html_e( 'Tamanho', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="min-width:210px;"><?php esc_html_e( 'Download Imediato', 'dd-maintenance' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php
+						$recent_backups = array_slice( $local_backups, 0, 3 );
+						foreach ( $recent_backups as $b ) :
+						?>
+							<tr>
+								<td>
+									<strong style="font-family:monospace;font-size:13px;"><?php echo esc_html( $b['identifier'] ); ?></strong>
+									<div style="margin-top:2px;">
+										<?php if ( ! empty( $b['is_multipart'] ) ) : ?>
+											<span class="dd-maint-part-badge"><?php printf( esc_html__( '%d volumes de 25MB', 'dd-maintenance' ), $b['total_parts'] ); ?></span>
+										<?php elseif ( ! empty( $b['parts'] ) ) : ?>
+											<span class="dd-maint-part-badge"><?php esc_html_e( 'Volume Único (.zip)', 'dd-maintenance' ); ?></span>
+										<?php endif; ?>
+										<?php if ( ! empty( $b['has_sql'] ) ) : ?>
+											<span class="dd-maint-sql-badge"><?php esc_html_e( 'Dump SQL (.sql)', 'dd-maintenance' ); ?></span>
+										<?php endif; ?>
+									</div>
+								</td>
+								<td style="font-size:12.5px;color:#50575e;"><?php echo esc_html( $b['date_formatted'] ); ?></td>
+								<td style="font-weight:600;font-size:12.5px;"><?php echo esc_html( $b['size_formatted'] ); ?></td>
+								<td>
+									<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+										<?php if ( ! empty( $b['is_multipart'] ) && count( $b['parts'] ) > 1 ) : ?>
+											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $b['parts'], 'filename' ) ) ); ?>);">
+												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+												<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
+											</button>
+											<?php foreach ( $b['parts'] as $p ) : ?>
+												<a href="<?php echo esc_url( self::get_download_url( $p['filename'] ) ); ?>" class="button button-secondary button-small" download="<?php echo esc_attr( $p['filename'] ); ?>" title="<?php echo esc_attr( $p['filename'] ); ?>">
+													<?php printf( esc_html__( 'P%d (%s)', 'dd-maintenance' ), $p['part'], esc_html( $p['size_formatted'] ) ); ?>
+												</a>
+											<?php endforeach; ?>
+										<?php elseif ( ! empty( $b['parts'] ) ) : ?>
+											<a href="<?php echo esc_url( self::get_download_url( $b['parts'][0]['filename'] ) ); ?>" class="button button-primary button-small" download="<?php echo esc_attr( $b['parts'][0]['filename'] ); ?>">
+												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+												<?php esc_html_e( 'Baixar Backup (.zip)', 'dd-maintenance' ); ?>
+											</a>
+										<?php endif; ?>
+
+										<?php if ( ! empty( $b['has_sql'] ) && ! empty( $b['sql_filename'] ) ) : ?>
+											<a href="<?php echo esc_url( self::get_download_url( $b['sql_filename'] ) ); ?>" class="button button-secondary button-small" download="<?php echo esc_attr( $b['sql_filename'] ); ?>" title="<?php esc_attr_e( 'Baixar dump SQL do banco de dados', 'dd-maintenance' ); ?>">
+												<span class="dashicons dashicons-database" style="font-size:12px;vertical-align:middle;"></span>
+												<?php esc_html_e( 'SQL', 'dd-maintenance' ); ?>
+											</a>
+										<?php endif; ?>
+									</div>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			</div>
+		<?php endif; ?>
 
 		<?php if ( ! empty( $last_log ) && is_array( $last_log ) ) : ?>
 			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;">
@@ -1668,31 +2015,172 @@ class DD_Maintenance_Settings {
 	}
 
 	/**
-	 * Aba 5: Restaurar Backup (Restablecer).
-	 */
 	private function render_tab_restore( $has_password ) {
 		$local_backups = DD_Maintenance_Restore::get_local_backups();
 		$max_upload    = size_format( wp_max_upload_size() );
+		$total_bytes   = 0;
+		foreach ( $local_backups as $b ) {
+			$total_bytes += $b['size'];
+		}
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;margin-bottom:24px;">
-			<h2 style="margin-top:0;display:flex;align-items:center;gap:8px;">
-				<span class="dashicons dashicons-database-import"></span>
-				<?php esc_html_e( 'Restaurar Backup do Site', 'dd-maintenance' ); ?>
-			</h2>
+		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:960px;margin-bottom:24px;">
+			<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+				<h2 style="margin:0;display:flex;align-items:center;gap:8px;">
+					<span class="dashicons dashicons-database-import" style="color:#2271b1;"></span>
+					<?php esc_html_e( 'Backups Locais Armazenados no Servidor', 'dd-maintenance' ); ?>
+				</h2>
+				<?php if ( ! empty( $local_backups ) ) : ?>
+					<span style="font-size:12px;color:#50575e;background:#f0f0f1;padding:4px 10px;border-radius:12px;">
+						<strong><?php echo esc_html( count( $local_backups ) ); ?></strong> <?php esc_html_e( 'pacote(s) de backup', 'dd-maintenance' ); ?> &bull; <strong><?php echo esc_html( size_format( $total_bytes ) ); ?></strong> <?php esc_html_e( 'em disco', 'dd-maintenance' ); ?>
+					</span>
+				<?php endif; ?>
+			</div>
 
-			<p>
-				<?php esc_html_e( 'Restaure o site completo a partir de um arquivo .zip de backup contendo o banco de dados (database.sql) e os arquivos do site (pasta site/ ou wp-content/).', 'dd-maintenance' ); ?>
+			<p style="margin-top:0;">
+				<?php esc_html_e( 'Baixe os arquivos de backup diretamente para seu computador ou restaure o site a qualquer momento. Os arquivos ficam salvos com segurança em', 'dd-maintenance' ); ?> <code>wp-content/uploads/dd-maintenance/</code>.
 			</p>
 
-			<div class="notice notice-warning inline" style="margin-bottom:20px;">
+			<!-- Tabela de Backups Locais -->
+			<?php if ( empty( $local_backups ) ) : ?>
+				<div class="notice notice-info inline" style="margin:16px 0;">
+					<p style="margin:4px 0;">
+						<span class="dashicons dashicons-info" style="color:#72aee6;vertical-align:middle;"></span>
+						<?php esc_html_e( 'Nenhum arquivo de backup local encontrado na pasta do servidor. Execute um backup na aba "Visão Geral & Ações" para gerar novos arquivos.', 'dd-maintenance' ); ?>
+					</p>
+				</div>
+			<?php else : ?>
+				<table class="widefat striped" style="margin-top:12px;border:1px solid #c3c4c7;">
+					<thead>
+						<tr>
+							<th scope="col" style="min-width:220px;"><?php esc_html_e( 'Identificação do Backup & Volumes', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="width:140px;"><?php esc_html_e( 'Data de Criação', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="width:110px;"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="min-width:210px;"><?php esc_html_e( 'Downloads', 'dd-maintenance' ); ?></th>
+							<th scope="col" style="text-align:right;min-width:180px;"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $local_backups as $backup ) : ?>
+							<tr>
+								<td>
+									<div style="font-weight:600;font-family:monospace;font-size:13px;color:#1d2327;margin-bottom:4px;">
+										<?php echo esc_html( $backup['identifier'] ); ?>
+									</div>
+									<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+										<?php if ( ! empty( $backup['is_multipart'] ) ) : ?>
+											<span class="dd-maint-part-badge">
+												<?php printf( esc_html__( '%d partes de 25MB', 'dd-maintenance' ), $backup['total_parts'] ); ?>
+											</span>
+										<?php elseif ( ! empty( $backup['parts'] ) ) : ?>
+											<span class="dd-maint-part-badge">
+												<?php esc_html_e( 'Volume Único (.zip)', 'dd-maintenance' ); ?>
+											</span>
+										<?php endif; ?>
+
+										<?php if ( ! empty( $backup['has_sql'] ) ) : ?>
+											<span class="dd-maint-sql-badge">
+												<?php esc_html_e( 'Dump SQL (.sql)', 'dd-maintenance' ); ?>
+											</span>
+										<?php endif; ?>
+									</div>
+
+									<?php if ( ! empty( $backup['is_multipart'] ) && count( $backup['parts'] ) > 1 ) : ?>
+										<details style="margin-top:6px;font-size:11px;color:#50575e;">
+											<summary style="cursor:pointer;color:#2271b1;"><?php esc_html_e( 'Ver lista de volumes individuais', 'dd-maintenance' ); ?></summary>
+											<ul style="margin:4px 0 0 14px;padding:0;list-style:disc;">
+												<?php foreach ( $backup['parts'] as $p ) : ?>
+													<li style="margin:2px 0;">
+														<code><?php echo esc_html( $p['filename'] ); ?></code> (<?php echo esc_html( $p['size_formatted'] ); ?>)
+													</li>
+												<?php endforeach; ?>
+											</ul>
+										</details>
+									<?php endif; ?>
+								</td>
+								<td style="font-size:12.5px;color:#50575e;">
+									<?php echo esc_html( $backup['date_formatted'] ); ?>
+								</td>
+								<td style="font-weight:600;font-size:12.5px;">
+									<?php echo esc_html( $backup['size_formatted'] ); ?>
+								</td>
+								<td>
+									<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
+										<?php if ( ! empty( $backup['is_multipart'] ) && count( $backup['parts'] ) > 1 ) : ?>
+											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $backup['parts'], 'filename' ) ) ); ?>);" title="<?php esc_attr_e( 'Inicia o download de todos os volumes sequencialmente no navegador', 'dd-maintenance' ); ?>">
+												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+												<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
+											</button>
+
+											<div style="display:flex;flex-wrap:wrap;gap:4px;">
+												<?php foreach ( $backup['parts'] as $p ) : ?>
+													<a href="<?php echo esc_url( self::get_download_url( $p['filename'] ) ); ?>" class="button button-secondary button-small" title="<?php echo esc_attr( $p['filename'] ); ?>" download="<?php echo esc_attr( $p['filename'] ); ?>">
+														<span class="dashicons dashicons-media-archive" style="font-size:12px;vertical-align:middle;"></span>
+														<?php printf( esc_html__( 'Parte %d (%s)', 'dd-maintenance' ), $p['part'], esc_html( $p['size_formatted'] ) ); ?>
+													</a>
+												<?php endforeach; ?>
+											</div>
+										<?php elseif ( ! empty( $backup['parts'] ) ) : ?>
+											<a href="<?php echo esc_url( self::get_download_url( $backup['parts'][0]['filename'] ) ); ?>" class="button button-primary button-small" download="<?php echo esc_attr( $backup['parts'][0]['filename'] ); ?>">
+												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+												<?php esc_html_e( 'Baixar Backup (.zip)', 'dd-maintenance' ); ?>
+											</a>
+										<?php endif; ?>
+
+										<?php if ( ! empty( $backup['has_sql'] ) && ! empty( $backup['sql_filename'] ) ) : ?>
+											<a href="<?php echo esc_url( self::get_download_url( $backup['sql_filename'] ) ); ?>" class="button button-secondary button-small" download="<?php echo esc_attr( $backup['sql_filename'] ); ?>" title="<?php esc_attr_e( 'Baixar dump SQL do banco de dados', 'dd-maintenance' ); ?>">
+												<span class="dashicons dashicons-database" style="font-size:12px;vertical-align:middle;"></span>
+												<?php printf( esc_html__( 'Baixar Dump SQL (%s)', 'dd-maintenance' ), esc_html( $backup['sql_size_formatted'] ) ); ?>
+											</a>
+										<?php endif; ?>
+									</div>
+								</td>
+								<td style="text-align:right;">
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;margin-right:6px;" onsubmit="return confirm('<?php echo esc_js( __( 'Tem certeza que deseja restaurar este backup? Os arquivos e banco de dados atuais serão substituídos!', 'dd-maintenance' ) ); ?>');">
+										<input type="hidden" name="action" value="dd_maintenance_restore_local">
+										<input type="hidden" name="backup_filename" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
+										<?php wp_nonce_field( 'dd_maintenance_restore_local' ); ?>
+										<?php if ( $has_password ) : ?>
+											<input type="password" name="restore_password" placeholder="<?php esc_attr_e( 'Senha', 'dd-maintenance' ); ?>" style="width:105px;height:30px;font-size:12px;" required autocomplete="current-password">
+										<?php endif; ?>
+										<button type="submit" class="button button-primary button-small" title="<?php esc_attr_e( 'Restaura os arquivos e banco deste backup', 'dd-maintenance' ); ?>">
+											<span class="dashicons dashicons-backup" style="vertical-align:middle;font-size:14px;width:14px;height:14px;"></span>
+											<?php esc_html_e( 'Restaurar', 'dd-maintenance' ); ?>
+										</button>
+									</form>
+
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;" onsubmit="return confirm('<?php echo esc_js( __( 'Tem certeza que deseja excluir este arquivo de backup local?', 'dd-maintenance' ) ); ?>');">
+										<input type="hidden" name="action" value="dd_maintenance_delete_backup">
+										<input type="hidden" name="backup_filename" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
+										<?php wp_nonce_field( 'dd_maintenance_delete_backup' ); ?>
+										<button type="submit" class="button button-link-delete button-small" style="color:#b32d2e;text-decoration:none;">
+											<?php esc_html_e( 'Excluir', 'dd-maintenance' ); ?>
+										</button>
+									</form>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			<?php endif; ?>
+
+			<hr style="margin:30px 0;">
+
+			<!-- Opção 2: Upload de Arquivo .ZIP -->
+			<h3 style="margin-top:24px;display:flex;align-items:center;gap:6px;">
+				<span class="dashicons dashicons-upload" style="color:#2271b1;"></span>
+				<?php esc_html_e( 'Fazer Upload de Arquivo .ZIP Externo para Restaurar', 'dd-maintenance' ); ?>
+			</h3>
+			<p>
+				<?php esc_html_e( 'Se você possui arquivos de backup baixados no seu computador, pode enviá-los abaixo para restaurar o site:', 'dd-maintenance' ); ?>
+			</p>
+
+			<div class="notice notice-warning inline" style="margin-bottom:16px;">
 				<p>
 					<strong><?php esc_html_e( 'Atenção:', 'dd-maintenance' ); ?></strong>
 					<?php esc_html_e( 'A restauração sobrescreverá os arquivos do site e as tabelas existentes no banco de dados com as versões contidas no arquivo de backup. Recomendamos gerar um backup atual antes de restaurar.', 'dd-maintenance' ); ?>
 				</p>
 			</div>
 
-			<!-- Opção 1: Upload de Arquivo .ZIP -->
-			<h3 style="margin-top:24px;"><?php esc_html_e( 'Opção 1: Fazer Upload de Arquivo .ZIP', 'dd-maintenance' ); ?></h3>
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data">
 				<input type="hidden" name="action" value="dd_maintenance_restore_upload">
 				<?php wp_nonce_field( 'dd_maintenance_restore_upload' ); ?>
@@ -1733,64 +2221,6 @@ class DD_Maintenance_Settings {
 
 				<?php submit_button( __( 'Fazer Upload e Restaurar Agora', 'dd-maintenance' ), 'primary' ); ?>
 			</form>
-
-			<hr style="margin:30px 0;">
-
-			<!-- Opção 2: Backups Locais Disponíveis -->
-			<h3><?php esc_html_e( 'Opção 2: Restaurar a partir de Backup Local', 'dd-maintenance' ); ?></h3>
-
-			<?php if ( empty( $local_backups ) ) : ?>
-				<p style="color:#666;font-style:italic;">
-					<?php esc_html_e( 'Nenhum arquivo de backup encontrado na pasta local (wp-content/uploads/dd-maintenance/).', 'dd-maintenance' ); ?>
-				</p>
-			<?php else : ?>
-				<p><?php esc_html_e( 'Selecione um dos backups locais armazenados no servidor para restaurar:', 'dd-maintenance' ); ?></p>
-
-				<table class="widefat striped" style="margin-top:12px;border:1px solid #c3c4c7;">
-					<thead>
-						<tr>
-							<th scope="col"><?php esc_html_e( 'Identificação do Backup', 'dd-maintenance' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Data de Criação', 'dd-maintenance' ); ?></th>
-							<th scope="col"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="text-align:right;"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
-						</tr>
-					</thead>
-					<tbody>
-						<?php foreach ( $local_backups as $backup ) : ?>
-							<tr>
-								<td style="font-weight:600;font-family:monospace;">
-									<?php echo esc_html( $backup['display_name'] ); ?>
-								</td>
-								<td><?php echo esc_html( $backup['date_formatted'] ); ?></td>
-								<td><?php echo esc_html( $backup['size_formatted'] ); ?></td>
-								<td style="text-align:right;">
-									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;margin-right:6px;" onsubmit="return confirm('<?php echo esc_js( __( 'Tem certeza que deseja restaurar este backup? Os arquivos e banco de dados atuais serão substituídos!', 'dd-maintenance' ) ); ?>');">
-										<input type="hidden" name="action" value="dd_maintenance_restore_local">
-										<input type="hidden" name="backup_filename" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
-										<?php wp_nonce_field( 'dd_maintenance_restore_local' ); ?>
-										<?php if ( $has_password ) : ?>
-											<input type="password" name="restore_password" placeholder="<?php esc_attr_e( 'Senha', 'dd-maintenance' ); ?>" style="width:110px;height:30px;font-size:12px;" required autocomplete="current-password">
-										<?php endif; ?>
-										<button type="submit" class="button button-primary button-small">
-											<span class="dashicons dashicons-backup" style="vertical-align:middle;font-size:15px;width:15px;height:15px;"></span>
-											<?php esc_html_e( 'Restaurar', 'dd-maintenance' ); ?>
-										</button>
-									</form>
-
-									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;" onsubmit="return confirm('<?php echo esc_js( __( 'Tem certeza que deseja excluir este arquivo de backup local?', 'dd-maintenance' ) ); ?>');">
-										<input type="hidden" name="action" value="dd_maintenance_delete_backup">
-										<input type="hidden" name="backup_filename" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
-										<?php wp_nonce_field( 'dd_maintenance_delete_backup' ); ?>
-										<button type="submit" class="button button-link-delete button-small" style="color:#b32d2e;text-decoration:none;">
-											<?php esc_html_e( 'Excluir', 'dd-maintenance' ); ?>
-										</button>
-									</form>
-								</td>
-							</tr>
-						<?php endforeach; ?>
-					</tbody>
-				</table>
-			<?php endif; ?>
 		</div>
 		<?php
 	}
@@ -2263,6 +2693,92 @@ class DD_Maintenance_Settings {
 		header( 'Content-Length: ' . strlen( $content ) );
 		echo $content;
 		exit;
+	}
+
+	/**
+	 * Handler: Faz download seguro de um arquivo de backup local (.zip ou .sql).
+	 */
+	public function handle_download_backup() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Sem permissão para baixar arquivos de backup.', 'dd-maintenance' ), 403 );
+		}
+
+		check_admin_referer( 'dd_maintenance_download_backup' );
+
+		$filename = isset( $_GET['file'] ) ? sanitize_file_name( wp_unslash( $_GET['file'] ) ) : '';
+		if ( empty( $filename ) ) {
+			wp_die( esc_html__( 'Nome de arquivo de backup inválido.', 'dd-maintenance' ), 400 );
+		}
+
+		// Garante que a extensão seja estritamente .zip ou .sql
+		$ext = strtolower( pathinfo( $filename, PATHINFO_EXTENSION ) );
+		if ( ! in_array( $ext, array( 'zip', 'sql' ), true ) ) {
+			wp_die( esc_html__( 'Tipo de arquivo não permitido para download.', 'dd-maintenance' ), 400 );
+		}
+
+		$backup_dir = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+		$filepath   = $backup_dir . '/' . $filename;
+		$real_path  = file_exists( $filepath ) ? wp_normalize_path( realpath( $filepath ) ) : false;
+
+		// Previne qualquer tentativa de Directory Traversal ou acesso fora da pasta de backups
+		if ( empty( $real_path ) || 0 !== strpos( $real_path, $backup_dir . '/' ) || ! is_file( $real_path ) ) {
+			wp_die( esc_html__( 'Arquivo de backup não encontrado no servidor.', 'dd-maintenance' ), 404 );
+		}
+
+		$filesize = (int) filesize( $real_path );
+		$mime     = 'zip' === $ext ? 'application/zip' : 'text/plain; charset=utf-8';
+
+		// Limpa qualquer buffer de saída ativo para transmissão limpa e segura
+		while ( ob_get_level() > 0 ) {
+			@ob_end_clean();
+		}
+
+		// Desativa limites de tempo para downloads de arquivos maiores
+		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
+			@set_time_limit( 0 );
+		}
+
+		nocache_headers();
+		header( 'Content-Description: File Transfer' );
+		header( 'Content-Type: ' . $mime );
+		header( 'Content-Disposition: attachment; filename="' . esc_attr( $filename ) . '"' );
+		header( 'Content-Transfer-Encoding: binary' );
+		header( 'Content-Length: ' . (string) $filesize );
+		header( 'Cache-Control: must-revalidate, post-check=0, pre-check=0' );
+		header( 'Pragma: public' );
+
+		// Transmite em blocos de 2MB para baixo consumo de memória
+		$chunk_size = 2 * 1024 * 1024;
+		$handle     = fopen( $real_path, 'rb' );
+		if ( false !== $handle ) {
+			while ( ! feof( $handle ) ) {
+				echo fread( $handle, $chunk_size );
+				if ( function_exists( 'flush' ) ) {
+					@flush();
+				}
+			}
+			fclose( $handle );
+		} else {
+			readfile( $real_path );
+		}
+		exit;
+	}
+
+	/**
+	 * Retorna a URL segura de download para um arquivo de backup local.
+	 *
+	 * @param string $filename Nome do arquivo.
+	 * @return string
+	 */
+	public static function get_download_url( string $filename ): string {
+		return add_query_arg(
+			array(
+				'action'   => 'dd_maintenance_download_backup',
+				'file'     => sanitize_file_name( $filename ),
+				'_wpnonce' => wp_create_nonce( 'dd_maintenance_download_backup' ),
+			),
+			admin_url( 'admin-post.php' )
+		);
 	}
 
 	/**
