@@ -578,8 +578,14 @@ class DD_Maintenance_Restore {
 			$this->save_restore_session_data( $extract_dir, $session );
 		}
 
-		$sql_file      = $session['db_file'];
-		$file_size     = max( 1, (int) $session['db_file_size'] );
+		$sql_file  = $session['db_file'];
+		$file_size = (int) ( $session['db_file_size'] ?? 0 );
+		if ( $file_size <= 0 && is_file( $sql_file ) ) {
+			clearstatcache( true, $sql_file );
+			$file_size = (int) filesize( $sql_file );
+			$session['db_file_size'] = $file_size;
+		}
+		$file_size     = max( 1, $file_size );
 		$offset        = (int) $session['db_offset'];
 		$queries       = (int) $session['db_queries'];
 		$tables        = (int) $session['db_tables'];
@@ -768,48 +774,7 @@ class DD_Maintenance_Restore {
 			// 3. Se a URL de origem do backup era diferente da URL atual, realiza Search & Replace seguro
 			// com suporte total a arrays serializados PHP (Elementor, ACF, Widgets) e JSON
 			if ( ! empty( $old_siteurl ) && ! empty( $siteurl ) && rtrim( $old_siteurl, '/' ) !== rtrim( $siteurl, '/' ) ) {
-				$from_url       = rtrim( $old_siteurl, '/' );
-				$to_url         = rtrim( $siteurl, '/' );
-				$posts_table    = $dump_prefix . 'posts';
-				$postmeta_table = $dump_prefix . 'postmeta';
-
-				// Posts e páginas simples (conteúdo, excerpt e guid)
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
-
-				// Metadados de posts (Elementor, galerias, custom fields, serialized PHP e JSON)
-				$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `meta_id`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_value` LIKE %s", '%' . $wpdb->esc_like( $from_url ) . '%' ), ARRAY_A );
-				if ( ! empty( $meta_rows ) && is_array( $meta_rows ) ) {
-					foreach ( $meta_rows as $mrow ) {
-						$orig_val = $mrow['meta_value'];
-						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
-						if ( $fixed_val !== $orig_val ) {
-							$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $mrow['meta_id'] ) );
-						}
-					}
-				}
-
-				// Opções do site (widgets, plugins, temas, serialized PHP e JSON)
-				$opt_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `option_id`, `option_value` FROM `{$options_table}` WHERE `option_name` NOT IN ('siteurl', 'home') AND `option_value` LIKE %s", '%' . $wpdb->esc_like( $from_url ) . '%' ), ARRAY_A );
-				if ( ! empty( $opt_rows ) && is_array( $opt_rows ) ) {
-					foreach ( $opt_rows as $orow ) {
-						$orig_val = $orow['option_value'];
-						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
-						if ( $fixed_val !== $orig_val ) {
-							$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_id` = %d", $fixed_val, (int) $orow['option_id'] ) );
-						}
-					}
-				}
-
-				// Limpa arquivos CSS gerados do Elementor para forçar regeneração limpa
-				$elementor_css_dir = WP_CONTENT_DIR . '/uploads/elementor/css';
-				if ( is_dir( $elementor_css_dir ) ) {
-					$css_files = glob( $elementor_css_dir . '/*.css' );
-					if ( ! empty( $css_files ) ) {
-						foreach ( $css_files as $cf ) {
-							@unlink( $cf );
-						}
-					}
-				}
+				$this->perform_url_search_replace( $old_siteurl, $siteurl, $dump_prefix );
 			}
 			if ( function_exists( 'wp_cache_flush' ) ) {
 				@wp_cache_flush();
@@ -1771,5 +1736,85 @@ class DD_Maintenance_Restore {
 		}
 
 		return $data;
+	}
+
+	/**
+	 * Executa Search & Replace seguro e paginado para evitar estourar memória do PHP ou travar o servidor.
+	 *
+	 * @param string $from_url    URL de origem do backup.
+	 * @param string $to_url      URL de destino atual.
+	 * @param string $dump_prefix Prefixo das tabelas no banco.
+	 * @return void
+	 */
+	private function perform_url_search_replace( string $from_url, string $to_url, string $dump_prefix ): void {
+		global $wpdb;
+		if ( empty( $from_url ) || empty( $to_url ) || rtrim( $from_url, '/' ) === rtrim( $to_url, '/' ) ) {
+			return;
+		}
+
+		$from_url       = rtrim( $from_url, '/' );
+		$to_url         = rtrim( $to_url, '/' );
+		$posts_table    = $dump_prefix . 'posts';
+		$postmeta_table = $dump_prefix . 'postmeta';
+		$options_table  = $dump_prefix . 'options';
+
+		// 1. Posts e páginas simples (conteúdo, excerpt e guid)
+		$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
+
+		// 2. Metadados de posts (Elementor, galerias, custom fields) - paginado de 50 em 50
+		$like_query = '%' . $wpdb->esc_like( $from_url ) . '%';
+		$p_offset   = 0;
+		while ( $p_offset < 10000 ) {
+			$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `meta_id`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_value` LIKE %s LIMIT %d, 50", $like_query, $p_offset ), ARRAY_A );
+			if ( empty( $meta_rows ) || ! is_array( $meta_rows ) ) {
+				break;
+			}
+			foreach ( $meta_rows as $mrow ) {
+				$orig_val = $mrow['meta_value'];
+				if ( is_string( $orig_val ) && false !== strpos( $orig_val, $from_url ) ) {
+					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+					if ( $fixed_val !== $orig_val ) {
+						$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $mrow['meta_id'] ) );
+					}
+				}
+			}
+			if ( count( $meta_rows ) < 50 ) {
+				break;
+			}
+			$p_offset += 50;
+		}
+
+		// 3. Opções gerais do site (widgets, plugins, temas) - paginado de 50 em 50
+		$o_offset = 0;
+		while ( $o_offset < 5000 ) {
+			$opt_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `option_id`, `option_value` FROM `{$options_table}` WHERE `option_name` NOT IN ('siteurl', 'home') AND `option_value` LIKE %s LIMIT %d, 50", $like_query, $o_offset ), ARRAY_A );
+			if ( empty( $opt_rows ) || ! is_array( $opt_rows ) ) {
+				break;
+			}
+			foreach ( $opt_rows as $orow ) {
+				$orig_val = $orow['option_value'];
+				if ( is_string( $orig_val ) && false !== strpos( $orig_val, $from_url ) ) {
+					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+					if ( $fixed_val !== $orig_val ) {
+						$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_id` = %d", $fixed_val, (int) $orow['option_id'] ) );
+					}
+				}
+			}
+			if ( count( $opt_rows ) < 50 ) {
+				break;
+			}
+			$o_offset += 50;
+		}
+
+		// 4. Limpa arquivos CSS gerados do Elementor para forçar regeneração limpa
+		$elementor_css_dir = WP_CONTENT_DIR . '/uploads/elementor/css';
+		if ( is_dir( $elementor_css_dir ) ) {
+			$css_files = glob( $elementor_css_dir . '/*.css' );
+			if ( ! empty( $css_files ) ) {
+				foreach ( $css_files as $cf ) {
+					@unlink( $cf );
+				}
+			}
+		}
 	}
 }
