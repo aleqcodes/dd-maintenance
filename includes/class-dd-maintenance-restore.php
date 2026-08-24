@@ -352,6 +352,7 @@ class DD_Maintenance_Restore {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
 		}
 
+		self::create_mu_plugin_loader();
 		$scheme = ( is_ssl() || ( isset( $_SERVER['HTTPS'] ) && 'on' === $_SERVER['HTTPS'] ) || ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) ) ? 'https://' : 'http://';
 		$host   = $_SERVER['HTTP_HOST'] ?? '';
 		$detected_url = ! empty( $host ) ? untrailingslashit( $scheme . $host ) : '';
@@ -715,12 +716,42 @@ class DD_Maintenance_Restore {
 		if ( feof( $handle ) ) {
 			$eof_reached = true;
 		}
-
-		$current_offset = ftell( $handle );
-		fclose( $handle );
-
 		if ( $use_mysqli ) {
 			@mysqli_query( $dbh, 'COMMIT;' );
+		}
+
+		// Ao final de CADA lote (não apenas no eof!), garante que active_plugins, siteurl e home estejam SEMPRE apontando para o site atual
+		// Isso evita que o WordPress desative o plugin no meio do restore e que o admin-ajax.php retorne 0!
+		$table_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
+		$opt_table    = $table_prefix . 'options';
+		$opts_exist   = $wpdb->get_var( "SHOW TABLES LIKE '{$opt_table}'" );
+		if ( $opts_exist ) {
+			$ap_raw = $wpdb->get_var( "SELECT `option_value` FROM `{$opt_table}` WHERE `option_name` = 'active_plugins' LIMIT 1" );
+			if ( ! empty( $ap_raw ) ) {
+				$ap_list = maybe_unserialize( $ap_raw );
+				if ( is_array( $ap_list ) ) {
+					$modified  = false;
+					$our_slugs = array( 'dd-maintenance/dd-maintenance.php', 'backuper/backuper.php' );
+					foreach ( $our_slugs as $slug ) {
+						if ( ! in_array( $slug, $ap_list, true ) ) {
+							$ap_list[] = $slug;
+							$modified  = true;
+						}
+					}
+					if ( $modified ) {
+						$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'active_plugins'", serialize( $ap_list ) ) );
+					}
+				}
+			}
+
+			$target_siteurl = ! empty( $session['target_siteurl'] ) ? $session['target_siteurl'] : '';
+			$target_home    = ! empty( $session['target_home'] ) ? $session['target_home'] : '';
+			if ( ! empty( $target_siteurl ) ) {
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", untrailingslashit( $target_siteurl ) ) );
+			}
+			if ( ! empty( $target_home ) ) {
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'home'", untrailingslashit( $target_home ) ) );
+			}
 		}
 
 		$session['db_offset']        = $current_offset;
@@ -1039,6 +1070,8 @@ class DD_Maintenance_Restore {
 			$this->delete_directory( $temp_upload_dir );
 		}
 
+		self::remove_mu_plugin_loader();
+
 		if ( class_exists( 'DD_Maintenance_Backup' ) ) {
 			DD_Maintenance_Backup::purge_orphaned_sessions( 300 );
 		}
@@ -1074,6 +1107,7 @@ class DD_Maintenance_Restore {
 				$this->delete_directory( $session['temp_upload_dir'] );
 			}
 		}
+		self::remove_mu_plugin_loader();
 		if ( class_exists( 'DD_Maintenance_Backup' ) ) {
 			DD_Maintenance_Backup::purge_orphaned_sessions( 300 );
 		}
@@ -1847,6 +1881,40 @@ class DD_Maintenance_Restore {
 					@unlink( $cf );
 				}
 			}
+		}
+	}
+
+	/**
+	 * Cria um drop-in temporário em wp-content/mu-plugins/ para garantir que o DD Maintenance
+	 * permaneça carregado pelo WordPress mesmo enquanto o banco de dados está sendo reconstruído.
+	 */
+	public static function create_mu_plugin_loader(): void {
+		$mu_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
+		if ( ! is_dir( $mu_dir ) ) {
+			@wp_mkdir_p( $mu_dir );
+		}
+		if ( is_dir( $mu_dir ) ) {
+			$loader_code = "<?php\n"
+				. "// DD Maintenance restore persistence drop-in\n"
+				. "if ( ! class_exists( 'DD_Maintenance' ) ) {\n"
+				. "    if ( file_exists( WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php' ) ) {\n"
+				. "        require_once WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php';\n"
+				. "    } elseif ( file_exists( WP_PLUGIN_DIR . '/backuper/backuper.php' ) ) {\n"
+				. "        require_once WP_PLUGIN_DIR . '/backuper/backuper.php';\n"
+				. "    }\n"
+				. "}\n";
+			@file_put_contents( $mu_dir . '/dd-maintenance-loader.php', $loader_code );
+		}
+	}
+
+	/**
+	 * Remove o drop-in temporário do mu-plugins.
+	 */
+	public static function remove_mu_plugin_loader(): void {
+		$mu_dir      = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
+		$loader_file = $mu_dir . '/dd-maintenance-loader.php';
+		if ( file_exists( $loader_file ) ) {
+			@unlink( $loader_file );
 		}
 	}
 }
