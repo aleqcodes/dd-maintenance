@@ -175,7 +175,7 @@ try {
 	$sql       = file_get_contents($session['db_file']);
 	$db_size   = filesize($session['db_file']);
 	$db_repeat = $backup->dump_database_step($session['session_id']);
-	assert(substr_count($sql, 'INSERT INTO') === 600);
+	assert(substr_count($sql, 'INSERT INTO') === 6, 'O dump SQL deve usar seis INSERTs multi-row para duas tabelas de 300 registros.');
 	assert($db_repeat['completed'] === true && filesize($session['db_file']) === $db_size, 'O checkpoint do banco deve ser idempotente.');
 
 	do {

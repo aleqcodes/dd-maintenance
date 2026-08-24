@@ -523,6 +523,205 @@ class DD_Maintenance_S3 {
 	}
 
 	/**
+	 * Retorna a lista de backups remotos no S3 agrupados por pacote (igual aos backups locais).
+	 *
+	 * @param string $prefix Prefixo de busca no bucket (ex: site-slug ou vazio).
+	 * @return array|WP_Error Array de backups agrupados ou erro ao consultar o bucket.
+	 */
+	public function get_remote_backups( string $prefix = '' ) {
+		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
+		$site_slug = $site_slug ? $site_slug : 'site';
+
+		$search_prefix = '' !== $prefix ? $prefix : $site_slug;
+		$objects       = $this->list_objects( $search_prefix );
+
+		if ( is_wp_error( $objects ) || empty( $objects ) ) {
+			// Fallback: se não encontrou com o prefixo do site, busca na raiz do bucket.
+			if ( '' !== $search_prefix ) {
+				$objects_root = $this->list_objects( '' );
+				if ( ! is_wp_error( $objects_root ) && ! empty( $objects_root ) ) {
+					$objects = $objects_root;
+				} elseif ( is_wp_error( $objects_root ) && empty( $objects ) ) {
+					$objects = $objects_root;
+				}
+			}
+		}
+
+		if ( is_wp_error( $objects ) ) {
+			return $objects;
+		}
+		if ( empty( $objects ) ) {
+			return array();
+		}
+
+		$groups = array();
+
+		foreach ( $objects as $obj ) {
+			$key      = $obj['key'];
+			$filename = basename( $key );
+			$size     = (int) $obj['size'];
+			$mtime    = ! empty( $obj['last_modified'] ) ? strtotime( $obj['last_modified'] ) : time();
+			$folder   = dirname( $key );
+			if ( '.' === $folder ) {
+				$folder = '';
+			}
+
+			// Ignora arquivos que não sejam .zip ou .sql
+			$ext = strtolower( pathinfo( $filename, PATHINFO_EXTENSION ) );
+			if ( ! in_array( $ext, array( 'zip', 'sql' ), true ) ) {
+				continue;
+			}
+
+			// Multi-part volume: ex: site-2026-08-24-1321.part001.zip
+			if ( preg_match( '/^(.+)\.part(\d+)\.zip$/i', $filename, $matches ) ) {
+				$base_name = $matches[1];
+				$part_num  = (int) $matches[2];
+
+				if ( ! isset( $groups[ $base_name ] ) ) {
+					$groups[ $base_name ] = array(
+						'base_name'     => $base_name,
+						'display_name'  => $base_name,
+						'folder'        => $folder,
+						'is_multipart'  => true,
+						'parts'         => array(),
+						'total_size'    => 0,
+						'latest_mtime'  => $mtime,
+						'last_modified' => $obj['last_modified'],
+						'has_sql'       => false,
+						'sql_key'       => '',
+						'sql_size'      => 0,
+					);
+				}
+				$groups[ $base_name ]['is_multipart'] = true;
+				$groups[ $base_name ]['display_name']  = $base_name;
+
+				$groups[ $base_name ]['parts'][ $part_num ] = array(
+					'filename'       => $filename,
+					'key'            => $key,
+					'size'           => $size,
+					'size_formatted' => size_format( $size ),
+					'part'           => $part_num,
+				);
+				$groups[ $base_name ]['total_size'] += $size;
+				if ( $mtime > $groups[ $base_name ]['latest_mtime'] ) {
+					$groups[ $base_name ]['latest_mtime']  = $mtime;
+					$groups[ $base_name ]['last_modified'] = $obj['last_modified'];
+				}
+				if ( empty( $groups[ $base_name ]['folder'] ) && ! empty( $folder ) ) {
+					$groups[ $base_name ]['folder'] = $folder;
+				}
+			} elseif ( 'zip' === $ext ) {
+				// Single ZIP file: ex: site-2026-08-24-1321.zip
+				$base_name = preg_replace( '/\.zip$/i', '', $filename );
+
+				if ( ! isset( $groups[ $base_name ] ) ) {
+					$groups[ $base_name ] = array(
+						'base_name'     => $base_name,
+						'display_name'  => $filename,
+						'folder'        => $folder,
+						'is_multipart'  => false,
+						'parts'         => array(
+							1 => array(
+								'filename'       => $filename,
+								'key'            => $key,
+								'size'           => $size,
+								'size_formatted' => size_format( $size ),
+								'part'           => 1,
+							),
+						),
+						'total_size'    => $size,
+						'latest_mtime'  => $mtime,
+						'last_modified' => $obj['last_modified'],
+						'has_sql'       => false,
+						'sql_key'       => '',
+						'sql_filename'  => '',
+						'sql_size'      => 0,
+					);
+				} else {
+					$groups[ $base_name ]['display_name'] = $filename;
+					$groups[ $base_name ]['parts'][1] = array(
+						'filename'       => $filename,
+						'key'            => $key,
+						'size'           => $size,
+						'size_formatted' => size_format( $size ),
+						'part'           => 1,
+					);
+					$groups[ $base_name ]['total_size'] += $size;
+				}
+			} elseif ( 'sql' === $ext ) {
+				// SQL dump: ex: site-2026-08-24-1321.sql
+				$sql_base = preg_replace( '/\.sql$/i', '', $filename );
+
+				if ( isset( $groups[ $sql_base ] ) ) {
+					$groups[ $sql_base ]['has_sql']           = true;
+					$groups[ $sql_base ]['sql_key']           = $key;
+					$groups[ $sql_base ]['sql_filename']      = $filename;
+					$groups[ $sql_base ]['sql_size']          = $size;
+					$groups[ $sql_base ]['sql_size_formatted'] = size_format( $size );
+					$groups[ $sql_base ]['total_size']       += $size;
+					if ( $mtime > $groups[ $sql_base ]['latest_mtime'] ) {
+						$groups[ $sql_base ]['latest_mtime']  = $mtime;
+						$groups[ $sql_base ]['last_modified'] = $obj['last_modified'];
+					}
+				} else {
+					$groups[ $sql_base ] = array(
+						'base_name'          => $sql_base,
+						'display_name'       => $filename . ' (' . __( 'Dump SQL', 'dd-maintenance' ) . ')',
+						'folder'             => $folder,
+						'is_multipart'       => false,
+						'parts'              => array(),
+						'total_size'         => $size,
+						'latest_mtime'       => $mtime,
+						'last_modified'      => $obj['last_modified'],
+						'has_sql'            => true,
+						'sql_key'            => $key,
+						'sql_filename'       => $filename,
+						'sql_size'           => $size,
+						'sql_size_formatted' => size_format( $size ),
+					);
+				}
+			}
+		}
+
+		$backups = array();
+		foreach ( $groups as $base => $data ) {
+			ksort( $data['parts'], SORT_NUMERIC );
+			$parts_list = array_values( $data['parts'] );
+			$count      = count( $parts_list );
+			$mtime      = $data['latest_mtime'];
+
+			$backups[] = array(
+				'identifier'         => $base,
+				'display_name'       => $data['is_multipart'] ? sprintf( '%s (%d volumes)', $base, $count ) : $data['display_name'],
+				'folder'             => $data['folder'],
+				'is_multipart'       => $data['is_multipart'],
+				'total_parts'        => $count,
+				'parts'              => $parts_list,
+				'has_sql'            => ! empty( $data['has_sql'] ),
+				'sql_key'            => $data['sql_key'] ?? '',
+				'sql_filename'       => $data['sql_filename'] ?? '',
+				'sql_size'           => $data['sql_size'] ?? 0,
+				'sql_size_formatted' => $data['sql_size_formatted'] ?? '',
+				'size'               => $data['total_size'],
+				'size_formatted'     => size_format( $data['total_size'] ),
+				'timestamp'          => $mtime,
+				'date_formatted'     => get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $mtime ), 'd/m/Y H:i:s' ),
+				'last_modified'      => $data['last_modified'],
+			);
+		}
+
+		// Ordena do mais recente para o mais antigo
+		usort(
+			$backups,
+			function( $a, $b ) {
+				return $b['timestamp'] - $a['timestamp'];
+			}
+		);
+
+		return $backups;
+	}
+
+	/**
 	 * Procura e exclui todos os arquivos/partes remotos de um backup no S3 a partir do identificador do backup.
 	 *
 	 * @param string $identifier Nome base do backup ou arquivo zip (ex: site-2026-08-24-150000).

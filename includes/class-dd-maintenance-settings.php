@@ -31,6 +31,7 @@ class DD_Maintenance_Settings {
 		add_action( 'admin_post_dd_maintenance_delete_backup', array( $this, 'handle_delete_backup' ) );
 		add_action( 'admin_post_dd_maintenance_download_backup', array( $this, 'handle_download_backup' ) );
 		add_action( 'admin_post_dd_maintenance_delete_s3_object', array( $this, 'handle_delete_s3_object' ) );
+		add_action( 'admin_post_dd_maintenance_delete_s3_backup', array( $this, 'handle_delete_s3_backup' ) );
 		add_action( 'wp_ajax_dd_maintenance_ajax_action', array( $this, 'ajax_handle_action' ) );
 		add_action( 'wp_ajax_dd_maintenance_ajax_restore', array( $this, 'ajax_handle_restore' ) );
 		// Compatibilidade com ações legadas do Backuper.
@@ -2099,12 +2100,8 @@ class DD_Maintenance_Settings {
 				<?php
 				$site_slug      = sanitize_title( get_bloginfo( 'name' ) );
 				$site_slug      = $site_slug ? $site_slug : 'site';
-				$remote_objects = $s3->list_objects( $site_slug );
-				if ( is_wp_error( $remote_objects ) ) {
-					$remote_objects = $s3->list_objects( '' );
-				}
-				$has_s3_error = is_wp_error( $remote_objects );
-				$obj_list     = $has_s3_error ? array() : $remote_objects;
+				$remote_backups = $s3->get_remote_backups( $site_slug );
+				$has_s3_error   = is_wp_error( $remote_backups );
 				?>
 
 				<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
@@ -2118,48 +2115,80 @@ class DD_Maintenance_Settings {
 					</a>
 				</div>
 				<p class="description" style="margin-top:0;">
-					<?php printf( esc_html__( 'Arquivos remotos no bucket "%1$s" (região: %2$s):', 'dd-maintenance' ), esc_html( $s3->get_bucket() ), esc_html( $s3->get_region() ) ); ?>
+					<?php printf( esc_html__( 'Backups agrupados no bucket "%1$s" (região: %2$s):', 'dd-maintenance' ), esc_html( $s3->get_bucket() ), esc_html( $s3->get_region() ) ); ?>
 				</p>
 
 				<?php if ( $has_s3_error ) : ?>
 					<div class="notice notice-warning inline" style="margin:12px 0;">
-						<p><?php printf( esc_html__( 'Não foi possível listar objetos do S3: %s', 'dd-maintenance' ), esc_html( $remote_objects->get_error_message() ) ); ?></p>
+						<p><?php printf( esc_html__( 'Não foi possível listar objetos do S3: %s', 'dd-maintenance' ), esc_html( $remote_backups->get_error_message() ) ); ?></p>
 					</div>
-				<?php elseif ( empty( $obj_list ) ) : ?>
+				<?php elseif ( empty( $remote_backups ) ) : ?>
 					<p style="color:#666;font-style:italic;">
-						<?php esc_html_e( 'Nenhum arquivo de backup encontrado no bucket S3 / Spaces.', 'dd-maintenance' ); ?>
+						<?php esc_html_e( 'Nenhum backup (.zip/.sql) encontrado no bucket S3 / Spaces.', 'dd-maintenance' ); ?>
 					</p>
 				<?php else : ?>
 					<table class="widefat striped" style="margin-top:10px;border:1px solid #c3c4c7;">
 						<thead>
 							<tr>
-								<th scope="col"><?php esc_html_e( 'Chave / Arquivo no S3', 'dd-maintenance' ); ?></th>
-								<th scope="col" style="width:120px;"><?php esc_html_e( 'Tamanho', 'dd-maintenance' ); ?></th>
+								<th scope="col"><?php esc_html_e( 'Backup / Volumes', 'dd-maintenance' ); ?></th>
+								<th scope="col" style="width:120px;"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
 								<th scope="col" style="width:180px;"><?php esc_html_e( 'Data no S3 (GMT)', 'dd-maintenance' ); ?></th>
-								<th scope="col" style="text-align:right;width:130px;"><?php esc_html_e( 'Ação', 'dd-maintenance' ); ?></th>
+								<th scope="col" style="text-align:right;width:150px;"><?php esc_html_e( 'Ação', 'dd-maintenance' ); ?></th>
 							</tr>
 						</thead>
 						<tbody>
-							<?php foreach ( $obj_list as $obj ) : ?>
+							<?php foreach ( $remote_backups as $backup ) : ?>
 								<tr>
 									<td>
-										<code style="font-size:12px;"><?php echo esc_html( $obj['key'] ); ?></code>
+										<strong style="font-family:monospace;font-size:12px;"><?php echo esc_html( $backup['display_name'] ); ?></strong>
+										<?php if ( ! empty( $backup['folder'] ) ) : ?>
+											<div><code style="font-size:11px;"><?php echo esc_html( $backup['folder'] ); ?>/</code></div>
+										<?php endif; ?>
+										<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px;">
+											<span style="display:inline-block;padding:2px 6px;background:#e7f3ff;color:#135e96;border-radius:3px;font-size:11px;">
+												<?php printf( esc_html__( '%d volume(s)', 'dd-maintenance' ), (int) $backup['total_parts'] ); ?>
+											</span>
+											<?php if ( ! empty( $backup['has_sql'] ) ) : ?>
+												<span style="display:inline-block;padding:2px 6px;background:#f0f0f1;color:#50575e;border-radius:3px;font-size:11px;">
+													<?php esc_html_e( 'Dump SQL', 'dd-maintenance' ); ?>
+												</span>
+											<?php endif; ?>
+										</div>
+										<?php if ( ! empty( $backup['parts'] ) || ! empty( $backup['has_sql'] ) ) : ?>
+											<details style="margin-top:6px;font-size:11px;color:#50575e;">
+												<summary style="cursor:pointer;color:#2271b1;"><?php esc_html_e( 'Ver arquivos deste backup', 'dd-maintenance' ); ?></summary>
+												<ul style="margin:5px 0 0 16px;">
+													<?php foreach ( $backup['parts'] as $part ) : ?>
+														<li style="margin:2px 0;">
+															<code><?php echo esc_html( $part['key'] ); ?></code>
+															(<?php echo esc_html( $part['size_formatted'] ); ?>)
+														</li>
+													<?php endforeach; ?>
+													<?php if ( ! empty( $backup['has_sql'] ) ) : ?>
+														<li style="margin:2px 0;">
+															<code><?php echo esc_html( $backup['sql_key'] ); ?></code>
+															(<?php echo esc_html( $backup['sql_size_formatted'] ); ?>)
+														</li>
+													<?php endif; ?>
+												</ul>
+											</details>
+										<?php endif; ?>
 									</td>
 									<td style="font-size:12px;font-weight:600;">
-										<?php echo esc_html( $obj['size_formatted'] ?? size_format( $obj['size'] ) ); ?>
+										<?php echo esc_html( $backup['size_formatted'] ); ?>
 									</td>
 									<td style="font-size:12px;color:#50575e;">
-										<?php echo esc_html( $obj['last_modified'] ); ?>
+										<?php echo esc_html( $backup['last_modified'] ); ?>
 									</td>
 									<td style="text-align:right;">
-										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;" onsubmit="return confirm('<?php echo esc_js( sprintf( __( 'Tem certeza que deseja excluir permanentemente o arquivo "%s" do S3 / Spaces?', 'dd-maintenance' ), basename( $obj['key'] ) ) ); ?>');">
-											<input type="hidden" name="action" value="dd_maintenance_delete_s3_object">
-											<input type="hidden" name="object_key" value="<?php echo esc_attr( $obj['key'] ); ?>">
+										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;" onsubmit="return confirm('<?php echo esc_js( sprintf( __( 'Tem certeza que deseja excluir todos os arquivos do backup "%s" do S3 / Spaces?', 'dd-maintenance' ), $backup['identifier'] ) ); ?>');">
+											<input type="hidden" name="action" value="dd_maintenance_delete_s3_backup">
+											<input type="hidden" name="backup_identifier" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
 											<input type="hidden" name="redirect_tab" value="s3">
-											<?php wp_nonce_field( 'dd_maintenance_delete_s3_object' ); ?>
+											<?php wp_nonce_field( 'dd_maintenance_delete_s3_backup' ); ?>
 											<button type="submit" class="button button-link-delete button-small" style="color:#b32d2e;text-decoration:none;">
 												<span class="dashicons dashicons-trash" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
-												<?php esc_html_e( 'Excluir do S3', 'dd-maintenance' ); ?>
+												<?php esc_html_e( 'Excluir backup', 'dd-maintenance' ); ?>
 											</button>
 										</form>
 									</td>
@@ -2800,6 +2829,56 @@ class DD_Maintenance_Settings {
 		}
 
 		$redirect_tab = isset( $_POST['redirect_tab'] ) ? sanitize_key( wp_unslash( $_POST['redirect_tab'] ) ) : 'restore';
+		wp_safe_redirect( $this->page_url( $redirect_tab ) );
+		exit;
+	}
+
+	/**
+	 * Handler: Exclusão de todos os volumes de um backup agrupado no S3 / Spaces.
+	 */
+	public function handle_delete_s3_backup() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Sem permissão.', 'dd-maintenance' ) );
+		}
+		check_admin_referer( 'dd_maintenance_delete_s3_backup' );
+
+		$identifier = isset( $_POST['backup_identifier'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_identifier'] ) ) : '';
+		if ( empty( $identifier ) ) {
+			DD_Maintenance::instance()->set_notice( __( 'Identificador de backup S3 inválido.', 'dd-maintenance' ), 'error' );
+			wp_safe_redirect( $this->page_url( 's3' ) );
+			exit;
+		}
+
+		$s3 = new DD_Maintenance_S3();
+		if ( ! $s3->is_configured() ) {
+			DD_Maintenance::instance()->set_notice( __( 'S3 / Spaces não configurado.', 'dd-maintenance' ), 'error' );
+			wp_safe_redirect( $this->page_url( 's3' ) );
+			exit;
+		}
+
+		$result = $s3->delete_backup_remote( $identifier );
+		if ( ! empty( $result['deleted'] ) ) {
+			$message = sprintf(
+				_n(
+					'Backup "%1$s" excluído do S3 (%2$d arquivo).',
+					'Backup "%1$s" excluído do S3 (%2$d arquivos).',
+					(int) $result['deleted'],
+					'dd-maintenance'
+				),
+				$identifier,
+				(int) $result['deleted']
+			);
+			if ( ! empty( $result['errors'] ) ) {
+				$message .= ' ' . implode( ' ', $result['errors'] );
+			}
+			DD_Maintenance::instance()->set_notice( $message, 'success' );
+		} elseif ( ! empty( $result['errors'] ) ) {
+			DD_Maintenance::instance()->set_notice( implode( ' ', $result['errors'] ), 'error' );
+		} else {
+			DD_Maintenance::instance()->set_notice( __( 'Nenhum arquivo desse backup foi encontrado no S3.', 'dd-maintenance' ), 'warning' );
+		}
+
+		$redirect_tab = isset( $_POST['redirect_tab'] ) ? sanitize_key( wp_unslash( $_POST['redirect_tab'] ) ) : 's3';
 		wp_safe_redirect( $this->page_url( $redirect_tab ) );
 		exit;
 	}

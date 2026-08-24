@@ -59,6 +59,7 @@ function wp_remote_get( $url, $args = array() ) {
 function wp_remote_retrieve_response_code( $response ) { return $response['response']['code'] ?? 200; }
 function wp_remote_retrieve_body( $response ) { return $response['body'] ?? ''; }
 function size_format( $bytes ) { return $bytes . ' B'; }
+function get_date_from_gmt( $date, $format ) { return date( $format, strtotime( $date ) ); }
 function __( $t ) { return $t; }
 
 if ( ! class_exists( 'WP_Error' ) ) {
@@ -90,7 +91,25 @@ assert( is_array( $objects ), 'list_objects deve retornar array.' );
 assert( count( $objects ) === 4, 'Deve listar 4 objetos do XML mock.' );
 assert( $objects[0]['key'] === 'site-test/2026-08-24/backup-abc-2026-08-24.part001.zip', 'Chave 1 correta.' );
 
-// 2. Testa delete_backup_remote
+// 2. Agrupa volumes e dump SQL do mesmo backup em uma única entrada
+$grouped = $s3->get_remote_backups( 'site-test' );
+assert( is_array( $grouped ), 'get_remote_backups deve retornar uma lista.' );
+assert( count( $grouped ) === 2, 'Deve retornar 2 pacotes agrupados.' );
+
+$backup_abc = null;
+foreach ( $grouped as $backup ) {
+	if ( $backup['identifier'] === 'backup-abc-2026-08-24' ) {
+		$backup_abc = $backup;
+		break;
+	}
+}
+assert( is_array( $backup_abc ), 'O pacote backup-abc deve existir.' );
+assert( $backup_abc['is_multipart'] === true, 'O pacote deve ser identificado como multipart.' );
+assert( $backup_abc['total_parts'] === 2, 'O pacote deve conter os dois volumes ZIP.' );
+assert( $backup_abc['has_sql'] === true, 'O dump SQL deve pertencer ao mesmo pacote.' );
+assert( $backup_abc['size'] === 40 * 1024 * 1024, 'O tamanho total deve somar os volumes e o SQL.' );
+
+// 3. Testa delete_backup_remote
 $GLOBALS['s3_mock_requests'] = array();
 $result = $s3->delete_backup_remote( 'backup-abc-2026-08-24' );
 assert( $result['deleted'] === 3, 'Deve encontrar e excluir exatamente as 3 partes do backup-abc (2 zips + 1 sql).' );
