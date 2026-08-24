@@ -183,8 +183,10 @@ class DD_Maintenance_Backup {
 		}
 
 		if ( ! $initialized ) {
+			$table_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
 			$header = "-- DD Maintenance database dump\n"
 				. '-- Site: ' . ( function_exists( 'home_url' ) ? home_url() : '' ) . "\n"
+				. '-- Table Prefix: ' . $table_prefix . "\n"
 				. '-- Data: ' . date( 'Y-m-d H:i:s' ) . "\n\n"
 				. "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n";
 			fwrite( $handle, $header );

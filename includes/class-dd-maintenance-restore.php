@@ -414,7 +414,7 @@ class DD_Maintenance_Restore {
 	 * @param int    $batch_limit Quantidade máxima de volumes por lote.
 	 * @return array|WP_Error
 	 */
-	public function extract_volume_step( string $session_id, int $batch_limit = 5 ) {
+	public function extract_volume_step( string $session_id, int $batch_limit = 10 ) {
 		$this->set_time_and_memory_limits();
 
 		$session = $this->get_restore_session_data( $session_id );
@@ -442,12 +442,12 @@ class DD_Maintenance_Restore {
 				'current_index' => $total_volumes,
 				'total_volumes' => $total_volumes,
 				'percent'       => 100,
-				'log'           => sprintf( __( '[OK] Todos os %d volumes foram extraídos.', 'dd-maintenance' ), $total_volumes ),
+				'log'           => __( '[OK] Extração de todos os volumes concluída.', 'dd-maintenance' ),
 			);
 		}
 
 		$processed = 0;
-		$deadline  = microtime( true ) + 6.0;
+		$deadline  = microtime( true ) + 8.0;
 		$log_lines = array();
 
 		while ( $current_index < $total_volumes && $processed < $batch_limit && microtime( true ) < $deadline ) {
@@ -517,7 +517,7 @@ class DD_Maintenance_Restore {
 	 * @param float  $time_limit_seconds  Tempo máximo em segundos por chamada (padrão: 5.0s).
 	 * @return array|WP_Error
 	 */
-	public function restore_database_step( string $session_id, float $time_limit_seconds = 5.0 ) {
+	public function restore_database_step( string $session_id, float $time_limit_seconds = 7.0 ) {
 		global $wpdb;
 		$this->set_time_and_memory_limits();
 
@@ -541,7 +541,7 @@ class DD_Maintenance_Restore {
 
 		// Inicializa metadados do SQL na primeira chamada desta etapa
 		if ( ! isset( $session['db_file'] ) ) {
-			$sql_file = $this->find_sql_file( $extract_dir );
+			$sql_file = $this->find_sql_file( $extract_dir, $session['temp_upload_dir'] ?? '', $session['zip_paths'] ?? array() );
 			if ( ! $sql_file || ! is_file( $sql_file ) || filesize( $sql_file ) <= 0 ) {
 				$session['db_done']  = true;
 				$session['db_file']  = '';
@@ -564,6 +564,7 @@ class DD_Maintenance_Restore {
 			$session['db_queries']         = 0;
 			$session['db_tables']          = 0;
 			$session['db_errors']          = 0;
+			$session['db_error_samples']   = array();
 			$session['db_current_siteurl'] = get_option( 'siteurl', '' );
 			$session['db_current_home']    = get_option( 'home', '' );
 			$session['db_query_buffer']    = '';
@@ -572,15 +573,16 @@ class DD_Maintenance_Restore {
 			$this->save_restore_session_data( $extract_dir, $session );
 		}
 
-		$sql_file    = $session['db_file'];
-		$file_size   = max( 1, (int) $session['db_file_size'] );
-		$offset      = (int) $session['db_offset'];
-		$queries     = (int) $session['db_queries'];
-		$tables      = (int) $session['db_tables'];
-		$errors      = (int) $session['db_errors'];
-		$buffer      = (string) ( $session['db_query_buffer'] ?? '' );
-		$in_string   = (bool) ( $session['db_in_string'] ?? false );
-		$string_char = (string) ( $session['db_string_char'] ?? '' );
+		$sql_file      = $session['db_file'];
+		$file_size     = max( 1, (int) $session['db_file_size'] );
+		$offset        = (int) $session['db_offset'];
+		$queries       = (int) $session['db_queries'];
+		$tables        = (int) $session['db_tables'];
+		$errors        = (int) $session['db_errors'];
+		$error_samples = (array) ( $session['db_error_samples'] ?? array() );
+		$buffer        = (string) ( $session['db_query_buffer'] ?? '' );
+		$in_string     = (bool) ( $session['db_in_string'] ?? false );
+		$string_char   = (string) ( $session['db_string_char'] ?? '' );
 
 		$handle = fopen( $sql_file, 'r' );
 		if ( ! $handle ) {
@@ -589,15 +591,26 @@ class DD_Maintenance_Restore {
 
 		fseek( $handle, $offset );
 
-		// Desativa temporariamente checagem de foreign keys durante o lote
-		$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0;' );
+		$dbh        = ! empty( $wpdb->dbh ) ? $wpdb->dbh : null;
+		$use_mysqli = ( $dbh instanceof mysqli );
 
-		$deadline    = microtime( true ) + $time_limit_seconds;
-		$batch_count = 0;
-		$eof_reached = false;
+		if ( $use_mysqli ) {
+			@mysqli_query( $dbh, 'SET FOREIGN_KEY_CHECKS = 0;' );
+			@mysqli_query( $dbh, 'SET UNIQUE_CHECKS = 0;' );
+			@mysqli_query( $dbh, 'SET AUTOCOMMIT = 0;' );
+			@mysqli_query( $dbh, "SET sql_mode = '';" );
+			@mysqli_query( $dbh, 'START TRANSACTION;' );
+		} else {
+			$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0;' );
+		}
 
-		while ( ! feof( $handle ) && ( microtime( true ) < $deadline || $batch_count < 50 ) ) {
-			$line = fgets( $handle );
+		$deadline       = microtime( true ) + $time_limit_seconds;
+		$batch_count    = 0;
+		$uncommited_cnt = 0;
+		$eof_reached    = false;
+
+		while ( ! feof( $handle ) && ( microtime( true ) < $deadline || $batch_count < 500 ) ) {
+			$line = fgets( $handle, 1048576 );
 			if ( false === $line ) {
 				$eof_reached = true;
 				break;
@@ -605,7 +618,7 @@ class DD_Maintenance_Restore {
 
 			$trimmed = trim( $line );
 
-			// Pula linhas de comentário simples caso não esteja dentro de uma string
+			// Pula linhas de comentário simples caso não esteja dentro de uma string literal
 			if ( ! $in_string ) {
 				if ( '' === $trimmed || 0 === strpos( $trimmed, '--' ) || 0 === strpos( $trimmed, '/*' ) || 0 === strpos( $trimmed, '#' ) ) {
 					continue;
@@ -614,12 +627,11 @@ class DD_Maintenance_Restore {
 
 			$buffer .= $line;
 
-			// Verifica fim de comando SQL delimitado por ponto e vírgula
+			// Rastreia se estamos dentro de aspas simples '...'
 			$len = strlen( $line );
 			for ( $i = 0; $i < $len; $i++ ) {
 				$char = $line[ $i ];
-
-				if ( "'" === $char || '"' === $char || '`' === $char ) {
+				if ( "'" === $char || '"' === $char ) {
 					if ( ! $in_string ) {
 						$in_string   = true;
 						$string_char = $char;
@@ -649,12 +661,33 @@ class DD_Maintenance_Restore {
 							$tables++;
 						}
 
-						$res = $wpdb->query( $sql );
-						if ( false === $res && ! empty( $wpdb->last_error ) ) {
-							$errors++;
+						if ( $use_mysqli ) {
+							$res = @mysqli_query( $dbh, $sql );
+							if ( false === $res ) {
+								$errors++;
+								$err_msg = mysqli_error( $dbh );
+								if ( $err_msg && count( $error_samples ) < 3 && ! in_array( $err_msg, $error_samples, true ) ) {
+									$error_samples[] = $err_msg;
+								}
+							}
+						} else {
+							$res = $wpdb->query( $sql );
+							if ( false === $res && ! empty( $wpdb->last_error ) ) {
+								$errors++;
+								if ( count( $error_samples ) < 3 && ! in_array( $wpdb->last_error, $error_samples, true ) ) {
+									$error_samples[] = $wpdb->last_error;
+								}
+							}
 						}
 						$queries++;
 						$batch_count++;
+						$uncommited_cnt++;
+
+						if ( $use_mysqli && $uncommited_cnt >= 1000 ) {
+							@mysqli_query( $dbh, 'COMMIT;' );
+							@mysqli_query( $dbh, 'START TRANSACTION;' );
+							$uncommited_cnt = 0;
+						}
 					}
 				}
 			}
@@ -667,19 +700,30 @@ class DD_Maintenance_Restore {
 		$current_offset = ftell( $handle );
 		fclose( $handle );
 
-		$session['db_offset']       = $current_offset;
-		$session['db_queries']      = $queries;
-		$session['db_tables']       = $tables;
-		$session['db_errors']       = $errors;
-		$session['db_query_buffer'] = $buffer;
-		$session['db_in_string']    = $in_string;
-		$session['db_string_char']  = $string_char;
+		if ( $use_mysqli ) {
+			@mysqli_query( $dbh, 'COMMIT;' );
+		}
+
+		$session['db_offset']        = $current_offset;
+		$session['db_queries']       = $queries;
+		$session['db_tables']        = $tables;
+		$session['db_errors']        = $errors;
+		$session['db_error_samples'] = $error_samples;
+		$session['db_query_buffer']  = $buffer;
+		$session['db_in_string']     = $in_string;
+		$session['db_string_char']   = $string_char;
 
 		$percent = min( 100, max( 0, (int) round( ( $current_offset / $file_size ) * 100 ) ) );
 
 		if ( $eof_reached ) {
-			// Restaura checagem de foreign keys
-			$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
+			if ( $use_mysqli ) {
+				@mysqli_query( $dbh, 'COMMIT;' );
+				@mysqli_query( $dbh, 'SET AUTOCOMMIT = 1;' );
+				@mysqli_query( $dbh, 'SET FOREIGN_KEY_CHECKS = 1;' );
+				@mysqli_query( $dbh, 'SET UNIQUE_CHECKS = 1;' );
+			} else {
+				$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
+			}
 
 			// Garante que o site continue acessível no domínio atual
 			$siteurl = $session['db_current_siteurl'] ?? '';
@@ -693,13 +737,20 @@ class DD_Maintenance_Restore {
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $home ) );
 			}
 
+			if ( function_exists( 'wp_cache_flush' ) ) {
+				@wp_cache_flush();
+			}
+
 			$session['db_done']  = true;
 			$session['db_stats'] = array(
 				'queries' => $queries,
 				'tables'  => $tables,
 				'errors'  => $errors,
 			);
-			$final_line          = sprintf( __( '[OK] Banco restaurado: %1$d comandos executados (%2$d tabelas).', 'dd-maintenance' ), $queries, $tables );
+			$final_line          = sprintf( __( '[OK] Banco restaurado: %1$s comandos executados (%2$d tabelas).', 'dd-maintenance' ), number_format_i18n( $queries ), $tables );
+			if ( $errors > 0 && ! empty( $error_samples ) ) {
+				$final_line .= ' (' . sprintf( __( '%d avisos SQL', 'dd-maintenance' ), $errors ) . ')';
+			}
 			$session['log'][]    = $final_line;
 			$this->save_restore_session_data( $extract_dir, $session );
 
@@ -708,6 +759,7 @@ class DD_Maintenance_Restore {
 				'has_sql'   => true,
 				'queries'   => $queries,
 				'tables'    => $tables,
+				'errors'    => $errors,
 				'percent'   => 100,
 				'log'       => $final_line,
 			);
@@ -715,13 +767,14 @@ class DD_Maintenance_Restore {
 
 		$this->save_restore_session_data( $extract_dir, $session );
 
-		$progress_line = sprintf( __( '[Banco] Dump SQL: %1$d%% (%2$d comandos executados, %3$d tabelas)...', 'dd-maintenance' ), $percent, $queries, $tables );
+		$progress_line = sprintf( __( '[Banco] Dump SQL: %1$d%% (%2$s comandos executados, %3$d tabelas)...', 'dd-maintenance' ), $percent, number_format_i18n( $queries ), $tables );
 
 		return array(
 			'completed' => false,
 			'has_sql'   => true,
 			'queries'   => $queries,
 			'tables'    => $tables,
+			'errors'    => $errors,
 			'percent'   => $percent,
 			'log'       => $progress_line,
 		);
@@ -907,19 +960,68 @@ class DD_Maintenance_Restore {
 	}
 
 	/**
-	 * Localiza o arquivo SQL dentro da pasta extraída.
+	 * Localiza o arquivo SQL dentro da pasta extraída ou pastas de upload/backup.
 	 *
-	 * @param string $extract_dir Pasta raiz da extração.
+	 * @param string $extract_dir     Pasta raiz da extração.
+	 * @param string $temp_upload_dir Pasta temporária de upload (opcional).
+	 * @param array  $zip_paths       Caminhos dos volumes .zip (opcional).
 	 * @return string|null Caminho completo do arquivo SQL ou null.
 	 */
-	private function find_sql_file( string $extract_dir ): ?string {
-		if ( file_exists( $extract_dir . '/database.sql' ) ) {
+	private function find_sql_file( string $extract_dir, string $temp_upload_dir = '', array $zip_paths = array() ): ?string {
+		// 1. database.sql na raiz da extração
+		if ( file_exists( $extract_dir . '/database.sql' ) && filesize( $extract_dir . '/database.sql' ) > 0 ) {
 			return $extract_dir . '/database.sql';
 		}
 
+		// 2. Qualquer arquivo .sql na raiz da extração
 		$files = glob( $extract_dir . '/*.sql' );
-		if ( ! empty( $files ) && is_file( $files[0] ) ) {
-			return $files[0];
+		if ( ! empty( $files ) ) {
+			foreach ( $files as $f ) {
+				if ( is_file( $f ) && filesize( $f ) > 0 ) {
+					return $f;
+				}
+			}
+		}
+
+		// 3. Subpastas da extração (ex: extract_dir/site/*.sql)
+		$sub_files = glob( $extract_dir . '/*/*.sql' );
+		if ( ! empty( $sub_files ) ) {
+			foreach ( $sub_files as $f ) {
+				if ( is_file( $f ) && filesize( $f ) > 0 ) {
+					return $f;
+				}
+			}
+		}
+
+		// 4. Pasta temporária de upload (se o .sql foi enviado no mesmo upload)
+		if ( ! empty( $temp_upload_dir ) && is_dir( $temp_upload_dir ) ) {
+			if ( file_exists( $temp_upload_dir . '/database.sql' ) && filesize( $temp_upload_dir . '/database.sql' ) > 0 ) {
+				@copy( $temp_upload_dir . '/database.sql', $extract_dir . '/database.sql' );
+				return $extract_dir . '/database.sql';
+			}
+			$upload_sqls = glob( $temp_upload_dir . '/*.sql' );
+			if ( ! empty( $upload_sqls ) ) {
+				foreach ( $upload_sqls as $f ) {
+					if ( is_file( $f ) && filesize( $f ) > 0 ) {
+						@copy( $f, $extract_dir . '/' . basename( $f ) );
+						return $extract_dir . '/' . basename( $f );
+					}
+				}
+			}
+		}
+
+		// 5. Pasta local de backups
+		$backup_dir = DD_Maintenance::backup_dir();
+		if ( ! empty( $zip_paths ) ) {
+			foreach ( $zip_paths as $zp ) {
+				$base      = preg_replace( '/\.part\d+\.zip$/i', '', basename( $zp ) );
+				$base      = preg_replace( '/\.zip$/i', '', $base );
+				$candidate = $backup_dir . '/' . $base . '.sql';
+				if ( file_exists( $candidate ) && is_file( $candidate ) && filesize( $candidate ) > 0 ) {
+					@copy( $candidate, $extract_dir . '/' . basename( $candidate ) );
+					return $extract_dir . '/' . basename( $candidate );
+				}
+			}
 		}
 
 		return null;
