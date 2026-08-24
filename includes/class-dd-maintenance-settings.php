@@ -2025,6 +2025,8 @@ class DD_Maintenance_Settings {
 	}
 
 	/**
+	 * Aba: Backups Locais & Restauração.
+	 */
 	private function render_tab_restore( $has_password ) {
 		$local_backups = DD_Maintenance_Restore::get_local_backups();
 		$max_upload    = size_format( wp_max_upload_size() );
