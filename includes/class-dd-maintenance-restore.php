@@ -765,24 +765,52 @@ class DD_Maintenance_Restore {
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $home ) );
 			}
 
-			// 3. Se a URL de origem do backup era diferente da URL atual, realiza Search & Replace
-			// para que imagens, galerias, posts, Elementor, links e temas venham 100% visíveis
+			// 3. Se a URL de origem do backup era diferente da URL atual, realiza Search & Replace seguro
+			// com suporte total a arrays serializados PHP (Elementor, ACF, Widgets) e JSON
 			if ( ! empty( $old_siteurl ) && ! empty( $siteurl ) && rtrim( $old_siteurl, '/' ) !== rtrim( $siteurl, '/' ) ) {
 				$from_url       = rtrim( $old_siteurl, '/' );
 				$to_url         = rtrim( $siteurl, '/' );
 				$posts_table    = $dump_prefix . 'posts';
 				$postmeta_table = $dump_prefix . 'postmeta';
 
-				// Posts e páginas (conteúdo, excerpt e guid)
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url ) );
+				// Posts e páginas simples (conteúdo, excerpt e guid)
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
 
-				// Metadados de posts (Elementor, galerias, custom fields)
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = REPLACE(`meta_value`, %s, %s) WHERE `meta_value` LIKE %s", $from_url, $to_url, '%' . $wpdb->esc_like( $from_url ) . '%' ) );
+				// Metadados de posts (Elementor, galerias, custom fields, serialized PHP e JSON)
+				$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `meta_id`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_value` LIKE %s", '%' . $wpdb->esc_like( $from_url ) . '%' ), ARRAY_A );
+				if ( ! empty( $meta_rows ) && is_array( $meta_rows ) ) {
+					foreach ( $meta_rows as $mrow ) {
+						$orig_val = $mrow['meta_value'];
+						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+						if ( $fixed_val !== $orig_val ) {
+							$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $mrow['meta_id'] ) );
+						}
+					}
+				}
 
-				// Opções gerais do site (exceto siteurl/home que já foram atualizados)
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = REPLACE(`option_value`, %s, %s) WHERE `option_name` NOT IN ('siteurl', 'home') AND `option_value` LIKE %s", $from_url, $to_url, '%' . $wpdb->esc_like( $from_url ) . '%' ) );
+				// Opções do site (widgets, plugins, temas, serialized PHP e JSON)
+				$opt_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `option_id`, `option_value` FROM `{$options_table}` WHERE `option_name` NOT IN ('siteurl', 'home') AND `option_value` LIKE %s", '%' . $wpdb->esc_like( $from_url ) . '%' ), ARRAY_A );
+				if ( ! empty( $opt_rows ) && is_array( $opt_rows ) ) {
+					foreach ( $opt_rows as $orow ) {
+						$orig_val = $orow['option_value'];
+						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+						if ( $fixed_val !== $orig_val ) {
+							$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_id` = %d", $fixed_val, (int) $orow['option_id'] ) );
+						}
+					}
+				}
+
+				// Limpa arquivos CSS gerados do Elementor para forçar regeneração limpa
+				$elementor_css_dir = WP_CONTENT_DIR . '/uploads/elementor/css';
+				if ( is_dir( $elementor_css_dir ) ) {
+					$css_files = glob( $elementor_css_dir . '/*.css' );
+					if ( ! empty( $css_files ) ) {
+						foreach ( $css_files as $cf ) {
+							@unlink( $cf );
+						}
+					}
+				}
 			}
-
 			if ( function_exists( 'wp_cache_flush' ) ) {
 				@wp_cache_flush();
 			}
@@ -1679,5 +1707,69 @@ class DD_Maintenance_Restore {
 		if ( function_exists( 'ini_set' ) ) {
 			@ini_set( 'memory_limit', '512M' );
 		}
+	}
+
+	/**
+	 * Realiza Search & Replace recursivo seguro com suporte a strings serializadas PHP e JSON.
+	 *
+	 * @param string $from Texto de busca.
+	 * @param string $to   Texto de substituição.
+	 * @param mixed  $data Dado a ser processado.
+	 * @param bool   $was_serialized Indica se o dado original era serializado.
+	 * @return mixed
+	 */
+	public static function recursive_search_replace( $from, $to, $data, bool $was_serialized = false ) {
+		if ( empty( $from ) || $from === $to ) {
+			return $data;
+		}
+
+		try {
+			if ( is_string( $data ) ) {
+				// 1. String PHP serializada
+				if ( ( 0 === strpos( $data, 'a:' ) || 0 === strpos( $data, 's:' ) || 0 === strpos( $data, 'O:' ) ) && false === strpos( $data, 'O:8:"DateTime":0:{}' ) ) {
+					$unserialized = @unserialize( $data, array( 'allowed_classes' => false ) );
+					if ( false === $unserialized && 'b:0;' !== $data ) {
+						$unserialized = @unserialize( $data );
+					}
+					if ( false !== $unserialized || 'b:0;' === $data ) {
+						$replaced = self::recursive_search_replace( $from, $to, $unserialized, true );
+						return serialize( $replaced );
+					}
+				}
+
+				// 2. String JSON (Elementor _elementor_data, Gutenberg)
+				if ( 0 === strpos( $data, '{' ) || 0 === strpos( $data, '[' ) ) {
+					$json = json_decode( $data, true );
+					if ( null !== $json && JSON_ERROR_NONE === json_last_error() ) {
+						$replaced = self::recursive_search_replace( $from, $to, $json, false );
+						return wp_json_encode( $replaced, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+					}
+				}
+
+				// 3. String simples
+				return str_replace( $from, $to, $data );
+			}
+
+			if ( is_array( $data ) ) {
+				$new_array = array();
+				foreach ( $data as $key => $val ) {
+					$new_key               = is_string( $key ) ? str_replace( $from, $to, $key ) : $key;
+					$new_array[ $new_key ] = self::recursive_search_replace( $from, $to, $val, false );
+				}
+				return $new_array;
+			}
+
+			if ( is_object( $data ) ) {
+				$new_obj = clone $data;
+				foreach ( get_object_vars( $data ) as $prop => $val ) {
+					$new_obj->$prop = self::recursive_search_replace( $from, $to, $val, false );
+				}
+				return $new_obj;
+			}
+		} catch ( Exception $e ) {
+			return $data;
+		}
+
+		return $data;
 	}
 }
