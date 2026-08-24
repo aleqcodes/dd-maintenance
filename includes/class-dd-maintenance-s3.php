@@ -382,6 +382,206 @@ class DD_Maintenance_S3 {
 	}
 
 	/**
+	 * Exclui um objeto do bucket S3 / Spaces.
+	 *
+	 * @param string $key Chave do objeto no bucket.
+	 * @return true|WP_Error
+	 */
+	public function delete_object( string $key ) {
+		if ( ! $this->is_configured() ) {
+			return new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
+		}
+
+		$region_ok = $this->ensure_region();
+		if ( is_wp_error( $region_ok ) ) {
+			return $region_ok;
+		}
+
+		$uri  = $this->encode_uri( $key );
+		$auth = $this->sign_request( 'DELETE', $uri, '', self::EMPTY_PAYLOAD_HASH );
+
+		$headers = array(
+			'Host'                 => $auth['Host'],
+			'Authorization'        => $auth['Authorization'],
+			'x-amz-content-sha256' => $auth['x-amz-content-sha256'],
+			'x-amz-date'           => $auth['x-amz-date'],
+		);
+
+		$url = $this->get_endpoint() . $uri;
+
+		$response = wp_remote_request(
+			$url,
+			array(
+				'method'  => 'DELETE',
+				'headers' => $headers,
+				'timeout' => 30,
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( $code >= 200 && $code < 300 ) {
+			return true;
+		}
+
+		$body    = wp_remote_retrieve_body( $response );
+		$message = $this->extract_error_message( $body );
+		return new WP_Error(
+			's3_delete_error',
+			$message ? $message : sprintf( __( 'Erro HTTP %d ao excluir objeto no S3.', 'dd-maintenance' ), $code )
+		);
+	}
+
+	/**
+	 * Lista objetos do bucket S3 / Spaces (com suporte a prefixo).
+	 *
+	 * @param string $prefix Prefixo de busca (ex: site-name/).
+	 * @param int    $max_keys Limite máximo de objetos (padrão: 1000).
+	 * @return array|WP_Error Array de objetos com key, size, last_modified.
+	 */
+	public function list_objects( string $prefix = '', int $max_keys = 1000 ) {
+		if ( ! $this->is_configured() ) {
+			return new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
+		}
+
+		$region_ok = $this->ensure_region();
+		if ( is_wp_error( $region_ok ) ) {
+			return $region_ok;
+		}
+
+		$query_params = array(
+			'list-type' => '2',
+			'max-keys'  => (string) $max_keys,
+		);
+		if ( '' !== $prefix ) {
+			$query_params['prefix'] = $prefix;
+		}
+		ksort( $query_params );
+
+		$query_parts = array();
+		foreach ( $query_params as $k => $v ) {
+			$query_parts[] = rawurlencode( (string) $k ) . '=' . rawurlencode( (string) $v );
+		}
+		$query_string = implode( '&', $query_parts );
+
+		$uri  = '/';
+		$auth = $this->sign_request( 'GET', $uri, $query_string, self::EMPTY_PAYLOAD_HASH );
+
+		$headers = array(
+			'Host'                 => $auth['Host'],
+			'Authorization'        => $auth['Authorization'],
+			'x-amz-content-sha256' => $auth['x-amz-content-sha256'],
+			'x-amz-date'           => $auth['x-amz-date'],
+		);
+
+		$url      = $this->get_endpoint() . $uri . '?' . $query_string;
+		$response = wp_remote_get(
+			$url,
+			array(
+				'headers' => $headers,
+				'timeout' => 30,
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		$body = wp_remote_retrieve_body( $response );
+
+		if ( $code < 200 || $code >= 300 ) {
+			$message = $this->extract_error_message( $body );
+			return new WP_Error(
+				's3_list_error',
+				$message ? $message : sprintf( __( 'Erro HTTP %d ao listar objetos no S3.', 'dd-maintenance' ), $code )
+			);
+		}
+
+		$objects = array();
+		if ( preg_match_all( '/<Contents>(.*?)<\/Contents>/s', $body, $matches ) ) {
+			foreach ( $matches[1] as $content_xml ) {
+				$key           = preg_match( '/<Key>(.*?)<\/Key>/s', $content_xml, $k ) ? html_entity_decode( trim( $k[1] ) ) : '';
+				$size          = preg_match( '/<Size>(.*?)<\/Size>/s', $content_xml, $s ) ? (int) $s[1] : 0;
+				$last_modified = preg_match( '/<LastModified>(.*?)<\/LastModified>/s', $content_xml, $lm ) ? trim( $lm[1] ) : '';
+
+				if ( '' !== $key ) {
+					$objects[] = array(
+						'key'            => $key,
+						'size'           => $size,
+						'size_formatted' => size_format( $size ),
+						'last_modified'  => $last_modified,
+					);
+				}
+			}
+		}
+
+		return $objects;
+	}
+
+	/**
+	 * Procura e exclui todos os arquivos/partes remotos de um backup no S3 a partir do identificador do backup.
+	 *
+	 * @param string $identifier Nome base do backup ou arquivo zip (ex: site-2026-08-24-150000).
+	 * @return array Array com 'deleted' (quantidade de objetos excluídos) e 'errors' (erros eventuais).
+	 */
+	public function delete_backup_remote( string $identifier ): array {
+		if ( ! $this->is_configured() ) {
+			return array(
+				'deleted' => 0,
+				'errors'  => array( __( 'S3 / Spaces não configurado.', 'dd-maintenance' ) ),
+			);
+		}
+
+		$base_name = preg_replace( '/\.part\d+\.zip$/i', '', $identifier );
+		$base_name = preg_replace( '/\.zip$/i', '', $base_name );
+		$base_name = preg_replace( '/\.sql$/i', '', $base_name );
+		$base_name = sanitize_file_name( $base_name );
+
+		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
+		$site_slug = $site_slug ? $site_slug : 'site';
+
+		// Busca objetos no bucket com o prefixo do site
+		$objects = $this->list_objects( $site_slug );
+		if ( is_wp_error( $objects ) ) {
+			// Fallback: busca na raiz do bucket se prefixo falhar
+			$objects = $this->list_objects( '' );
+		}
+
+		if ( is_wp_error( $objects ) || empty( $objects ) ) {
+			return array(
+				'deleted' => 0,
+				'errors'  => is_wp_error( $objects ) ? array( $objects->get_error_message() ) : array(),
+			);
+		}
+
+		$deleted_count = 0;
+		$errors        = array();
+
+		foreach ( $objects as $obj ) {
+			$key      = $obj['key'];
+			$filename = basename( $key );
+			// Verifica se o arquivo remoto pertence a este backup
+			if ( 0 === strpos( $filename, $base_name ) || false !== strpos( $key, '/' . $base_name ) ) {
+				$del = $this->delete_object( $key );
+				if ( is_wp_error( $del ) ) {
+					$errors[] = sprintf( __( 'Erro ao excluir %1$s no S3: %2$s', 'dd-maintenance' ), $key, $del->get_error_message() );
+				} else {
+					$deleted_count++;
+				}
+			}
+		}
+
+		return array(
+			'deleted' => $deleted_count,
+			'errors'  => $errors,
+		);
+	}
+
+	/**
 	 * Executa o PUT com streaming do arquivo (curl quando disponível).
 	 *
 	 * @param string $url     URL completa de envio.
