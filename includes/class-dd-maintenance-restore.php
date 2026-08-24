@@ -84,8 +84,56 @@ class DD_Maintenance_Restore {
 			$this->delete_directory( $temp_dir );
 			return $result;
 		}
+		return $this->restore_from_temp_directory( $temp_dir );
+	}
 
-		$result = $this->restore_part_files( $uploaded_files, $temp_dir );
+	/**
+	 * Restaura o site a partir de uma pasta temporária onde arquivos de backup foram salvos/enviados.
+	 *
+	 * @param string $temp_dir Caminho completo da pasta temporária.
+	 * @return array|WP_Error
+	 */
+	public function restore_from_temp_directory( string $temp_dir ) {
+		$this->set_time_and_memory_limits();
+
+		$temp_dir = wp_normalize_path( realpath( $temp_dir ) ? realpath( $temp_dir ) : $temp_dir );
+		if ( ! is_dir( $temp_dir ) ) {
+			return new WP_Error( 'restore_temp_dir_missing', __( 'Pasta temporária de restauração não encontrada.', 'dd-maintenance' ) );
+		}
+
+		$files = glob( $temp_dir . '/*.zip' );
+		if ( empty( $files ) ) {
+			$this->delete_directory( $temp_dir );
+			return new WP_Error( 'restore_no_zip_files', __( 'Nenhum arquivo .zip encontrado na pasta de restauração.', 'dd-maintenance' ) );
+		}
+
+		// Se foi enviada apenas 1 parte e é um .zip padrão (sem ser .part002+).
+		if ( 1 === count( $files ) ) {
+			$single_file = $files[0];
+			$ext         = strtolower( pathinfo( $single_file, PATHINFO_EXTENSION ) );
+
+			if ( 'zip' !== $ext ) {
+				$this->delete_directory( $temp_dir );
+				return new WP_Error( 'restore_invalid_ext', __( 'O arquivo precisa estar no formato .zip.', 'dd-maintenance' ) );
+			}
+
+			if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $single_file ) ) ) {
+				$this->delete_directory( $temp_dir );
+				return new WP_Error(
+					'restore_missing_other_parts',
+					sprintf(
+						__( 'O arquivo %s pertence a um backup em lotes. Selecione todas as partes juntas.', 'dd-maintenance' ),
+						basename( $single_file )
+					)
+				);
+			}
+
+			$result = $this->restore_archive( $single_file );
+			$this->delete_directory( $temp_dir );
+			return $result;
+		}
+
+		$result = $this->restore_part_files( $files, $temp_dir );
 		$this->delete_directory( $temp_dir );
 		return $result;
 	}

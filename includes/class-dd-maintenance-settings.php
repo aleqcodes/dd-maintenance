@@ -1144,52 +1144,49 @@ class DD_Maintenance_Settings {
 						e.preventDefault();
 						var fileInput = f.querySelector('input[name="backup_zip[]"]') || f.querySelector('input[name="backup_zip"]');
 						if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-							alert('Selecione pelo menos um arquivo .zip');
+							alert('Selecione pelo menos um arquivo .zip de backup');
 							return;
 						}
 
+						var files = Array.prototype.slice.call(fileInput.files);
+						var totalFiles = files.length;
+						var pwdInput = f.querySelector('input[name="restore_password"]');
+						var pwd = pwdInput ? pwdInput.value : '';
+
 						openModal('Restauração de Backup (Upload)');
-						setProgress(5, 'Enviando arquivo(s) para o servidor...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Upload] ' + fileInput.files.length + ' arquivo(s) selecionado(s)...');
+						setProgress(3, 'Inicializando sessão de upload...', '[Início] ' + new Date().toLocaleTimeString() + '\n[Upload] ' + totalFiles + ' arquivo(s) selecionado(s)...');
 
-						var fd = new FormData(f);
-						fd.append('action', 'dd_maintenance_ajax_restore');
-						fd.append('mode', 'upload');
-						fd.append('nonce', nonce);
+						// Passo 1: Inicializa sessão de upload no servidor
+						sendAjax('dd_maintenance_ajax_restore', {
+							mode: 'upload_init',
+							total_files: totalFiles,
+							restore_password: pwd
+						}, function(initData) {
+							var uploadSessionId = initData.upload_session_id;
+							setProgress(5, 'Iniciando envio sequencial dos ' + totalFiles + ' arquivo(s)...', '[Sessão] Upload temporário ID: ' + uploadSessionId);
 
-						var xhr = new XMLHttpRequest();
-						xhr.open('POST', ajaxUrl, true);
-						xhr.withCredentials = true;
+							// Passo 2: Envia cada arquivo individualmente (25MB por requisição - zero risco de 413 ou timeout)
+							uploadFilesSequentially(files, uploadSessionId, pwd, 0, function() {
+								setProgress(75, 'Todos os ' + totalFiles + ' arquivos enviados! Extraindo e restaurando...', '[Restauração] Iniciando extração e restauração do banco e arquivos...');
 
-						xhr.upload.onprogress = function(pe) {
-							if (pe.lengthComputable) {
-								var uploadPct = Math.round((pe.loaded / pe.total) * 50);
-								setProgress(uploadPct, 'Enviando arquivo(s) para o servidor (' + Math.round((pe.loaded / pe.total) * 100) + '% enviado)...');
-							}
-						};
+								// Passo 3: Finaliza e executa a restauração completa
+								sendAjax('dd_maintenance_ajax_restore', {
+									mode: 'upload_finalize',
+									upload_session_id: uploadSessionId,
+									restore_password: pwd
+								}, function(finalRes) {
+									setProgress(100, 'Backup restaurado com sucesso!', finalRes.log || '[OK] Restauração concluída.', true);
+								}, function(errFinal) {
+									setProgress(50, 'Erro na restauração', '[ERRO] ' + errFinal, false, true);
+								});
 
-						xhr.onload = function() {
-							if (xhr.status >= 200 && xhr.status < 300) {
-								try {
-									var res = JSON.parse(xhr.responseText);
-									if (res && res.success) {
-										setProgress(100, 'Backup restaurado com sucesso!', res.data.log || '[OK] Restauração concluída.', true);
-									} else {
-										var errMsg = (res && res.data && res.data.message) ? res.data.message : (res && res.data) ? res.data : 'Erro na restauração.';
-										setProgress(50, 'Erro na restauração', '[ERRO] ' + errMsg, false, true);
-									}
-								} catch (err) {
-									setProgress(50, 'Erro ao processar resposta', '[ERRO] Resposta inválida do servidor: ' + xhr.responseText.substr(0, 200), false, true);
-								}
-							} else {
-								setProgress(50, 'Erro HTTP ' + xhr.status, '[ERRO] Falha na requisição ao servidor.', false, true);
-							}
-						};
+							}, function(uploadErr) {
+								setProgress(50, 'Erro no upload de arquivos', '[ERRO] ' + uploadErr, false, true);
+							});
 
-						xhr.onerror = function() {
-							setProgress(50, 'Erro de conexão', '[ERRO] Falha de conexão ao enviar arquivos.', false, true);
-						};
-
-						xhr.send(fd);
+						}, function(initErr) {
+							setProgress(10, 'Erro ao inicializar sessão', '[ERRO] ' + initErr, false, true);
+						});
 					});
 				} else if (actVal === 'dd_maintenance_restore_local') {
 					f.addEventListener('submit', function(e) {
@@ -1210,6 +1207,98 @@ class DD_Maintenance_Settings {
 					});
 				}
 			});
+
+			function uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt) {
+				if (!files || index >= files.length) {
+					if (onComplete) onComplete();
+					return;
+				}
+				attempt = attempt || 0;
+
+				var file = files[index];
+				var total = files.length;
+				var currentNum = index + 1;
+				var basePct = 5 + Math.round(((index) / total) * 65);
+
+				setProgress(basePct, 'Enviando arquivo ' + currentNum + ' de ' + total + ' (' + file.name + ')...');
+
+				var fd = new FormData();
+				fd.append('action', 'dd_maintenance_ajax_restore');
+				fd.append('mode', 'upload_chunk');
+				fd.append('upload_session_id', sessionId);
+				fd.append('file_index', currentNum);
+				fd.append('total_files', total);
+				fd.append('restore_password', password);
+				fd.append('file_chunk', file);
+				fd.append('nonce', nonce);
+
+				var xhr = new XMLHttpRequest();
+				xhr.open('POST', ajaxUrl, true);
+				xhr.withCredentials = true;
+
+				xhr.upload.onprogress = function(pe) {
+					if (pe.lengthComputable) {
+						var fileProgress = pe.loaded / pe.total;
+						var currentPct = 5 + Math.round(((index + fileProgress) / total) * 65);
+						var fileMb = Math.round((pe.loaded / 1024 / 1024) * 10) / 10;
+						var totalMb = Math.round((pe.total / 1024 / 1024) * 10) / 10;
+						setProgress(currentPct, 'Enviando arquivo ' + currentNum + '/' + total + ' (' + file.name + ' - ' + fileMb + '/' + totalMb + ' MB)...');
+					}
+				};
+
+				xhr.onload = function() {
+					if (xhr.status >= 200 && xhr.status < 300) {
+						try {
+							var res = JSON.parse(xhr.responseText);
+							if (res && res.success) {
+								if (consoleOut) {
+									var sizeStr = file.size > 1048576 ? Math.round(file.size / 1048576 * 10) / 10 + ' MB' : Math.round(file.size / 1024) + ' KB';
+									consoleOut.innerText += (consoleOut.innerText ? '\n' : '') + '[Upload ' + currentNum + '/' + total + '] ' + file.name + ' (' + sizeStr + ')';
+									consoleOut.scrollTop = consoleOut.scrollHeight;
+								}
+								uploadFilesSequentially(files, sessionId, password, index + 1, onComplete, onError, 0);
+							} else {
+								var errMsg = (res && res.data && res.data.message) ? res.data.message : 'Erro ao enviar parte ' + currentNum;
+								if (attempt < 2) {
+									setTimeout(function() {
+										uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
+									}, 1500);
+								} else if (onError) {
+									onError(errMsg);
+								}
+							}
+						} catch (e) {
+							if (attempt < 2) {
+								setTimeout(function() {
+									uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
+								}, 1500);
+							} else if (onError) {
+								onError('Resposta inválida do servidor ao enviar ' + file.name);
+							}
+						}
+					} else {
+						if (attempt < 2) {
+							setTimeout(function() {
+								uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
+							}, 1500);
+						} else if (onError) {
+							onError('Erro HTTP ' + xhr.status + ' ao enviar ' + file.name);
+						}
+					}
+				};
+
+				xhr.onerror = function() {
+					if (attempt < 2) {
+						setTimeout(function() {
+							uploadFilesSequentially(files, sessionId, password, index, onComplete, onError, attempt + 1);
+						}, 1500);
+					} else if (onError) {
+						onError('Falha de conexão ao enviar ' + file.name);
+					}
+				};
+
+				xhr.send(fd);
+			}
 		})();
 		</script>
 		</div>
@@ -3222,7 +3311,63 @@ class DD_Maintenance_Settings {
 		$mode    = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : '';
 		$restore = new DD_Maintenance_Restore();
 
-		if ( 'upload' === $mode ) {
+		if ( 'upload_init' === $mode ) {
+			$upload_session_id = 'upload_restore_' . time() . '_' . wp_generate_password( 10, false );
+			$backup_dir        = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+			$temp_dir          = $backup_dir . '/' . $upload_session_id;
+
+			if ( ! wp_mkdir_p( $temp_dir ) ) {
+				wp_send_json_error( array( 'message' => __( 'Não foi possível criar a pasta temporária de upload no servidor.', 'dd-maintenance' ) ) );
+			}
+
+			wp_send_json_success( array( 'upload_session_id' => $upload_session_id ) );
+		} elseif ( 'upload_chunk' === $mode ) {
+			$upload_session_id = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
+			if ( empty( $upload_session_id ) || 0 !== strpos( $upload_session_id, 'upload_restore_' ) ) {
+				wp_send_json_error( array( 'message' => __( 'Identificador de sessão de upload inválido.', 'dd-maintenance' ) ) );
+			}
+
+			$backup_dir = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+			$temp_dir   = $backup_dir . '/' . $upload_session_id;
+			$real_temp  = file_exists( $temp_dir ) ? wp_normalize_path( realpath( $temp_dir ) ) : '';
+
+			if ( empty( $real_temp ) || 0 !== strpos( $real_temp, $backup_dir . '/' ) || ! is_dir( $real_temp ) ) {
+				wp_send_json_error( array( 'message' => __( 'Pasta temporária de upload não encontrada no servidor.', 'dd-maintenance' ) ) );
+			}
+
+			if ( empty( $_FILES['file_chunk']['tmp_name'] ) || ! is_uploaded_file( $_FILES['file_chunk']['tmp_name'] ) ) {
+				wp_send_json_error( array( 'message' => __( 'Arquivo não recebido nesta etapa.', 'dd-maintenance' ) ) );
+			}
+
+			$orig_name = sanitize_file_name( wp_unslash( $_FILES['file_chunk']['name'] ) );
+			$dest_path = $real_temp . '/' . $orig_name;
+
+			if ( ! move_uploaded_file( $_FILES['file_chunk']['tmp_name'], $dest_path ) ) {
+				wp_send_json_error( array( 'message' => sprintf( __( 'Falha ao salvar %s na pasta temporária.', 'dd-maintenance' ), $orig_name ) ) );
+			}
+
+			wp_send_json_success(
+				array(
+					'filename' => $orig_name,
+					'size'     => filesize( $dest_path ),
+				)
+			);
+		} elseif ( 'upload_finalize' === $mode ) {
+			$upload_session_id = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
+			if ( empty( $upload_session_id ) || 0 !== strpos( $upload_session_id, 'upload_restore_' ) ) {
+				wp_send_json_error( array( 'message' => __( 'Identificador de sessão de upload inválido.', 'dd-maintenance' ) ) );
+			}
+
+			$backup_dir = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+			$temp_dir   = $backup_dir . '/' . $upload_session_id;
+			$real_temp  = file_exists( $temp_dir ) ? wp_normalize_path( realpath( $temp_dir ) ) : '';
+
+			if ( empty( $real_temp ) || 0 !== strpos( $real_temp, $backup_dir . '/' ) || ! is_dir( $real_temp ) ) {
+				wp_send_json_error( array( 'message' => __( 'Pasta temporária de upload não encontrada para finalização.', 'dd-maintenance' ) ) );
+			}
+
+			$result = $restore->restore_from_temp_directory( $real_temp );
+		} elseif ( 'upload' === $mode ) {
 			if ( empty( $_FILES['backup_zip'] ) ) {
 				wp_send_json_error( array( 'message' => __( 'Nenhum arquivo enviado.', 'dd-maintenance' ) ) );
 			}
