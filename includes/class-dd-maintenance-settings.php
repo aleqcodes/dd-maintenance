@@ -1415,24 +1415,24 @@ class DD_Maintenance_Settings {
 					totalVolumes            = initRes.total_volumes || 1;
 
 					var extractSpan = (startPct >= 50) ? 26 : 60;
-					var dbPct       = startPct + extractSpan + 5;
-					var filesPct    = startPct + extractSpan + 9;
+					var filesPct    = startPct + extractSpan + 2;
+					var dbPct       = startPct + extractSpan + 7;
 
 					setProgress(startPct, 'Passo 1/4: Extraindo ' + totalVolumes + ' volume(s) de backup (0%)...', '[Sessão] ' + currentRestoreSessionId + ' (' + totalVolumes + ' volume(s))');
 
 					loopRestoreExtractBatches(currentRestoreSessionId, totalVolumes, startPct, extractSpan, sourceParams.restore_password || '', function() {
-						setProgress(dbPct, 'Passo 2/4: Restaurando banco de dados (tabelas SQL 0%)...', '[Banco] Executando comandos do dump SQL...');
+						setProgress(filesPct, 'Passo 2/4: Restaurando arquivos do site na raiz (0%)...', '[Arquivos] Copiando temas, plugins e biblioteca de mídia...');
 
-						loopRestoreDbBatches(currentRestoreSessionId, dbPct, 7, sourceParams.restore_password || '', function(dbRes) {
-							if (dbRes.log) {
-								consoleOut.innerText += '\n' + dbRes.log;
+						loopRestoreFilesBatches(currentRestoreSessionId, filesPct, 4, sourceParams.restore_password || '', function(filesRes) {
+							if (filesRes.log) {
+								consoleOut.innerText += '\n' + filesRes.log;
 								consoleOut.scrollTop = consoleOut.scrollHeight;
 							}
-							setProgress(filesPct, 'Passo 3/4: Restaurando arquivos do site na raiz (0%)...', '[Arquivos] Copiando arquivos do site...');
+							setProgress(dbPct, 'Passo 3/4: Restaurando banco de dados SQL (0%)...', '[Banco] Executando comandos do dump SQL...');
 
-							loopRestoreFilesBatches(currentRestoreSessionId, filesPct, 4, sourceParams.restore_password || '', function(filesRes) {
-								if (filesRes.log) {
-									consoleOut.innerText += '\n' + filesRes.log;
+							loopRestoreDbBatches(currentRestoreSessionId, dbPct, 7, sourceParams.restore_password || '', function(dbRes) {
+								if (dbRes.log) {
+									consoleOut.innerText += '\n' + dbRes.log;
 									consoleOut.scrollTop = consoleOut.scrollHeight;
 								}
 								setProgress(98, 'Passo 4/4: Finalizando restauração e limpando temporários...', '[Finalização] Limpando pastas temporárias...');
@@ -1449,14 +1449,14 @@ class DD_Maintenance_Settings {
 									if (onError) onError(errFin);
 								});
 
-							}, function(errFiles) {
-								setProgress(filesPct, 'Erro ao restaurar arquivos', '[ERRO] ' + errFiles, false, true);
-								handleRestoreError(currentRestoreSessionId, errFiles, onError);
+							}, function(errDb) {
+								setProgress(dbPct, 'Erro no banco de dados', '[ERRO] ' + errDb, false, true);
+								handleRestoreError(currentRestoreSessionId, errDb, onError);
 							});
 
-						}, function(errDb) {
-							setProgress(dbPct, 'Erro no banco de dados', '[ERRO] ' + errDb, false, true);
-							handleRestoreError(currentRestoreSessionId, errDb, onError);
+						}, function(errFiles) {
+							setProgress(filesPct, 'Erro ao restaurar arquivos', '[ERRO] ' + errFiles, false, true);
+							handleRestoreError(currentRestoreSessionId, errFiles, onError);
 						});
 
 					}, function(errExt) {
