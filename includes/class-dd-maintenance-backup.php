@@ -1001,6 +1001,8 @@ class DD_Maintenance_Backup {
 		$part          = (int) floor( $offset / $max_data ) + 1;
 		$chunk_name    = sprintf( '__dd_chunks__/%s.part%06d', $hash, $part );
 		$length        = min( $max_data, $file_size - $offset );
+
+		$handle = fopen( $item['path'], 'rb' );
 		if ( ! $handle ) {
 			return new WP_Error( 'large_file_read', sprintf( __( 'Não foi possível ler o arquivo grande %s.', 'dd-maintenance' ), $item['target'] ) );
 		}
