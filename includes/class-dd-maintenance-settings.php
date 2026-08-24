@@ -1419,7 +1419,7 @@ class DD_Maintenance_Settings {
 
 					setProgress(startPct, 'Passo 1/4: Extraindo ' + totalVolumes + ' volume(s) de backup (0%)...', '[Sessão] ' + currentRestoreSessionId + ' (' + totalVolumes + ' volume(s))');
 
-					loopRestoreExtractBatches(currentRestoreSessionId, totalVolumes, startPct, extractSpan, function() {
+					loopRestoreExtractBatches(currentRestoreSessionId, totalVolumes, startPct, extractSpan, sourceParams.restore_password || '', function() {
 						setProgress(dbPct, 'Passo 2/4: Restaurando banco de dados (tabelas SQL 0%)...', '[Banco] Executando comandos do dump SQL...');
 
 						loopRestoreDbBatches(currentRestoreSessionId, dbPct, 7, sourceParams.restore_password || '', function(dbRes) {
@@ -1469,13 +1469,14 @@ class DD_Maintenance_Settings {
 				});
 			}
 
-			function loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, onDone, onError, attempt) {
+			function loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, password, onDone, onError, attempt) {
 				attempt = attempt || 0;
 
 				sendAjax('dd_maintenance_ajax_restore', {
 					mode: 'restore_extract',
 					restore_session_id: sessionId,
-					batch_limit: 5
+					batch_limit: 10,
+					restore_password: password || ''
 				}, function(res) {
 					var currentIdx = res.current_index || 0;
 					var total      = res.total_volumes || totalVolumes;
@@ -1489,14 +1490,14 @@ class DD_Maintenance_Settings {
 						if (onDone) onDone(res);
 					} else {
 						setTimeout(function() {
-							loopRestoreExtractBatches(sessionId, total, startPct, extractSpan, onDone, onError, 0);
+							loopRestoreExtractBatches(sessionId, total, startPct, extractSpan, password, onDone, onError, 0);
 						}, 40);
 					}
 				}, function(err) {
 					if (attempt < 2) {
 						setProgress(startPct, 'Tentando retomar lote de extração...', '[Aviso] Retentando após: ' + err);
 						setTimeout(function() {
-							loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, onDone, onError, attempt + 1);
+							loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, password, onDone, onError, attempt + 1);
 						}, 1500);
 					} else if (onError) {
 						onError(err);
