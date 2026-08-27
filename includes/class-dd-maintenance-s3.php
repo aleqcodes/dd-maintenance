@@ -836,10 +836,10 @@ class DD_Maintenance_S3 {
 				'Expect:',
 				'Host: ' . $headers['Host'],
 				'Authorization: ' . $headers['Authorization'],
-				'x-amz-content-sha256' => $headers['x-amz-content-sha256'],
-				'x-amz-date'           => $headers['x-amz-date'],
-				'Content-Type'         => $headers['Content-Type'],
-				'Content-Length'       => (string) $size,
+				'x-amz-content-sha256: ' . $headers['x-amz-content-sha256'],
+				'x-amz-date: ' . $headers['x-amz-date'],
+				'Content-Type: ' . $headers['Content-Type'],
+				'Content-Length: ' . (string) $size,
 			);
 
 			curl_setopt_array(

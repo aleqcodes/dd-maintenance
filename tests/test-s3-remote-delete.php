@@ -73,6 +73,7 @@ function wp_remote_get( $url, $args = array() ) {
 }
 function wp_remote_retrieve_response_code( $response ) { return $response['response']['code'] ?? 200; }
 function wp_remote_retrieve_body( $response ) { return $response['body'] ?? ''; }
+function wp_remote_retrieve_header( $response, $header ) { return $response['headers'][ $header ] ?? ''; }
 function size_format( $bytes ) { return $bytes . ' B'; }
 function get_date_from_gmt( $date, $format ) { return date( $format, strtotime( $date ) ); }
 function __( $t ) { return $t; }
@@ -133,5 +134,13 @@ $GLOBALS['s3_mock_requests'] = array();
 $result = $s3->delete_backup_remote( 'backup-abc-2026-08-24' );
 assert( $result['deleted'] === 3, 'Deve encontrar e excluir exatamente as 3 partes do backup-abc (2 zips + 1 sql).' );
 assert( count( $GLOBALS['s3_mock_requests'] ) === 3, 'Deve disparar 3 requisições DELETE.' );
+
+// 4. Testa put_object com arquivo simulado
+$dummy_file = sys_get_temp_dir() . '/dummy_part.zip';
+file_put_contents( $dummy_file, 'dummy zip content' );
+$GLOBALS['s3_mock_requests'] = array();
+$put_res = $s3->put_object( 'site-test/2026-08-24/test.zip', $dummy_file );
+assert( ! is_wp_error( $put_res ), 'put_object deve ter sucesso.' );
+@unlink( $dummy_file );
 
 echo "Testes de exclusão remota no S3 passaram com sucesso!\n";
