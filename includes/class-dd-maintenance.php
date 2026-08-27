@@ -94,21 +94,14 @@ class DD_Maintenance {
 			return $value;
 		}
 		$in_filter = true;
-		$meta      = get_post_meta( $object_id, $meta_key, $single );
+		$meta      = get_post_meta( $object_id, $meta_key, true );
 		$in_filter = false;
 
 		if ( is_string( $meta ) && false !== strpos( $meta, '[elementor-tag' ) ) {
-			return DD_Maintenance_Restore::fix_elementor_dynamic_tags( $meta );
+			$fixed = DD_Maintenance_Restore::fix_elementor_dynamic_tags( $meta );
+			return $single ? $fixed : array( $fixed );
 		}
-		if ( is_array( $meta ) ) {
-			array_walk_recursive( $meta, static function( &$item ) {
-				if ( is_string( $item ) && false !== strpos( $item, '[elementor-tag' ) ) {
-					$item = DD_Maintenance_Restore::fix_elementor_dynamic_tags_string( $item );
-				}
-			} );
-			return $meta;
-		}
-		return $meta;
+		return $value;
 	}
 
 	/**

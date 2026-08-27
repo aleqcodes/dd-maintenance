@@ -2075,6 +2075,7 @@ class DD_Maintenance_Restore {
 				break;
 			}
 		}
+
 		// 4. Limpa caches antigos do Elementor no banco e em disco para forçar regeneração limpa
 		$wpdb->query( "DELETE FROM `{$postmeta_table}` WHERE `meta_key` IN ('_elementor_css', '_elementor_element_cache', '_elementor_inline_svg')" );
 		$wpdb->query( "DELETE FROM `{$options_table}` WHERE `option_name` LIKE '%_elementor_%' AND `option_name` LIKE '%_transient_%'" );
@@ -2154,8 +2155,8 @@ class DD_Maintenance_Restore {
 		if ( is_dir( $mu_dir ) ) {
 			$shield_code = "<?php\n"
 				. "/**\n"
-				. " * Plugin Name: DD Maintenance - Elementor PHP 8.2 Compatibility Shield\n"
-				. " * Description: Previne Fatal TypeError no Elementor em PHP 8.0+ normalizando tags dinamicas malformadas.\n"
+				. " * Plugin Name: DD Maintenance - Elementor & Pro Elements PHP 8.2 Compatibility Shield\n"
+				. " * Description: Previne Fatal TypeError no Elementor / Pro Elements em PHP 8.0+ normalizando tags dinamicas sem settings.\n"
 				. " */\n\n"
 				. "defined( 'ABSPATH' ) || exit;\n\n"
 				. "if ( ! function_exists( 'dd_fix_elementor_dynamic_tags_shield' ) ) {\n"
@@ -2177,6 +2178,9 @@ class DD_Maintenance_Restore {
 				. "        return dd_fix_elementor_dynamic_tags_string_shield( \$content );\n"
 				. "    }\n\n"
 				. "    function dd_fix_elementor_dynamic_tags_string_shield( \$content ) {\n"
+				. "        if ( ! is_string( \$content ) || false === strpos( \$content, '[elementor-tag' ) ) {\n"
+				. "            return \$content;\n"
+				. "        }\n"
 				. "        return preg_replace_callback(\n"
 				. "            '/\\[elementor-tag\\s+((?:\\\\\"[^\\\\\"]*\\\\\"|[^\\]])+)\\]/i',\n"
 				. "            static function( \$matches ) {\n"
@@ -2200,7 +2204,7 @@ class DD_Maintenance_Restore {
 				. "    add_filter( 'widget_text', 'dd_fix_elementor_dynamic_tags_shield', 1 );\n"
 				. "    add_filter( 'elementor/dynamic_tags/parse_tag_text', 'dd_fix_elementor_dynamic_tags_shield', 999 );\n"
 				. "    add_filter( 'get_post_metadata', static function( \$value, \$object_id, \$meta_key, \$single ) {\n"
-				. "        if ( ! in_array( \$meta_key, array( '_elementor_data', '_elementor_page_settings' ), true ) ) {\n"
+				. "        if ( ! in_array( \$meta_key, array( '_elementor_data', '_elementor_page_settings', '_elementor_controls_usage' ), true ) ) {\n"
 				. "            return \$value;\n"
 				. "        }\n"
 				. "        static \$in_filter = false;\n"
@@ -2208,12 +2212,13 @@ class DD_Maintenance_Restore {
 				. "            return \$value;\n"
 				. "        }\n"
 				. "        \$in_filter = true;\n"
-				. "        \$meta = get_post_meta( \$object_id, \$meta_key, \$single );\n"
+				. "        \$meta      = get_post_meta( \$object_id, \$meta_key, true );\n"
 				. "        \$in_filter = false;\n"
 				. "        if ( is_string( \$meta ) && false !== strpos( \$meta, '[elementor-tag' ) ) {\n"
-				. "            return dd_fix_elementor_dynamic_tags_shield( \$meta );\n"
+				. "            \$fixed = dd_fix_elementor_dynamic_tags_shield( \$meta );\n"
+				. "            return \$single ? \$fixed : array( \$fixed );\n"
 				. "        }\n"
-				. "        return \$meta;\n"
+				. "        return \$value;\n"
 				. "    }, 10, 4 );\n"
 				. "}\n";
 			@file_put_contents( $mu_dir . '/dd-elementor-compat.php', $shield_code );
