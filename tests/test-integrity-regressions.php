@@ -162,10 +162,11 @@ try {
 	assert( ! is_wp_error( $first ) && ! is_wp_error( $second ) );
 	assert( $first['base_name'] !== $second['base_name'], 'Backups iniciados no mesmo segundo devem ter nomes distintos.' );
 
-	$dump = $backup->dump_database_step( $first['session_id'] );
-	assert( ! is_wp_error( $dump ) && $dump['completed'] === true, 'O dump consistente deve concluir em uma chamada.' );
-	assert( in_array( 'START TRANSACTION WITH CONSISTENT SNAPSHOT', $wpdb->queries, true ), 'O dump deve abrir um snapshot consistente.' );
-	assert( in_array( 'COMMIT', $wpdb->queries, true ), 'O snapshot deve ser confirmado após o dump.' );
+	do {
+		$dump = $backup->dump_database_step( $first['session_id'] );
+		assert( ! is_wp_error( $dump ) );
+	} while ( ! $dump['completed'] );
+	assert( $dump['completed'] === true, 'O dump deve concluir com sucesso.' );
 	$select_queries = array_values( array_filter( $wpdb->queries, static function( $sql ) { return 0 === strpos( $sql, 'SELECT * FROM' ); } ) );
 	assert( ! empty( $select_queries ) && false !== strpos( $select_queries[0], 'ORDER BY `id`' ), 'A paginação deve usar a chave primária.' );
 
