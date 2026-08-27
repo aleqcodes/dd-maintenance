@@ -1073,6 +1073,7 @@ class DD_Maintenance_Restore {
 			$session['files_done'] = true;
 			$log_line              = sprintf( __( '[OK] Arquivos restaurados: %1$s arquivos copiados com sucesso.', 'dd-maintenance' ), number_format_i18n( $copied ) );
 			$session['log'][]      = $log_line;
+			self::patch_elementor_php8_compatibility();
 			$this->save_restore_session_data( $extract_dir, $session );
 
 			return array(
@@ -2160,6 +2161,23 @@ class DD_Maintenance_Restore {
 				. " * Description: Previne Fatal TypeError no Elementor / Pro Elements em PHP 8.0+ normalizando tags dinamicas sem settings.\n"
 				. " */\n\n"
 				. "defined( 'ABSPATH' ) || exit;\n\n"
+				. "// 1. Auto-patch em disco para compatibilidade com PHP 8.2\n"
+				. "\$el_candidates = array(\n"
+				. "    defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/elementor/core/dynamic-tags/manager.php' : '',\n"
+				. "    WP_CONTENT_DIR . '/plugins/elementor/core/dynamic-tags/manager.php',\n"
+				. "    defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php' : '',\n"
+				. ");\n"
+				. "foreach ( \$el_candidates as \$el_f ) {\n"
+				. "    if ( ! empty( \$el_f ) && file_exists( \$el_f ) && is_writable( \$el_f ) ) {\n"
+				. "        \$el_src = (string) file_get_contents( \$el_f );\n"
+				. "        if ( preg_match( '/function\\s+get_tag_data_content\\s*\\(\\s*(\\\$tag_id\\s*,\\s*\\\$tag_name\\s*,)\\s*array\\s*(\\\$settings\\b)/i', \$el_src ) ) {\n"
+				. "            \$el_patched = preg_replace( '/function\\s+get_tag_data_content\\s*\\(\\s*(\\\$tag_id\\s*,\\s*\\\$tag_name\\s*,)\\s*array\\s*(\\\$settings\\b)/i', 'function get_tag_data_content( \$1 \$2', \$el_src );\n"
+				. "            if ( is_string( \$el_patched ) && \$el_patched !== \$el_src ) {\n"
+				. "                @file_put_contents( \$el_f, \$el_patched );\n"
+				. "            }\n"
+				. "        }\n"
+				. "    }\n"
+				. "}\n\n"
 				. "if ( ! function_exists( 'dd_fix_elementor_dynamic_tags_shield' ) ) {\n"
 				. "    function dd_fix_elementor_dynamic_tags_shield( \$content ) {\n"
 				. "        if ( ! is_string( \$content ) || false === strpos( \$content, '[elementor-tag' ) ) {\n"
@@ -2234,18 +2252,22 @@ class DD_Maintenance_Restore {
 			defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/elementor/core/dynamic-tags/manager.php' : '',
 			WP_CONTENT_DIR . '/plugins/elementor/core/dynamic-tags/manager.php',
 			defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php' : '',
+			__DIR__ . '/../../elementor/core/dynamic-tags/manager.php',
+			__DIR__ . '/../../../plugins/elementor/core/dynamic-tags/manager.php',
 		);
 
 		foreach ( $candidates as $file ) {
 			if ( ! empty( $file ) && file_exists( $file ) && is_writable( $file ) ) {
 				$content = (string) file_get_contents( $file );
-				if ( false !== strpos( $content, 'function get_tag_data_content( $tag_id, $tag_name, array $settings = [] )' ) ) {
-					$patched = str_replace(
-						'function get_tag_data_content( $tag_id, $tag_name, array $settings = [] )',
-						'function get_tag_data_content( $tag_id, $tag_name, $settings = [] )',
+				if ( preg_match( '/function\s+get_tag_data_content\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i', $content ) ) {
+					$patched = preg_replace(
+						'/function\s+get_tag_data_content\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i',
+						'function get_tag_data_content( $1 $2',
 						$content
 					);
-					return (bool) @file_put_contents( $file, $patched );
+					if ( is_string( $patched ) && $patched !== $content ) {
+						return (bool) @file_put_contents( $file, $patched );
+					}
 				}
 			}
 		}
