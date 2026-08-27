@@ -75,6 +75,7 @@ class DD_Maintenance {
 	 */
 	public function register_elementor_compatibility() {
 		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
+			DD_Maintenance_Restore::patch_elementor_php8_compatibility();
 			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 999 );
 			add_filter( 'the_content', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
 			add_filter( 'widget_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );

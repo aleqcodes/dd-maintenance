@@ -1109,6 +1109,7 @@ class DD_Maintenance_Restore {
 
 		$extract_dir     = $session['extract_dir'];
 		$temp_upload_dir = $session['temp_upload_dir'];
+		self::patch_elementor_php8_compatibility();
 		self::install_permanent_elementor_shield();
 
 
@@ -2223,6 +2224,32 @@ class DD_Maintenance_Restore {
 				. "}\n";
 			@file_put_contents( $mu_dir . '/dd-elementor-compat.php', $shield_code );
 		}
+	}
+
+	/**
+	 * Aplica correcao direta no arquivo do Elementor caso detecte a assinatura incompativel com PHP 8.2.
+	 */
+	public static function patch_elementor_php8_compatibility(): bool {
+		$candidates = array(
+			defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/elementor/core/dynamic-tags/manager.php' : '',
+			WP_CONTENT_DIR . '/plugins/elementor/core/dynamic-tags/manager.php',
+			defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php' : '',
+		);
+
+		foreach ( $candidates as $file ) {
+			if ( ! empty( $file ) && file_exists( $file ) && is_writable( $file ) ) {
+				$content = (string) file_get_contents( $file );
+				if ( false !== strpos( $content, 'function get_tag_data_content( $tag_id, $tag_name, array $settings = [] )' ) ) {
+					$patched = str_replace(
+						'function get_tag_data_content( $tag_id, $tag_name, array $settings = [] )',
+						'function get_tag_data_content( $tag_id, $tag_name, $settings = [] )',
+						$content
+					);
+					return (bool) @file_put_contents( $file, $patched );
+				}
+			}
+		}
+		return false;
 	}
 
 	/**
