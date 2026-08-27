@@ -760,36 +760,36 @@ class DD_Maintenance_Restore {
 		if ( $use_mysqli ) {
 			@mysqli_query( $dbh, 'COMMIT;' );
 		}
-		// Isso evita que o WordPress desative o plugin no meio do restore e que o admin-ajax.php retorne 0!
-		$table_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
-		$opt_table    = $table_prefix . 'options';
-		$opts_exist   = $wpdb->get_var( "SHOW TABLES LIKE '{$opt_table}'" );
-		if ( $opts_exist ) {
-			$ap_raw = $wpdb->get_var( "SELECT `option_value` FROM `{$opt_table}` WHERE `option_name` = 'active_plugins' LIMIT 1" );
-			if ( ! empty( $ap_raw ) ) {
-				$ap_list = maybe_unserialize( $ap_raw );
-				if ( is_array( $ap_list ) ) {
-					$modified  = false;
-					$our_slugs = array( 'dd-maintenance/dd-maintenance.php', 'backuper/backuper.php' );
-					foreach ( $our_slugs as $slug ) {
-						if ( ! in_array( $slug, $ap_list, true ) ) {
-							$ap_list[] = $slug;
-							$modified  = true;
+		// Ao final de CADA lote, garante que todas as tabelas options existentes tenham active_plugins, siteurl e home apontando para o site atual
+		$opt_tables = $wpdb->get_col( "SHOW TABLES LIKE '%options'" );
+		if ( ! empty( $opt_tables ) && is_array( $opt_tables ) ) {
+			foreach ( $opt_tables as $opt_table ) {
+				$ap_raw = $wpdb->get_var( "SELECT `option_value` FROM `{$opt_table}` WHERE `option_name` = 'active_plugins' LIMIT 1" );
+				if ( ! empty( $ap_raw ) ) {
+					$ap_list = maybe_unserialize( $ap_raw );
+					if ( is_array( $ap_list ) ) {
+						$modified  = false;
+						$our_slugs = array( 'dd-maintenance/dd-maintenance.php', 'backuper/backuper.php' );
+						foreach ( $our_slugs as $slug ) {
+							if ( ! in_array( $slug, $ap_list, true ) ) {
+								$ap_list[] = $slug;
+								$modified  = true;
+							}
+						}
+						if ( $modified ) {
+							$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'active_plugins'", serialize( $ap_list ) ) );
 						}
 					}
-					if ( $modified ) {
-						$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'active_plugins'", serialize( $ap_list ) ) );
-					}
 				}
-			}
 
-			$target_siteurl = ! empty( $session['target_siteurl'] ) ? $session['target_siteurl'] : '';
-			$target_home    = ! empty( $session['target_home'] ) ? $session['target_home'] : '';
-			if ( ! empty( $target_siteurl ) ) {
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", untrailingslashit( $target_siteurl ) ) );
-			}
-			if ( ! empty( $target_home ) ) {
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'home'", untrailingslashit( $target_home ) ) );
+				$target_siteurl = ! empty( $session['target_siteurl'] ) ? $session['target_siteurl'] : '';
+				$target_home    = ! empty( $session['target_home'] ) ? $session['target_home'] : '';
+				if ( ! empty( $target_siteurl ) ) {
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", untrailingslashit( $target_siteurl ) ) );
+				}
+				if ( ! empty( $target_home ) ) {
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$opt_table}` SET `option_value` = %s WHERE `option_name` = 'home'", untrailingslashit( $target_home ) ) );
+				}
 			}
 		}
 
@@ -2038,7 +2038,25 @@ class DD_Maintenance_Restore {
 		}
 		if ( is_dir( $mu_dir ) ) {
 			$loader_code = "<?php\n"
-				. "// DD Maintenance restore persistence drop-in\n"
+				. "// DD Maintenance restore persistence and database recovery drop-in\n"
+				. "if ( ( isset( \$_POST['action'] ) && 'dd_maintenance_ajax_restore' === \$_POST['action'] )"
+				. " || ( isset( \$_GET['action'] ) && 'dd_maintenance_ajax_restore' === \$_GET['action'] ) ) {\n"
+				. "    if ( function_exists( 'wp_installing' ) ) {\n"
+				. "        wp_installing( true );\n"
+				. "    } elseif ( ! defined( 'WP_INSTALLING' ) ) {\n"
+				. "        define( 'WP_INSTALLING', true );\n"
+				. "    }\n"
+				. "    add_filter( 'wp_die_handler', static function() {\n"
+				. "        return static function( \$message, \$title = '', \$args = array() ) {\n"
+				. "            if ( is_string( \$message ) && false !== strpos( \$message, 'database tables are unavailable' ) ) {\n"
+				. "                return;\n"
+				. "            }\n"
+				. "            if ( function_exists( '_default_wp_die_handler' ) ) {\n"
+				. "                _default_wp_die_handler( \$message, \$title, \$args );\n"
+				. "            }\n"
+				. "        };\n"
+				. "    }, 1 );\n"
+				. "}\n"
 				. "if ( ! class_exists( 'DD_Maintenance' ) ) {\n"
 				. "    if ( file_exists( WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php' ) ) {\n"
 				. "        require_once WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php';\n"
