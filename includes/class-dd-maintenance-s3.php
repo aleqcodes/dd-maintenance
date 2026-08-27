@@ -814,9 +814,16 @@ class DD_Maintenance_S3 {
 	 * @return array|WP_Error
 	 */
 	private function stream_put( $url, $headers, $file, $size ) {
+		$timeout = max( 180, min( 900, (int) ceil( $size / ( 256 * 1024 ) ) + 60 ) );
+
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
-			@set_time_limit( 90 );
+			@set_time_limit( $timeout + 60 );
 		}
+		if ( function_exists( 'ini_set' ) ) {
+			@ini_set( 'max_execution_time', (string) ( $timeout + 60 ) );
+		}
+		@ignore_user_abort( true );
+
 		if ( function_exists( 'curl_init' ) ) {
 			$handle = fopen( $file, 'rb' );
 			if ( ! $handle ) {
@@ -829,26 +836,28 @@ class DD_Maintenance_S3 {
 				'Expect:',
 				'Host: ' . $headers['Host'],
 				'Authorization: ' . $headers['Authorization'],
-				'x-amz-content-sha256: ' . $headers['x-amz-content-sha256'],
-				'x-amz-date: ' . $headers['x-amz-date'],
-				'Content-Type: ' . $headers['Content-Type'],
-				'Content-Length: ' . (string) $size,
+				'x-amz-content-sha256' => $headers['x-amz-content-sha256'],
+				'x-amz-date'           => $headers['x-amz-date'],
+				'Content-Type'         => $headers['Content-Type'],
+				'Content-Length'       => (string) $size,
 			);
 
 			curl_setopt_array(
 				$ch,
 				array(
-					CURLOPT_CUSTOMREQUEST  => 'PUT',
-					CURLOPT_HTTPHEADER     => $curl_headers,
-					CURLOPT_UPLOAD         => true,
-					CURLOPT_INFILE         => $handle,
-					CURLOPT_INFILESIZE     => $size,
-					CURLOPT_RETURNTRANSFER => true,
-					CURLOPT_FOLLOWLOCATION => true,
-					CURLOPT_CONNECTTIMEOUT => 10,
-					CURLOPT_TIMEOUT        => 75,
-					CURLOPT_SSL_VERIFYPEER => true,
-					CURLOPT_SSL_VERIFYHOST => 2,
+					CURLOPT_CUSTOMREQUEST   => 'PUT',
+					CURLOPT_HTTPHEADER      => $curl_headers,
+					CURLOPT_UPLOAD          => true,
+					CURLOPT_INFILE          => $handle,
+					CURLOPT_INFILESIZE      => $size,
+					CURLOPT_RETURNTRANSFER  => true,
+					CURLOPT_FOLLOWLOCATION  => true,
+					CURLOPT_CONNECTTIMEOUT  => 15,
+					CURLOPT_TIMEOUT         => $timeout,
+					CURLOPT_LOW_SPEED_LIMIT => 1024,
+					CURLOPT_LOW_SPEED_TIME  => 60,
+					CURLOPT_SSL_VERIFYPEER  => true,
+					CURLOPT_SSL_VERIFYHOST  => 2,
 				)
 			);
 

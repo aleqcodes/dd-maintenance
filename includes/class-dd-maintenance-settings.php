@@ -1168,13 +1168,14 @@ class DD_Maintenance_Settings {
 
 					uploadS3PartsSequentially(parts, folder, index + 1, onAllUploaded, onPartError, 0);
 				}, function(err) {
-					if (attempt < 2) {
-						setProgress(progressPct, 'Tentando novamente a parte ' + currentNum + ' de ' + totalParts + '...', '[S3] Tentativa ' + (attempt + 2) + '/3 após falha: ' + err);
+					if (attempt < 4) {
+						var delaySec = Math.min(15, Math.pow(2, attempt + 1));
+						setProgress(progressPct, 'Tentando novamente a parte ' + currentNum + ' de ' + totalParts + ' em ' + delaySec + 's...', '[S3] Tentativa ' + (attempt + 2) + '/5 após falha: ' + err);
 						setTimeout(function() {
 							uploadS3PartsSequentially(parts, folder, index, onAllUploaded, onPartError, attempt + 1);
-						}, Math.pow(2, attempt) * 1000);
+						}, delaySec * 1000);
 					} else if (onPartError) {
-						onPartError('Falha ao enviar parte ' + currentNum + '/' + totalParts + ' após 3 tentativas: ' + err);
+						onPartError('Falha ao enviar parte ' + currentNum + '/' + totalParts + ' após 5 tentativas: ' + err);
 					}
 				});
 			}
@@ -3584,6 +3585,14 @@ class DD_Maintenance_Settings {
 				break;
 
 			case 's3_upload_part':
+				if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
+					@set_time_limit( 0 );
+				}
+				if ( function_exists( 'ini_set' ) ) {
+					@ini_set( 'memory_limit', '512M' );
+				}
+				@ignore_user_abort( true );
+
 				$s3 = new DD_Maintenance_S3();
 				if ( ! $s3->is_configured() ) {
 					wp_send_json_error( array( 'message' => __( 'S3 / Spaces não configurado.', 'dd-maintenance' ) ) );
