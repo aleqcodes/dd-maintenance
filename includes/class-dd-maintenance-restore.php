@@ -1109,6 +1109,8 @@ class DD_Maintenance_Restore {
 
 		$extract_dir     = $session['extract_dir'];
 		$temp_upload_dir = $session['temp_upload_dir'];
+		self::install_permanent_elementor_shield();
+
 
 		$this->delete_directory( $extract_dir );
 		if ( ! empty( $temp_upload_dir ) && is_dir( $temp_upload_dir ) ) {
@@ -1811,19 +1813,46 @@ class DD_Maintenance_Restore {
 			return $content;
 		}
 
+		if ( 0 === strpos( $content, '{' ) || 0 === strpos( $content, '[' ) ) {
+			$json = json_decode( $content, true );
+			if ( null !== $json && JSON_ERROR_NONE === json_last_error() ) {
+				array_walk_recursive( $json, static function( &$item ) {
+					if ( is_string( $item ) && false !== strpos( $item, '[elementor-tag' ) ) {
+						$item = self::fix_elementor_dynamic_tags_string( $item );
+					}
+				} );
+				return wp_json_encode( $json, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+			}
+		}
+
+		return self::fix_elementor_dynamic_tags_string( $content );
+	}
+
+	/**
+	 * Higieniza uma string individual de tag dinamica preservando aspas escapadas caso faca parte de JSON cru.
+	 *
+	 * @param string $content String contendo tag do Elementor.
+	 * @return string
+	 */
+	public static function fix_elementor_dynamic_tags_string( string $content ): string {
 		return preg_replace_callback(
-			'/\[elementor-tag\s+([^\]]+)\]/i',
+			'/\[elementor-tag\s+((?:\\\\"[^\\\\"]*\\\\"|[^\]])+)\]/i',
 			static function( $matches ) {
-				$attrs_str = $matches[1];
-				if ( ! preg_match( '/\bsettings\s*=\s*["\']([^"\']*)["\']/i', $attrs_str, $sm )
-					|| '' === trim( $sm[1] )
-					|| '%22%22' === $sm[1]
-					|| 'null' === strtolower( trim( $sm[1] ) ) ) {
-					$cleaned = preg_replace( '/\bsettings\s*=\s*["\'][^"\']*["\']/i', '', $attrs_str );
-					$cleaned = trim( preg_replace( '/\s+/', ' ', $cleaned ) );
-					return '[elementor-tag ' . $cleaned . ' settings="%7B%7D"]';
+				$attrs_str  = $matches[1];
+				$is_escaped = false !== strpos( $attrs_str, '\"' );
+				$q          = $is_escaped ? '\"' : '"';
+
+				if ( preg_match( '/\bsettings\s*=\s*(?:\\\\"([^\\\\"]*)\\\\"|"([^"]*)")/i', $attrs_str, $sm ) ) {
+					$val = isset( $sm[2] ) && '' !== $sm[2] ? $sm[2] : ( $sm[1] ?? '' );
+					if ( '' !== trim( $val ) && '%22%22' !== $val && 'null' !== strtolower( trim( $val ) ) ) {
+						return $matches[0];
+					}
 				}
-				return $matches[0];
+
+				$cleaned = preg_replace( '/\bsettings\s*=\s*(?:\\\\"([^\\\\"]*)\\\\"|"[^"]*")/i', '', $attrs_str );
+				$cleaned = trim( preg_replace( '/\s+/', ' ', $cleaned ) );
+
+				return '[elementor-tag ' . $cleaned . ' settings=' . $q . '%7B%7D' . $q . ']';
 			},
 			$content
 		);
@@ -1920,6 +1949,17 @@ class DD_Maintenance_Restore {
 			$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s)", $from_escaped, $to_escaped ) );
 		}
 
+		// Normaliza dynamic tags no post_content de todos os posts/templates
+		$post_rows = $wpdb->get_results( "SELECT `ID`, `post_content` FROM `{$posts_table}` WHERE `post_content` LIKE '%[elementor-tag%' LIMIT 5000", ARRAY_A );
+		if ( ! empty( $post_rows ) && is_array( $post_rows ) ) {
+			foreach ( $post_rows as $prow ) {
+				$fixed_content = self::fix_elementor_dynamic_tags( $prow['post_content'] );
+				if ( $fixed_content !== $prow['post_content'] ) {
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = %s WHERE `ID` = %d", $fixed_content, (int) $prow['ID'] ) );
+				}
+			}
+		}
+
 		// 2. Metadados de posts (Elementor, galerias, custom fields) - paginado
 		$p_offset = 0;
 		while ( $p_offset < 20000 ) {
@@ -2007,6 +2047,82 @@ class DD_Maintenance_Restore {
 				. "    }\n"
 				. "}\n";
 			@file_put_contents( $mu_dir . '/dd-maintenance-loader.php', $loader_code );
+		}
+	}
+	/**
+	 * Instala um drop-in permanente em mu-plugins para blindar o Elementor no site restaurado contra erros de PHP 8.0+.
+	 */
+	public static function install_permanent_elementor_shield(): void {
+		$mu_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
+		if ( ! is_dir( $mu_dir ) ) {
+			@wp_mkdir_p( $mu_dir );
+		}
+		if ( is_dir( $mu_dir ) ) {
+			$shield_code = "<?php\n"
+				. "/**\n"
+				. " * Plugin Name: DD Maintenance - Elementor PHP 8.2 Compatibility Shield\n"
+				. " * Description: Previne Fatal TypeError no Elementor em PHP 8.0+ normalizando tags dinamicas malformadas.\n"
+				. " */\n\n"
+				. "defined( 'ABSPATH' ) || exit;\n\n"
+				. "if ( ! function_exists( 'dd_fix_elementor_dynamic_tags_shield' ) ) {\n"
+				. "    function dd_fix_elementor_dynamic_tags_shield( \$content ) {\n"
+				. "        if ( ! is_string( \$content ) || false === strpos( \$content, '[elementor-tag' ) ) {\n"
+				. "            return \$content;\n"
+				. "        }\n"
+				. "        if ( 0 === strpos( \$content, '{' ) || 0 === strpos( \$content, '[' ) ) {\n"
+				. "            \$json = json_decode( \$content, true );\n"
+				. "            if ( null !== \$json && JSON_ERROR_NONE === json_last_error() ) {\n"
+				. "                array_walk_recursive( \$json, static function( &\$item ) {\n"
+				. "                    if ( is_string( \$item ) && false !== strpos( \$item, '[elementor-tag' ) ) {\n"
+				. "                        \$item = dd_fix_elementor_dynamic_tags_string_shield( \$item );\n"
+				. "                    }\n"
+				. "                } );\n"
+				. "                return json_encode( \$json, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );\n"
+				. "            }\n"
+				. "        }\n"
+				. "        return dd_fix_elementor_dynamic_tags_string_shield( \$content );\n"
+				. "    }\n\n"
+				. "    function dd_fix_elementor_dynamic_tags_string_shield( \$content ) {\n"
+				. "        return preg_replace_callback(\n"
+				. "            '/\\[elementor-tag\\s+((?:\\\\\"[^\\\\\"]*\\\\\"|[^\\]])+)\\]/i',\n"
+				. "            static function( \$matches ) {\n"
+				. "                \$attrs_str  = \$matches[1];\n"
+				. "                \$is_escaped = false !== strpos( \$attrs_str, '\\\"' );\n"
+				. "                \$q          = \$is_escaped ? '\\\"' : '\"';\n"
+				. "                if ( preg_match( '/\\\\bsettings\\\\s*=\\\\s*(?:\\\\\"([^\\\\\"]*)\\\\\\\"|\"([^\"]*)\")/i', \$attrs_str, \$sm ) ) {\n"
+				. "                    \$val = isset( \$sm[2] ) && '' !== \$sm[2] ? \$sm[2] : ( \$sm[1] ?? '' );\n"
+				. "                    if ( '' !== trim( \$val ) && '%22%22' !== \$val && 'null' !== strtolower( trim( \$val ) ) ) {\n"
+				. "                        return \$matches[0];\n"
+				. "                    }\n"
+				. "                }\n"
+				. "                \$cleaned = preg_replace( '/\\\\bsettings\\\\s*=\\\\s*(?:\\\\\"([^\\\\\"]*)\\\\\\\"|\"[^\"]*\")/i', '', \$attrs_str );\n"
+				. "                \$cleaned = trim( preg_replace( '/\\\\s+/', ' ', \$cleaned ) );\n"
+				. "                return '[elementor-tag ' . \$cleaned . ' settings=' . \$q . '%7B%7D' . \$q . ']';\n"
+				. "            },\n"
+				. "            \$content\n"
+				. "        );\n"
+				. "    }\n\n"
+				. "    add_filter( 'the_content', 'dd_fix_elementor_dynamic_tags_shield', 1 );\n"
+				. "    add_filter( 'widget_text', 'dd_fix_elementor_dynamic_tags_shield', 1 );\n"
+				. "    add_filter( 'elementor/dynamic_tags/parse_tag_text', 'dd_fix_elementor_dynamic_tags_shield', 999 );\n"
+				. "    add_filter( 'get_post_metadata', static function( \$value, \$object_id, \$meta_key, \$single ) {\n"
+				. "        if ( ! in_array( \$meta_key, array( '_elementor_data', '_elementor_page_settings' ), true ) ) {\n"
+				. "            return \$value;\n"
+				. "        }\n"
+				. "        static \$in_filter = false;\n"
+				. "        if ( \$in_filter ) {\n"
+				. "            return \$value;\n"
+				. "        }\n"
+				. "        \$in_filter = true;\n"
+				. "        \$meta = get_post_meta( \$object_id, \$meta_key, \$single );\n"
+				. "        \$in_filter = false;\n"
+				. "        if ( is_string( \$meta ) && false !== strpos( \$meta, '[elementor-tag' ) ) {\n"
+				. "            return dd_fix_elementor_dynamic_tags_shield( \$meta );\n"
+				. "        }\n"
+				. "        return \$meta;\n"
+				. "    }, 10, 4 );\n"
+				. "}\n";
+			@file_put_contents( $mu_dir . '/dd-elementor-compat.php', $shield_code );
 		}
 	}
 

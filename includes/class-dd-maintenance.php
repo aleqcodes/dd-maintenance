@@ -78,7 +78,37 @@ class DD_Maintenance {
 			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 999 );
 			add_filter( 'the_content', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
 			add_filter( 'widget_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
+			add_filter( 'get_post_metadata', array( $this, 'filter_elementor_post_metadata' ), 10, 4 );
 		}
+	}
+
+	/**
+	 * Intercepta _elementor_data e _elementor_page_settings para blindar contra tags dinamicas malformadas.
+	 */
+	public function filter_elementor_post_metadata( $value, $object_id, $meta_key, $single ) {
+		if ( ! in_array( $meta_key, array( '_elementor_data', '_elementor_page_settings' ), true ) ) {
+			return $value;
+		}
+		static $in_filter = false;
+		if ( $in_filter ) {
+			return $value;
+		}
+		$in_filter = true;
+		$meta      = get_post_meta( $object_id, $meta_key, $single );
+		$in_filter = false;
+
+		if ( is_string( $meta ) && false !== strpos( $meta, '[elementor-tag' ) ) {
+			return DD_Maintenance_Restore::fix_elementor_dynamic_tags( $meta );
+		}
+		if ( is_array( $meta ) ) {
+			array_walk_recursive( $meta, static function( &$item ) {
+				if ( is_string( $item ) && false !== strpos( $item, '[elementor-tag' ) ) {
+					$item = DD_Maintenance_Restore::fix_elementor_dynamic_tags_string( $item );
+				}
+			} );
+			return $meta;
+		}
+		return $meta;
 	}
 
 	/**

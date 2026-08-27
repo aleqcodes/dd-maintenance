@@ -87,4 +87,23 @@ assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_empty ) === '[e
 assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_null ) === '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%7D"]', 'Tag com settings null deve receber settings=%7B%7D.' );
 assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_valid ) === $tag_valid, 'Tag com settings válida deve permanecer inalterada.' );
 
+// 4. Testa normalização de tags dentro de JSON cru (_elementor_data)
+$raw_elementor_data = json_encode( array(
+	array(
+		'id' => 'widget_image_1',
+		'elType' => 'widget',
+		'widgetType' => 'image',
+		'settings' => array(
+			'link' => array(
+				'url' => '[elementor-tag id="a5a44c3" name="site-url"]',
+			),
+		),
+	),
+), JSON_UNESCAPED_SLASHES );
+
+$fixed_elementor_data = DD_Maintenance_Restore::fix_elementor_dynamic_tags( $raw_elementor_data );
+$decoded_fixed = json_decode( $fixed_elementor_data, true );
+assert( is_array( $decoded_fixed ), 'O JSON resultante deve ser 100% válido.' );
+assert( $decoded_fixed[0]['settings']['link']['url'] === '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%7D"]', 'Tag dentro do JSON deve receber settings=%7B%7D.' );
+
 echo "Todos os testes de Search & Replace serializado e Elementor passaram com 100% de sucesso!\n";
