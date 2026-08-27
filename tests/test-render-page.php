@@ -153,6 +153,7 @@ foreach ( $tabs as $tab ) {
 	assert( strpos( $output, 'DD Maintenance' ) !== false, "A aba '{$tab}' deve conter o título principal." );
 	if ( 'restore' === $tab || 'backups' === $tab ) {
 		assert( strpos( $output, 'Backups Locais Armazenados no Servidor' ) !== false, "A aba restore deve renderizar a área de backups locais." );
+		assert( strpos( $output, 'restore_token' ) !== false, 'O cliente AJAX deve enviar o token efêmero nas etapas de restauração.' );
 	}
 }
 

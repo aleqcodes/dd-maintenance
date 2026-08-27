@@ -1399,8 +1399,8 @@ class DD_Maintenance_Settings {
 			function executeRestorePipeline(sourceParams, startPct, onDone, onError) {
 				startPct = typeof startPct === 'number' ? startPct : 5;
 				var currentRestoreSessionId = '';
+				var currentRestoreToken     = '';
 				var totalVolumes            = 1;
-
 				var initData = { mode: 'restore_init' };
 				for (var k in sourceParams) {
 					if (sourceParams.hasOwnProperty(k)) {
@@ -1412,6 +1412,7 @@ class DD_Maintenance_Settings {
 
 				sendAjax('dd_maintenance_ajax_restore', initData, function(initRes) {
 					currentRestoreSessionId = initRes.restore_session_id;
+					currentRestoreToken     = initRes.restore_token;
 					totalVolumes            = initRes.total_volumes || 1;
 
 					var extractSpan = (startPct >= 50) ? 26 : 60;
@@ -1420,17 +1421,17 @@ class DD_Maintenance_Settings {
 
 					setProgress(startPct, 'Passo 1/4: Extraindo ' + totalVolumes + ' volume(s) de backup (0%)...', '[Sessão] ' + currentRestoreSessionId + ' (' + totalVolumes + ' volume(s))');
 
-					loopRestoreExtractBatches(currentRestoreSessionId, totalVolumes, startPct, extractSpan, sourceParams.restore_password || '', function() {
+					loopRestoreExtractBatches(currentRestoreSessionId, currentRestoreToken, totalVolumes, startPct, extractSpan, sourceParams.restore_password || '', function() {
 						setProgress(filesPct, 'Passo 2/4: Restaurando arquivos do site na raiz (0%)...', '[Arquivos] Copiando temas, plugins e biblioteca de mídia...');
 
-						loopRestoreFilesBatches(currentRestoreSessionId, filesPct, 4, sourceParams.restore_password || '', function(filesRes) {
+						loopRestoreFilesBatches(currentRestoreSessionId, currentRestoreToken, filesPct, 4, sourceParams.restore_password || '', function(filesRes) {
 							if (filesRes.log) {
 								consoleOut.innerText += '\n' + filesRes.log;
 								consoleOut.scrollTop = consoleOut.scrollHeight;
 							}
 							setProgress(dbPct, 'Passo 3/4: Restaurando banco de dados SQL (0%)...', '[Banco] Executando comandos do dump SQL...');
 
-							loopRestoreDbBatches(currentRestoreSessionId, dbPct, 7, sourceParams.restore_password || '', function(dbRes) {
+							loopRestoreDbBatches(currentRestoreSessionId, currentRestoreToken, dbPct, 7, sourceParams.restore_password || '', function(dbRes) {
 								if (dbRes.log) {
 									consoleOut.innerText += '\n' + dbRes.log;
 									consoleOut.scrollTop = consoleOut.scrollHeight;
@@ -1440,6 +1441,7 @@ class DD_Maintenance_Settings {
 								sendAjax('dd_maintenance_ajax_restore', {
 									mode: 'restore_finalize',
 									restore_session_id: currentRestoreSessionId,
+									restore_token: currentRestoreToken,
 									restore_password: sourceParams.restore_password || ''
 								}, function(finRes) {
 									setProgress(100, 'Backup restaurado com sucesso!', (finRes.log ? finRes.log : '[OK] Restauração concluída.') + '\n[Fim] ' + new Date().toLocaleTimeString(), true);
@@ -1451,17 +1453,17 @@ class DD_Maintenance_Settings {
 
 							}, function(errDb) {
 								setProgress(dbPct, 'Erro no banco de dados', '[ERRO] ' + errDb, false, true);
-								handleRestoreError(currentRestoreSessionId, errDb, onError);
+								handleRestoreError(currentRestoreSessionId, currentRestoreToken, errDb, onError);
 							});
 
 						}, function(errFiles) {
 							setProgress(filesPct, 'Erro ao restaurar arquivos', '[ERRO] ' + errFiles, false, true);
-							handleRestoreError(currentRestoreSessionId, errFiles, onError);
+							handleRestoreError(currentRestoreSessionId, currentRestoreToken, errFiles, onError);
 						});
 
 					}, function(errExt) {
 						setProgress(startPct + 5, 'Erro na extração de volumes', '[ERRO] ' + errExt, false, true);
-						handleRestoreError(currentRestoreSessionId, errExt, onError);
+						handleRestoreError(currentRestoreSessionId, currentRestoreToken, errExt, onError);
 					});
 
 				}, function(errInit) {
@@ -1470,12 +1472,13 @@ class DD_Maintenance_Settings {
 				});
 			}
 
-			function loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, password, onDone, onError, attempt) {
+			function loopRestoreExtractBatches(sessionId, restoreToken, totalVolumes, startPct, extractSpan, password, onDone, onError, attempt) {
 				attempt = attempt || 0;
 
 				sendAjax('dd_maintenance_ajax_restore', {
 					mode: 'restore_extract',
 					restore_session_id: sessionId,
+					restore_token: restoreToken,
 					batch_limit: 10,
 					restore_password: password || ''
 				}, function(res) {
@@ -1491,14 +1494,14 @@ class DD_Maintenance_Settings {
 						if (onDone) onDone(res);
 					} else {
 						setTimeout(function() {
-							loopRestoreExtractBatches(sessionId, total, startPct, extractSpan, password, onDone, onError, 0);
+							loopRestoreExtractBatches(sessionId, restoreToken, total, startPct, extractSpan, password, onDone, onError, 0);
 						}, 40);
 					}
 				}, function(err) {
 					if (attempt < 2) {
 						setProgress(startPct, 'Tentando retomar lote de extração...', '[Aviso] Retentando após: ' + err);
 						setTimeout(function() {
-							loopRestoreExtractBatches(sessionId, totalVolumes, startPct, extractSpan, password, onDone, onError, attempt + 1);
+							loopRestoreExtractBatches(sessionId, restoreToken, totalVolumes, startPct, extractSpan, password, onDone, onError, attempt + 1);
 						}, 1500);
 					} else if (onError) {
 						onError(err);
@@ -1507,12 +1510,13 @@ class DD_Maintenance_Settings {
 			}
 
 
-			function loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, attempt) {
+			function loopRestoreDbBatches(sessionId, restoreToken, startPct, dbSpan, password, onDone, onError, attempt) {
 				attempt = attempt || 0;
 
 				sendAjax('dd_maintenance_ajax_restore', {
 					mode: 'restore_db',
 					restore_session_id: sessionId,
+					restore_token: restoreToken,
 					restore_password: password || ''
 				}, function(res) {
 					if (!res.has_sql || res.completed) {
@@ -1528,14 +1532,14 @@ class DD_Maintenance_Settings {
 						setProgress(currentPct, 'Passo 2/4: Restaurando banco de dados SQL (' + sqlPct + '%' + queriesText + ')...', res.log);
 
 						setTimeout(function() {
-							loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, 0);
+							loopRestoreDbBatches(sessionId, restoreToken, startPct, dbSpan, password, onDone, onError, 0);
 						}, 40);
 					}
 				}, function(err) {
 					if (attempt < 2) {
 						setProgress(startPct, 'Tentando retomar lote do banco SQL...', '[Aviso] Retentando SQL após: ' + err);
 						setTimeout(function() {
-							loopRestoreDbBatches(sessionId, startPct, dbSpan, password, onDone, onError, attempt + 1);
+							loopRestoreDbBatches(sessionId, restoreToken, startPct, dbSpan, password, onDone, onError, attempt + 1);
 						}, 1500);
 					} else if (onError) {
 						onError(err);
@@ -1543,12 +1547,13 @@ class DD_Maintenance_Settings {
 				});
 			}
 
-			function loopRestoreFilesBatches(sessionId, startPct, filesSpan, password, onDone, onError, attempt) {
+			function loopRestoreFilesBatches(sessionId, restoreToken, startPct, filesSpan, password, onDone, onError, attempt) {
 				attempt = attempt || 0;
 
 				sendAjax('dd_maintenance_ajax_restore', {
 					mode: 'restore_files',
 					restore_session_id: sessionId,
+					restore_token: restoreToken,
 					restore_password: password || ''
 				}, function(res) {
 					if (res.completed) {
@@ -1564,24 +1569,25 @@ class DD_Maintenance_Settings {
 						setProgress(currentPct, 'Passo 3/4: Restaurando arquivos do site na raiz (' + filePct + '%' + filesText + ')...', res.log);
 
 						setTimeout(function() {
-							loopRestoreFilesBatches(sessionId, startPct, filesSpan, password, onDone, onError, 0);
+							loopRestoreFilesBatches(sessionId, restoreToken, startPct, filesSpan, password, onDone, onError, 0);
 						}, 30);
 					}
 				}, function(err) {
 					if (attempt < 2) {
 						setProgress(startPct, 'Tentando retomar cópia de arquivos...', '[Aviso] Retentando arquivos após: ' + err);
 						setTimeout(function() {
-							loopRestoreFilesBatches(sessionId, startPct, filesSpan, password, onDone, onError, attempt + 1);
+							loopRestoreFilesBatches(sessionId, restoreToken, startPct, filesSpan, password, onDone, onError, attempt + 1);
 						}, 1500);
 					} else if (onError) {
 						onError(err);
 					}
 				});
 			}
-			function handleRestoreError(sessionId, errMsg, onError) {
+			function handleRestoreError(sessionId, restoreToken, errMsg, onError) {
 				sendAjax('dd_maintenance_ajax_restore', {
 					mode: 'restore_fail_cleanup',
-					restore_session_id: sessionId || ''
+					restore_session_id: sessionId || '',
+					restore_token: restoreToken || ''
 				}, function() {
 					if (onError) onError(errMsg);
 				}, function() {
@@ -3671,18 +3677,18 @@ class DD_Maintenance_Settings {
 	 * Handler AJAX: restauração com progresso.
 	 */
 	public function ajax_handle_restore() {
+		$mode                    = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : '';
+		$restore_session_id      = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+		$restore_token           = isset( $_POST['restore_token'] ) ? trim( (string) wp_unslash( $_POST['restore_token'] ) ) : '';
 		$has_valid_admin_session = is_user_logged_in() && current_user_can( 'manage_options' ) && check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false );
+		$restore                 = new DD_Maintenance_Restore();
 
-		$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
-		$upload_session_id  = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
-		$backup_dir         = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
+		$public_continuation_modes = array( 'restore_extract', 'restore_db', 'restore_files', 'restore_finalize', 'restore_fail_cleanup' );
+		$has_valid_restore_token   = in_array( $mode, $public_continuation_modes, true )
+			&& 0 === strpos( $restore_session_id, 'rst_' )
+			&& $restore->verify_restore_token( $restore_session_id, $restore_token );
 
-		$is_valid_restore_token = (
-			( ! empty( $restore_session_id ) && 0 === strpos( $restore_session_id, 'rst_' ) && is_dir( $backup_dir . '/restore_exec_' . $restore_session_id ) )
-			|| ( ! empty( $upload_session_id ) && 0 === strpos( $upload_session_id, 'upload_restore_' ) && is_dir( $backup_dir . '/' . $upload_session_id ) )
-		);
-
-		if ( ! $has_valid_admin_session && ! $is_valid_restore_token ) {
+		if ( ! $has_valid_admin_session && ! $has_valid_restore_token ) {
 			wp_send_json_error( array( 'message' => __( 'Sessão expirada ou sem permissão.', 'dd-maintenance' ) ) );
 		}
 
@@ -3701,8 +3707,6 @@ class DD_Maintenance_Settings {
 				wp_send_json_error( array( 'message' => __( 'Senha de confirmação incorreta.', 'dd-maintenance' ) ) );
 			}
 		}
-		$mode    = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : '';
-		$restore = new DD_Maintenance_Restore();
 
 		if ( 'upload_init' === $mode ) {
 			$upload_session_id = 'upload_restore_' . time() . '_' . wp_generate_password( 10, false );
@@ -3878,6 +3882,7 @@ class DD_Maintenance_Settings {
 			wp_send_json_success(
 				array(
 					'restore_session_id' => $session['session_id'],
+					'restore_token'      => $session['restore_token'],
 					'total_volumes'      => $session['total_volumes'],
 				)
 			);

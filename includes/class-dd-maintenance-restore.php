@@ -344,9 +344,10 @@ class DD_Maintenance_Restore {
 			return $zip_paths;
 		}
 
-		$session_id  = 'rst_' . time() . '_' . wp_generate_password( 8, false );
-		$backup_dir  = DD_Maintenance::backup_dir();
-		$extract_dir = $backup_dir . '/restore_exec_' . $session_id;
+		$session_id   = 'rst_' . time() . '_' . wp_generate_password( 8, false );
+		$restore_token = wp_generate_password( 48, false, false );
+		$backup_dir   = DD_Maintenance::backup_dir();
+		$extract_dir  = $backup_dir . '/restore_exec_' . $session_id;
 
 		if ( ! wp_mkdir_p( $extract_dir ) ) {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
@@ -374,10 +375,13 @@ class DD_Maintenance_Restore {
 			'target_home'       => ! empty( $current_home ) ? $current_home : $detected_url,
 			'files_done'        => false,
 			'files_copied'      => 0,
+			'auth_token_hash'   => hash( 'sha256', $restore_token ),
+			'auth_expires_at'   => time() + 7200,
 			'log'               => array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) ),
 			'created_at'        => time(),
 		);
 		$this->save_restore_session_data( $extract_dir, $session );
+		$session['restore_token'] = $restore_token;
 		return $session;
 	}
 
@@ -403,6 +407,36 @@ class DD_Maintenance_Restore {
 		}
 
 		return $data;
+	}
+
+	/**
+	 * Valida o token efêmero que autoriza a continuação da restauração após
+	 * a troca do banco invalidar a sessão e o nonce do administrador.
+	 *
+	 * @param string $session_id ID da sessão.
+	 * @param string $token      Token recebido na inicialização.
+	 * @return bool
+	 */
+	public function verify_restore_token( string $session_id, string $token ): bool {
+		if ( '' === $token ) {
+			return false;
+		}
+
+		$session = $this->get_restore_session_data( $session_id );
+		if ( is_wp_error( $session )
+			|| empty( $session['auth_token_hash'] )
+			|| empty( $session['auth_expires_at'] )
+			|| time() > (int) $session['auth_expires_at'] ) {
+			return false;
+		}
+
+		if ( ! hash_equals( (string) $session['auth_token_hash'], hash( 'sha256', $token ) ) ) {
+			return false;
+		}
+
+		$session['auth_expires_at'] = time() + 7200;
+		$this->save_restore_session_data( $session['extract_dir'], $session );
+		return true;
 	}
 
 	/**
@@ -713,14 +747,19 @@ class DD_Maintenance_Restore {
 			}
 		}
 
+		$current_offset = ftell( $handle );
+		if ( false === $current_offset ) {
+			fclose( $handle );
+			return new WP_Error( 'restore_sql_offset_failed', __( 'Não foi possível salvar o ponto de continuação do arquivo SQL.', 'dd-maintenance' ) );
+		}
+		$percent = min( 100, max( 0, (int) floor( ( $current_offset / $file_size ) * 100 ) ) );
 		if ( feof( $handle ) ) {
 			$eof_reached = true;
 		}
+		fclose( $handle );
 		if ( $use_mysqli ) {
 			@mysqli_query( $dbh, 'COMMIT;' );
 		}
-
-		// Ao final de CADA lote (não apenas no eof!), garante que active_plugins, siteurl e home estejam SEMPRE apontando para o site atual
 		// Isso evita que o WordPress desative o plugin no meio do restore e que o admin-ajax.php retorne 0!
 		$table_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
 		$opt_table    = $table_prefix . 'options';
@@ -912,6 +951,9 @@ class DD_Maintenance_Restore {
 		// Inicializa a fila de arquivos a serem restaurados na primeira chamada desta etapa
 		if ( empty( $session['files_queue_created'] ) ) {
 			$q_handle    = fopen( $queue_file, 'wb' );
+			if ( ! $q_handle ) {
+				return new WP_Error( 'restore_queue_create_failed', __( 'Não foi possível criar a fila de arquivos da restauração.', 'dd-maintenance' ) );
+			}
 			$total_files = 0;
 
 			$backup_dirs = array(
@@ -964,7 +1006,10 @@ class DD_Maintenance_Restore {
 					}
 
 					if ( $item->isFile() ) {
-						fwrite( $q_handle, wp_json_encode( array( 'src' => $item_path, 'dst' => $target ) ) . "\n" );
+						if ( false === fwrite( $q_handle, wp_json_encode( array( 'src' => $item_path, 'dst' => $target ) ) . "\n" ) ) {
+							fclose( $q_handle );
+							return new WP_Error( 'restore_queue_write_failed', __( 'Não foi possível registrar todos os arquivos para restauração.', 'dd-maintenance' ) );
+						}
 						$total_files++;
 					}
 				}
@@ -978,7 +1023,7 @@ class DD_Maintenance_Restore {
 			$this->save_restore_session_data( $extract_dir, $session );
 		}
 
-		$total_files  = max( 1, (int) ( $session['files_total'] ?? 1 ) );
+		$total_files  = (int) ( $session['files_total'] ?? 0 );
 		$copied       = (int) ( $session['files_copied'] ?? 0 );
 		$queue_offset = (int) ( $session['files_queue_offset'] ?? 0 );
 
@@ -988,6 +1033,9 @@ class DD_Maintenance_Restore {
 
 		if ( file_exists( $queue_file ) ) {
 			$q_handle = fopen( $queue_file, 'rb' );
+			if ( ! $q_handle ) {
+				return new WP_Error( 'restore_queue_read_failed', __( 'Não foi possível ler a fila de arquivos da restauração.', 'dd-maintenance' ) );
+			}
 			fseek( $q_handle, $queue_offset );
 
 			while ( ! feof( $q_handle ) && ( microtime( true ) < $deadline || $batch_count < 300 ) ) {
@@ -998,15 +1046,21 @@ class DD_Maintenance_Restore {
 				}
 				$task = json_decode( $line, true );
 				if ( is_array( $task ) && ! empty( $task['src'] ) && ! empty( $task['dst'] ) ) {
-					if ( is_file( $task['src'] ) ) {
-						$parent = dirname( $task['dst'] );
-						if ( ! is_dir( $parent ) ) {
-							wp_mkdir_p( $parent );
-						}
-						if ( @copy( $task['src'], $task['dst'] ) ) {
-							$copied++;
-						}
+					if ( ! is_file( $task['src'] ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_source_missing', sprintf( __( 'Arquivo de origem ausente durante a restauração: %s.', 'dd-maintenance' ), basename( $task['src'] ) ) );
 					}
+
+					$parent = dirname( $task['dst'] );
+					if ( ! is_dir( $parent ) && ! wp_mkdir_p( $parent ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_target_mkdir_failed', sprintf( __( 'Não foi possível criar a pasta de destino para %s.', 'dd-maintenance' ), basename( $task['dst'] ) ) );
+					}
+					if ( ! @copy( $task['src'], $task['dst'] ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_copy_failed', sprintf( __( 'Não foi possível restaurar o arquivo %s.', 'dd-maintenance' ), basename( $task['dst'] ) ) );
+					}
+					$copied++;
 				}
 				$batch_count++;
 			}
@@ -1022,7 +1076,7 @@ class DD_Maintenance_Restore {
 		}
 
 		$session['files_copied'] = $copied;
-		$percent = min( 100, max( 0, (int) round( ( $copied / $total_files ) * 100 ) ) );
+		$percent = $total_files > 0 ? min( 100, max( 0, (int) round( ( $copied / $total_files ) * 100 ) ) ) : 100;
 
 		if ( $completed || $copied >= $total_files ) {
 			$session['files_done'] = true;
@@ -1135,17 +1189,21 @@ class DD_Maintenance_Restore {
 			}
 		} while ( empty( $ext_res['completed'] ) );
 
-		$db_res = $this->restore_database_step( $session_id );
-		if ( is_wp_error( $db_res ) ) {
-			$this->cleanup_failed_restore( $session_id );
-			return $db_res;
-		}
+		do {
+			$db_res = $this->restore_database_step( $session_id );
+			if ( is_wp_error( $db_res ) ) {
+				$this->cleanup_failed_restore( $session_id );
+				return $db_res;
+			}
+		} while ( empty( $db_res['completed'] ) );
 
-		$files_res = $this->restore_files_step( $session_id );
-		if ( is_wp_error( $files_res ) ) {
-			$this->cleanup_failed_restore( $session_id );
-			return $files_res;
-		}
+		do {
+			$files_res = $this->restore_files_step( $session_id );
+			if ( is_wp_error( $files_res ) ) {
+				$this->cleanup_failed_restore( $session_id );
+				return $files_res;
+			}
+		} while ( empty( $files_res['completed'] ) );
 
 		return $this->finalize_restore_step( $session_id );
 	}
@@ -1412,11 +1470,19 @@ class DD_Maintenance_Restore {
 
 		// Estrutura 1: Site inteiro na pasta "site/".
 		if ( is_dir( $extract_dir . '/site' ) ) {
-			$copied_files += $this->copy_directory( $extract_dir . '/site', ABSPATH, $backup_dirs );
+			$result = $this->copy_directory( $extract_dir . '/site', ABSPATH, $backup_dirs );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+			$copied_files += $result;
 		} else {
 			// Estrutura 2: wp-content/ solto na raiz do backup.
 			if ( is_dir( $extract_dir . '/wp-content' ) ) {
-				$copied_files += $this->copy_directory( $extract_dir . '/wp-content', WP_CONTENT_DIR, $backup_dirs );
+				$result = $this->copy_directory( $extract_dir . '/wp-content', WP_CONTENT_DIR, $backup_dirs );
+				if ( is_wp_error( $result ) ) {
+					return $result;
+				}
+				$copied_files += $result;
 			}
 		}
 		return array(
@@ -1430,9 +1496,9 @@ class DD_Maintenance_Restore {
 	 * @param string $source_dir   Pasta de origem.
 	 * @param string $dest_dir     Pasta de destino.
 	 * @param array  $ignore_paths Pastas a ignorar.
-	 * @return int Quantidade de arquivos copiados.
+	 * @return int|WP_Error Quantidade de arquivos copiados ou erro.
 	 */
-	private function copy_directory( string $source_dir, string $dest_dir, array $ignore_paths = array() ): int {
+	private function copy_directory( string $source_dir, string $dest_dir, array $ignore_paths = array() ) {
 		$copied = 0;
 		$source_dir = wp_normalize_path( $source_dir );
 		$dest_dir   = wp_normalize_path( $dest_dir );
@@ -1440,8 +1506,8 @@ class DD_Maintenance_Restore {
 		if ( ! is_dir( $source_dir ) ) {
 			return 0;
 		}
-		if ( ! is_dir( $dest_dir ) ) {
-			wp_mkdir_p( $dest_dir );
+		if ( ! is_dir( $dest_dir ) && ! wp_mkdir_p( $dest_dir ) ) {
+			return new WP_Error( 'restore_target_mkdir_failed', __( 'Não foi possível criar a pasta de destino da restauração.', 'dd-maintenance' ) );
 		}
 
 		$dest_canonical = wp_normalize_path( realpath( $dest_dir ) ? realpath( $dest_dir ) : $dest_dir );
@@ -1480,17 +1546,18 @@ class DD_Maintenance_Restore {
 				continue;
 			}
 			if ( $item->isDir() ) {
-				if ( ! is_dir( $target ) ) {
-					wp_mkdir_p( $target );
+				if ( ! is_dir( $target ) && ! wp_mkdir_p( $target ) ) {
+					return new WP_Error( 'restore_target_mkdir_failed', sprintf( __( 'Não foi possível criar a pasta de destino %s.', 'dd-maintenance' ), basename( $target ) ) );
 				}
 			} elseif ( $item->isFile() ) {
 				$parent_dir = dirname( $target );
-				if ( ! is_dir( $parent_dir ) ) {
-					wp_mkdir_p( $parent_dir );
+				if ( ! is_dir( $parent_dir ) && ! wp_mkdir_p( $parent_dir ) ) {
+					return new WP_Error( 'restore_target_mkdir_failed', sprintf( __( 'Não foi possível criar a pasta de destino para %s.', 'dd-maintenance' ), basename( $target ) ) );
 				}
-				if ( @copy( $item_path, $target ) ) {
-					$copied++;
+				if ( ! @copy( $item_path, $target ) ) {
+					return new WP_Error( 'restore_copy_failed', sprintf( __( 'Não foi possível restaurar o arquivo %s.', 'dd-maintenance' ), basename( $target ) ) );
 				}
+				$copied++;
 			}
 		}
 
@@ -1691,10 +1758,11 @@ class DD_Maintenance_Restore {
 			$deleted = true;
 		}
 
-		// Exclui dump sql local se existir com a mesma base
 		$sql = $backup_dir . '/' . $base_name . '.sql';
 		if ( file_exists( $sql ) && is_file( $sql ) ) {
-			@unlink( $sql );
+			if ( @unlink( $sql ) ) {
+				$deleted = true;
+			}
 		}
 
 		return $deleted;

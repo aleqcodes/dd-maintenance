@@ -27,30 +27,45 @@ function wp_remote_request( $url, $args = array() ) {
 	);
 }
 function wp_remote_get( $url, $args = array() ) {
-	$xml = '<?xml version="1.0" encoding="UTF-8"?>
-	<ListBucketResult>
-		<Name>test-bucket</Name>
-		<Contents>
-			<Key>site-test/2026-08-24/backup-abc-2026-08-24.part001.zip</Key>
-			<Size>26214400</Size>
-			<LastModified>2026-08-24T15:00:00Z</LastModified>
-		</Contents>
-		<Contents>
-			<Key>site-test/2026-08-24/backup-abc-2026-08-24.part002.zip</Key>
-			<Size>10485760</Size>
-			<LastModified>2026-08-24T15:00:00Z</LastModified>
-		</Contents>
-		<Contents>
-			<Key>site-test/2026-08-24/backup-abc-2026-08-24.sql</Key>
-			<Size>5242880</Size>
-			<LastModified>2026-08-24T15:00:00Z</LastModified>
-		</Contents>
-		<Contents>
-			<Key>site-test/2026-08-24/other-backup.zip</Key>
-			<Size>12345</Size>
-			<LastModified>2026-08-24T14:00:00Z</LastModified>
-		</Contents>
-	</ListBucketResult>';
+	$GLOBALS['s3_mock_get_urls'][] = $url;
+	if ( false !== strpos( $url, 'continuation-token=page-2' ) ) {
+		$xml = '<?xml version="1.0" encoding="UTF-8"?>
+		<ListBucketResult>
+			<Contents>
+				<Key>site-test/2026-08-24/backup-abc-2026-08-240.zip</Key>
+				<Size>12345</Size>
+				<LastModified>2026-08-24T16:00:00Z</LastModified>
+			</Contents>
+			<IsTruncated>false</IsTruncated>
+		</ListBucketResult>';
+	} else {
+		$xml = '<?xml version="1.0" encoding="UTF-8"?>
+		<ListBucketResult>
+			<Name>test-bucket</Name>
+			<Contents>
+				<Key>site-test/2026-08-24/backup-abc-2026-08-24.part001.zip</Key>
+				<Size>26214400</Size>
+				<LastModified>2026-08-24T15:00:00Z</LastModified>
+			</Contents>
+			<Contents>
+				<Key>site-test/2026-08-24/backup-abc-2026-08-24.part002.zip</Key>
+				<Size>10485760</Size>
+				<LastModified>2026-08-24T15:00:00Z</LastModified>
+			</Contents>
+			<Contents>
+				<Key>site-test/2026-08-24/backup-abc-2026-08-24.sql</Key>
+				<Size>5242880</Size>
+				<LastModified>2026-08-24T15:00:00Z</LastModified>
+			</Contents>
+			<Contents>
+				<Key>site-test/2026-08-24/other-backup.zip</Key>
+				<Size>12345</Size>
+				<LastModified>2026-08-24T14:00:00Z</LastModified>
+			</Contents>
+			<IsTruncated>true</IsTruncated>
+			<NextContinuationToken>page-2</NextContinuationToken>
+		</ListBucketResult>';
+	}
 	return array(
 		'response' => array( 'code' => 200 ),
 		'body'     => $xml,
@@ -86,15 +101,19 @@ $s3 = new DD_Maintenance_S3();
 assert( $s3->is_configured() === true, 'S3 deve estar configurado.' );
 
 // 1. Testa list_objects
+$GLOBALS['s3_mock_get_urls'] = array();
 $objects = $s3->list_objects( 'site-test' );
+$list_urls = array_values( array_filter( $GLOBALS['s3_mock_get_urls'], static function( $url ) { return false !== strpos( $url, 'list-type=2' ); } ) );
 assert( is_array( $objects ), 'list_objects deve retornar array.' );
-assert( count( $objects ) === 4, 'Deve listar 4 objetos do XML mock.' );
+assert( count( $objects ) === 5, 'Deve reunir objetos de todas as páginas do XML mock.' );
+assert( count( $list_urls ) === 2, 'Deve consultar a página seguinte com o continuation token.' );
+assert( false !== strpos( $list_urls[1], 'continuation-token=page-2' ), 'A segunda consulta deve enviar o continuation token.' );
 assert( $objects[0]['key'] === 'site-test/2026-08-24/backup-abc-2026-08-24.part001.zip', 'Chave 1 correta.' );
 
 // 2. Agrupa volumes e dump SQL do mesmo backup em uma única entrada
 $grouped = $s3->get_remote_backups( 'site-test' );
 assert( is_array( $grouped ), 'get_remote_backups deve retornar uma lista.' );
-assert( count( $grouped ) === 2, 'Deve retornar 2 pacotes agrupados.' );
+assert( count( $grouped ) === 3, 'Deve retornar os três pacotes agrupados, inclusive o da segunda página.' );
 
 $backup_abc = null;
 foreach ( $grouped as $backup ) {

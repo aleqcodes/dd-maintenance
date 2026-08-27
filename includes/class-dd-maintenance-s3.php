@@ -439,10 +439,10 @@ class DD_Maintenance_S3 {
 	 * Lista objetos do bucket S3 / Spaces (com suporte a prefixo).
 	 *
 	 * @param string $prefix Prefixo de busca (ex: site-name/).
-	 * @param int    $max_keys Limite máximo de objetos (padrão: 1000).
+	 * @param int    $max_keys Limite total de objetos; zero lista todas as páginas.
 	 * @return array|WP_Error Array de objetos com key, size, last_modified.
 	 */
-	public function list_objects( string $prefix = '', int $max_keys = 1000 ) {
+	public function list_objects( string $prefix = '', int $max_keys = 0 ) {
 		if ( ! $this->is_configured() ) {
 			return new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
 		}
@@ -452,72 +452,95 @@ class DD_Maintenance_S3 {
 			return $region_ok;
 		}
 
-		$query_params = array(
-			'list-type' => '2',
-			'max-keys'  => (string) $max_keys,
-		);
-		if ( '' !== $prefix ) {
-			$query_params['prefix'] = $prefix;
-		}
-		ksort( $query_params );
+		$objects            = array();
+		$continuation_token = '';
+		$remaining          = $max_keys > 0 ? $max_keys : PHP_INT_MAX;
 
-		$query_parts = array();
-		foreach ( $query_params as $k => $v ) {
-			$query_parts[] = rawurlencode( (string) $k ) . '=' . rawurlencode( (string) $v );
-		}
-		$query_string = implode( '&', $query_parts );
-
-		$uri  = '/';
-		$auth = $this->sign_request( 'GET', $uri, $query_string, self::EMPTY_PAYLOAD_HASH );
-
-		$headers = array(
-			'Host'                 => $auth['Host'],
-			'Authorization'        => $auth['Authorization'],
-			'x-amz-content-sha256' => $auth['x-amz-content-sha256'],
-			'x-amz-date'           => $auth['x-amz-date'],
-		);
-
-		$url      = $this->get_endpoint() . $uri . '?' . $query_string;
-		$response = wp_remote_get(
-			$url,
-			array(
-				'headers' => $headers,
-				'timeout' => 30,
-			)
-		);
-
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-
-		$code = wp_remote_retrieve_response_code( $response );
-		$body = wp_remote_retrieve_body( $response );
-
-		if ( $code < 200 || $code >= 300 ) {
-			$message = $this->extract_error_message( $body );
-			return new WP_Error(
-				's3_list_error',
-				$message ? $message : sprintf( __( 'Erro HTTP %d ao listar objetos no S3.', 'dd-maintenance' ), $code )
+		do {
+			$query_params = array(
+				'list-type' => '2',
+				'max-keys'  => (string) min( 1000, $remaining ),
 			);
-		}
+			if ( '' !== $prefix ) {
+				$query_params['prefix'] = $prefix;
+			}
+			if ( '' !== $continuation_token ) {
+				$query_params['continuation-token'] = $continuation_token;
+			}
+			ksort( $query_params );
 
-		$objects = array();
-		if ( preg_match_all( '/<Contents>(.*?)<\/Contents>/s', $body, $matches ) ) {
-			foreach ( $matches[1] as $content_xml ) {
-				$key           = preg_match( '/<Key>(.*?)<\/Key>/s', $content_xml, $k ) ? html_entity_decode( trim( $k[1] ) ) : '';
-				$size          = preg_match( '/<Size>(.*?)<\/Size>/s', $content_xml, $s ) ? (int) $s[1] : 0;
-				$last_modified = preg_match( '/<LastModified>(.*?)<\/LastModified>/s', $content_xml, $lm ) ? trim( $lm[1] ) : '';
+			$query_parts = array();
+			foreach ( $query_params as $k => $v ) {
+				$query_parts[] = rawurlencode( (string) $k ) . '=' . rawurlencode( (string) $v );
+			}
+			$query_string = implode( '&', $query_parts );
 
-				if ( '' !== $key ) {
-					$objects[] = array(
-						'key'            => $key,
-						'size'           => $size,
-						'size_formatted' => size_format( $size ),
-						'last_modified'  => $last_modified,
-					);
+			$uri  = '/';
+			$auth = $this->sign_request( 'GET', $uri, $query_string, self::EMPTY_PAYLOAD_HASH );
+
+			$headers = array(
+				'Host'                 => $auth['Host'],
+				'Authorization'        => $auth['Authorization'],
+				'x-amz-content-sha256' => $auth['x-amz-content-sha256'],
+				'x-amz-date'           => $auth['x-amz-date'],
+			);
+
+			$url      = $this->get_endpoint() . $uri . '?' . $query_string;
+			$response = wp_remote_get(
+				$url,
+				array(
+					'headers' => $headers,
+					'timeout' => 30,
+				)
+			);
+
+			if ( is_wp_error( $response ) ) {
+				return $response;
+			}
+
+			$code = wp_remote_retrieve_response_code( $response );
+			$body = wp_remote_retrieve_body( $response );
+
+			if ( $code < 200 || $code >= 300 ) {
+				$message = $this->extract_error_message( $body );
+				return new WP_Error(
+					's3_list_error',
+					$message ? $message : sprintf( __( 'Erro HTTP %d ao listar objetos no S3.', 'dd-maintenance' ), $code )
+				);
+			}
+
+			if ( preg_match_all( '/<Contents>(.*?)<\/Contents>/s', $body, $matches ) ) {
+				foreach ( $matches[1] as $content_xml ) {
+					$key           = preg_match( '/<Key>(.*?)<\/Key>/s', $content_xml, $k ) ? html_entity_decode( trim( $k[1] ), ENT_QUOTES | ENT_XML1, 'UTF-8' ) : '';
+					$size          = preg_match( '/<Size>(.*?)<\/Size>/s', $content_xml, $s ) ? (int) $s[1] : 0;
+					$last_modified = preg_match( '/<LastModified>(.*?)<\/LastModified>/s', $content_xml, $lm ) ? trim( $lm[1] ) : '';
+
+					if ( '' !== $key ) {
+						$objects[] = array(
+							'key'            => $key,
+							'size'           => $size,
+							'size_formatted' => size_format( $size ),
+							'last_modified'  => $last_modified,
+						);
+						$remaining--;
+						if ( $remaining <= 0 ) {
+							break;
+						}
+					}
 				}
 			}
-		}
+
+			$is_truncated = preg_match( '/<IsTruncated>\s*true\s*<\/IsTruncated>/i', $body );
+			$next_token   = preg_match( '/<NextContinuationToken>(.*?)<\/NextContinuationToken>/s', $body, $token_match )
+				? html_entity_decode( trim( $token_match[1] ), ENT_QUOTES | ENT_XML1, 'UTF-8' )
+				: '';
+
+			if ( $is_truncated && ( '' === $next_token || $next_token === $continuation_token ) ) {
+				return new WP_Error( 's3_list_pagination', __( 'O S3 informou mais objetos, mas não forneceu um token de continuação válido.', 'dd-maintenance' ) );
+			}
+
+			$continuation_token = $next_token;
+		} while ( $is_truncated && $remaining > 0 );
 
 		return $objects;
 	}
@@ -763,8 +786,9 @@ class DD_Maintenance_S3 {
 		foreach ( $objects as $obj ) {
 			$key      = $obj['key'];
 			$filename = basename( $key );
-			// Verifica se o arquivo remoto pertence a este backup
-			if ( 0 === strpos( $filename, $base_name ) || false !== strpos( $key, '/' . $base_name ) ) {
+			$is_part  = (bool) preg_match( '/^' . preg_quote( $base_name, '/' ) . '\.part\d+\.zip$/i', $filename );
+			$is_single = $filename === $base_name . '.zip' || $filename === $base_name . '.sql';
+			if ( $is_part || $is_single ) {
 				$del = $this->delete_object( $key );
 				if ( is_wp_error( $del ) ) {
 					$errors[] = sprintf( __( 'Erro ao excluir %1$s no S3: %2$s', 'dd-maintenance' ), $key, $del->get_error_message() );

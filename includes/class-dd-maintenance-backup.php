@@ -44,7 +44,7 @@ class DD_Maintenance_Backup {
 
 		$slug = sanitize_title( get_bloginfo( 'name' ) );
 		$slug = $slug ? $slug : 'site';
-		$base = $slug . '-' . current_time( 'Y-m-d-Hi' );
+		$base = $slug . '-' . current_time( 'Y-m-d-His' ) . '-' . strtolower( wp_generate_password( 6, false, false ) );
 
 		$settings = wp_parse_args(
 			get_option( 'dd_maintenance_settings', array() ),
@@ -172,44 +172,51 @@ class DD_Maintenance_Backup {
 			);
 		}
 
-		$tables      = $wpdb->get_col( 'SHOW TABLES' );
-		$total       = count( $tables );
-		$deadline    = microtime( true ) + self::STEP_TIME_LIMIT;
-		$initialized = ! empty( $session['db_initialized'] );
-		$handle      = fopen( $session['db_file'], $initialized ? 'c+b' : 'w+b' );
+		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
+			@set_time_limit( 0 );
+		}
+
+		if ( false === $wpdb->query( 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ' )
+			|| false === $wpdb->query( 'START TRANSACTION WITH CONSISTENT SNAPSHOT' ) ) {
+			return new WP_Error( 'db_snapshot', __( 'Não foi possível iniciar uma leitura consistente do banco de dados.', 'dd-maintenance' ) );
+		}
+
+		$tables = $wpdb->get_col( 'SHOW TABLES' );
+		$total  = count( $tables );
+		$handle = fopen( $session['db_file'], 'w+b' );
 
 		if ( ! $handle ) {
+			$wpdb->query( 'ROLLBACK' );
 			return new WP_Error( 'db_file', __( 'Não foi possível criar o arquivo do banco de dados.', 'dd-maintenance' ) );
 		}
 
-		if ( ! $initialized ) {
-			$table_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
-			$header = "-- DD Maintenance database dump\n"
-				. '-- Site: ' . ( function_exists( 'home_url' ) ? home_url() : '' ) . "\n"
-				. '-- Table Prefix: ' . $table_prefix . "\n"
-				. '-- Data: ' . date( 'Y-m-d H:i:s' ) . "\n\n"
-				. "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n";
-			fwrite( $handle, $header );
-			$session['db_initialized'] = true;
-			$session['db_position']    = ftell( $handle );
-			$this->save_session_data( $session['session_dir'], $session );
-		} else {
-			$position = isset( $session['db_position'] ) ? (int) $session['db_position'] : 0;
-			ftruncate( $handle, $position );
-			fseek( $handle, $position );
-		}
+		$table_prefix = ! empty( $wpdb->prefix ) ? $wpdb->prefix : 'wp_';
+		$header = "-- DD Maintenance database dump\n"
+			. '-- Site: ' . ( function_exists( 'home_url' ) ? home_url() : '' ) . "\n"
+			. '-- Table Prefix: ' . $table_prefix . "\n"
+			. '-- Data: ' . date( 'Y-m-d H:i:s' ) . "\n\n"
+			. "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n";
+		fwrite( $handle, $header );
 
-		while ( $session['db_table_index'] < $total && microtime( true ) < $deadline ) {
+		$session['db_initialized']    = true;
+		$session['db_completed']      = false;
+		$session['db_table_index']    = 0;
+		$session['db_row_offset']     = 0;
+		$session['db_schema_written'] = false;
+		$session['db_position']       = ftell( $handle );
+		$this->save_session_data( $session['session_dir'], $session );
+
+		while ( $session['db_table_index'] < $total ) {
 			$table       = $tables[ $session['db_table_index'] ];
 			$quoted_name = str_replace( '`', '``', $table );
+			$create      = $wpdb->get_row( "SHOW CREATE TABLE `{$quoted_name}`", ARRAY_N );
+			if ( empty( $create[1] ) ) {
+				$session['db_table_index']++;
+				$session['db_row_offset'] = 0;
+				continue;
+			}
 
 			if ( empty( $session['db_schema_written'] ) ) {
-				$create = $wpdb->get_row( "SHOW CREATE TABLE `{$quoted_name}`", ARRAY_N );
-				if ( empty( $create[1] ) ) {
-					$session['db_table_index']++;
-					continue;
-				}
-
 				fwrite( $handle, "\nDROP TABLE IF EXISTS `{$quoted_name}`;\n" . $create[1] . ";\n\n" );
 				fflush( $handle );
 				$session['db_schema_written'] = true;
@@ -217,16 +224,29 @@ class DD_Maintenance_Backup {
 				$this->save_session_data( $session['session_dir'], $session );
 			}
 
+			$order_by = '';
+			if ( preg_match( '/PRIMARY\s+KEY\s*\(([^)]+)\)/i', $create[1], $primary_match )
+				&& preg_match_all( '/`((?:``|[^`])+)`/', $primary_match[1], $column_matches )
+				&& ! empty( $column_matches[1] ) ) {
+				$ordered_columns = array();
+				foreach ( $column_matches[1] as $column ) {
+					$ordered_columns[] = '`' . str_replace( '`', '``', str_replace( '``', '`', $column ) ) . '`';
+				}
+				$order_by = ' ORDER BY ' . implode( ', ', $ordered_columns );
+			}
+
 			$offset = (int) $session['db_row_offset'];
 			$rows   = $wpdb->get_results(
-				"SELECT * FROM `{$quoted_name}` LIMIT {$offset}, " . self::DB_BATCH_SIZE,
+				"SELECT * FROM `{$quoted_name}`{$order_by} LIMIT {$offset}, " . self::DB_BATCH_SIZE,
 				ARRAY_A
 			);
 
 			if ( ! empty( $wpdb->last_error ) ) {
 				fclose( $handle );
+				$wpdb->query( 'ROLLBACK' );
 				return new WP_Error( 'db_query', $wpdb->last_error );
 			}
+
 			$sql = '';
 			if ( ! empty( $rows ) ) {
 				$chunks = array_chunk( $rows, 100 );
@@ -247,6 +267,7 @@ class DD_Maintenance_Backup {
 				fwrite( $handle, $sql );
 				fflush( $handle );
 			}
+
 			$row_count = count( $rows );
 			if ( $row_count < self::DB_BATCH_SIZE ) {
 				$session['db_table_index']++;
@@ -260,28 +281,24 @@ class DD_Maintenance_Backup {
 			$this->save_session_data( $session['session_dir'], $session );
 		}
 
-		$completed = $session['db_table_index'] >= $total;
-		if ( $completed ) {
-			fwrite( $handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n-- Fim do dump\n" );
-			fflush( $handle );
-			$session['db_completed'] = true;
-			$session['db_position']  = ftell( $handle );
-			$this->save_session_data( $session['session_dir'], $session );
-		}
+		fwrite( $handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n-- Fim do dump\n" );
+		fflush( $handle );
+		$session['db_completed'] = true;
+		$session['db_position']  = ftell( $handle );
+		$this->save_session_data( $session['session_dir'], $session );
 		fclose( $handle );
 
-		$processed = min( $total, (int) $session['db_table_index'] );
-		$percent   = $total > 0 ? (int) floor( ( $processed / $total ) * 100 ) : 100;
+		if ( false === $wpdb->query( 'COMMIT' ) ) {
+			return new WP_Error( 'db_snapshot_commit', __( 'Não foi possível concluir a leitura consistente do banco de dados.', 'dd-maintenance' ) );
+		}
 
 		return array(
-			'completed'        => $completed,
-			'processed_tables' => $processed,
+			'completed'        => true,
+			'processed_tables' => $total,
 			'total_tables'     => $total,
-			'percent'          => $percent,
+			'percent'          => 100,
 			'size'             => file_exists( $session['db_file'] ) ? (int) filesize( $session['db_file'] ) : 0,
-			'log'              => $completed
-				? __( '[OK] Dump do banco gerado com sucesso.', 'dd-maintenance' )
-				: sprintf( __( '[Banco] %1$d/%2$d tabelas processadas (%3$d%%).', 'dd-maintenance' ), $processed, $total, $percent ),
+			'log'              => __( '[OK] Dump consistente do banco gerado com sucesso.', 'dd-maintenance' ),
 		);
 	}
 
