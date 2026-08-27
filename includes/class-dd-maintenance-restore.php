@@ -2039,13 +2039,15 @@ class DD_Maintenance_Restore {
 		if ( is_dir( $mu_dir ) ) {
 			$loader_code = "<?php\n"
 				. "// DD Maintenance restore persistence and database recovery drop-in\n"
+				. "defined( 'ABSPATH' ) || exit;\n\n"
 				. "if ( ( isset( \$_POST['action'] ) && 'dd_maintenance_ajax_restore' === \$_POST['action'] )"
 				. " || ( isset( \$_GET['action'] ) && 'dd_maintenance_ajax_restore' === \$_GET['action'] ) ) {\n"
-				. "    if ( function_exists( 'wp_installing' ) ) {\n"
-				. "        wp_installing( true );\n"
-				. "    } elseif ( ! defined( 'WP_INSTALLING' ) ) {\n"
-				. "        define( 'WP_INSTALLING', true );\n"
-				. "    }\n"
+				. "    add_filter( 'pre_option_siteurl', static function( \$val ) {\n"
+				. "        return ! empty( \$val ) ? \$val : ( ( is_ssl() ? 'https://' : 'http://' ) . ( \$_SERVER['HTTP_HOST'] ?? 'localhost' ) );\n"
+				. "    }, 1 );\n"
+				. "    add_filter( 'pre_option_home', static function( \$val ) {\n"
+				. "        return ! empty( \$val ) ? \$val : ( ( is_ssl() ? 'https://' : 'http://' ) . ( \$_SERVER['HTTP_HOST'] ?? 'localhost' ) );\n"
+				. "    }, 1 );\n"
 				. "    add_filter( 'wp_die_handler', static function() {\n"
 				. "        return static function( \$message, \$title = '', \$args = array() ) {\n"
 				. "            if ( is_string( \$message ) && false !== strpos( \$message, 'database tables are unavailable' ) ) {\n"
@@ -2056,17 +2058,28 @@ class DD_Maintenance_Restore {
 				. "            }\n"
 				. "        };\n"
 				. "    }, 1 );\n"
-				. "}\n"
+				. "}\n\n"
 				. "if ( ! class_exists( 'DD_Maintenance' ) ) {\n"
-				. "    if ( file_exists( WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php' ) ) {\n"
-				. "        require_once WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php';\n"
-				. "    } elseif ( file_exists( WP_PLUGIN_DIR . '/backuper/backuper.php' ) ) {\n"
-				. "        require_once WP_PLUGIN_DIR . '/backuper/backuper.php';\n"
+				. "    \$candidates = array(\n"
+				. "        __DIR__ . '/../plugins/dd-maintenance/dd-maintenance.php',\n"
+				. "        __DIR__ . '/../plugins/backuper/backuper.php',\n"
+				. "        defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php' : '',\n"
+				. "        defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/backuper/backuper.php' : '',\n"
+				. "    );\n"
+				. "    foreach ( \$candidates as \$file ) {\n"
+				. "        if ( ! empty( \$file ) && file_exists( \$file ) ) {\n"
+				. "            require_once \$file;\n"
+				. "            break;\n"
+				. "        }\n"
 				. "    }\n"
+				. "}\n"
+				. "if ( class_exists( 'DD_Maintenance' ) ) {\n"
+				. "    DD_Maintenance::instance();\n"
 				. "}\n";
 			@file_put_contents( $mu_dir . '/dd-maintenance-loader.php', $loader_code );
 		}
 	}
+
 	/**
 	 * Instala um drop-in permanente em mu-plugins para blindar o Elementor no site restaurado contra erros de PHP 8.0+.
 	 */
