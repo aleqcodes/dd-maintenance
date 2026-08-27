@@ -41,6 +41,7 @@ class DD_Maintenance {
 		// Compatibilidade com agendamentos anteriores do Backuper.
 		add_action( 'backuper_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
 		add_action( 'dd_maintenance_backup_continue', array( $this, 'cron_backup_continue' ), 10, 1 );
+		add_action( 'plugins_loaded', array( $this, 'register_elementor_compatibility' ), 1 );
 	}
 
 	/**
@@ -67,6 +68,17 @@ class DD_Maintenance {
 			'display'  => __( 'Mensal (a cada 30 dias)', 'dd-maintenance' ),
 		);
 		return $schedules;
+	}
+
+	/**
+	 * Garante compatibilidade de tags dinâmicas do Elementor com PHP 8.0+.
+	 */
+	public function register_elementor_compatibility() {
+		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
+			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 999 );
+			add_filter( 'the_content', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
+			add_filter( 'widget_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
+		}
 	}
 
 	/**

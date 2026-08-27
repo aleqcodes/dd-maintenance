@@ -864,18 +864,9 @@ class DD_Maintenance_Restore {
 				$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", untrailingslashit( $target_home ) ) );
 			}
 
-			// 6. Atualiza URLs de links e assets no banco
-			if ( ! empty( $old_siteurl ) && ! empty( $target_siteurl ) && rtrim( $old_siteurl, '/' ) !== rtrim( $target_siteurl, '/' ) ) {
-				$from_url       = rtrim( $old_siteurl, '/' );
-				$to_url         = rtrim( $target_siteurl, '/' );
-				$posts_table    = $dump_prefix . 'posts';
-				$postmeta_table = $dump_prefix . 'postmeta';
-
-				// Posts e páginas
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
-
-				// Elementor JSON data (_elementor_data)
-				$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = REPLACE(`meta_value`, %s, %s) WHERE `meta_key` = '_elementor_data' AND `meta_value` LIKE %s", $from_url, $to_url, '%' . $wpdb->esc_like( $from_url ) . '%' ) );
+			// 6. Atualiza URLs de links e assets no banco e higieniza dados do Elementor
+			if ( ! empty( $old_siteurl ) && ! empty( $target_siteurl ) ) {
+				$this->perform_url_search_replace( $old_siteurl, $target_siteurl, $dump_prefix );
 			}
 
 			if ( function_exists( 'wp_cache_flush' ) ) {
@@ -1807,6 +1798,37 @@ class DD_Maintenance_Restore {
 			@ini_set( 'memory_limit', '512M' );
 		}
 	}
+	/**
+	 * Normaliza tags dinâmicas do Elementor para garantir compatibilidade estrita com PHP 8.0+.
+	 * Se o atributo settings="" estiver ausente, vazio ou inválido, insere settings="%7B%7D"
+	 * para que o json_decode retorne array vazio em vez de null.
+	 *
+	 * @param mixed $content Texto ou dado a ser higienizado.
+	 * @return mixed
+	 */
+	public static function fix_elementor_dynamic_tags( $content ) {
+		if ( ! is_string( $content ) || false === strpos( $content, '[elementor-tag' ) ) {
+			return $content;
+		}
+
+		return preg_replace_callback(
+			'/\[elementor-tag\s+([^\]]+)\]/i',
+			static function( $matches ) {
+				$attrs_str = $matches[1];
+				if ( ! preg_match( '/\bsettings\s*=\s*["\']([^"\']*)["\']/i', $attrs_str, $sm )
+					|| '' === trim( $sm[1] )
+					|| '%22%22' === $sm[1]
+					|| 'null' === strtolower( trim( $sm[1] ) ) ) {
+					$cleaned = preg_replace( '/\bsettings\s*=\s*["\'][^"\']*["\']/i', '', $attrs_str );
+					$cleaned = trim( preg_replace( '/\s+/', ' ', $cleaned ) );
+					return '[elementor-tag ' . $cleaned . ' settings="%7B%7D"]';
+				}
+				return $matches[0];
+			},
+			$content
+		);
+	}
+
 
 	/**
 	 * Realiza Search & Replace recursivo seguro com suporte a strings serializadas PHP e JSON.
@@ -1846,7 +1868,8 @@ class DD_Maintenance_Restore {
 				}
 
 				// 3. String simples
-				return str_replace( $from, $to, $data );
+				$replaced = str_replace( $from, $to, $data );
+				return self::fix_elementor_dynamic_tags( $replaced );
 			}
 
 			if ( is_array( $data ) ) {
@@ -1882,65 +1905,77 @@ class DD_Maintenance_Restore {
 	 */
 	private function perform_url_search_replace( string $from_url, string $to_url, string $dump_prefix ): void {
 		global $wpdb;
-		if ( empty( $from_url ) || empty( $to_url ) || rtrim( $from_url, '/' ) === rtrim( $to_url, '/' ) ) {
-			return;
-		}
 
 		$from_url       = rtrim( $from_url, '/' );
 		$to_url         = rtrim( $to_url, '/' );
+		$from_escaped   = str_replace( '/', '\/', $from_url );
+		$to_escaped     = str_replace( '/', '\/', $to_url );
 		$posts_table    = $dump_prefix . 'posts';
 		$postmeta_table = $dump_prefix . 'postmeta';
 		$options_table  = $dump_prefix . 'options';
 
 		// 1. Posts e páginas simples (conteúdo, excerpt e guid)
-		$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
+		if ( $from_url !== $to_url ) {
+			$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
+			$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s)", $from_escaped, $to_escaped ) );
+		}
 
-		// 2. Metadados de posts (Elementor, galerias, custom fields) - paginado de 50 em 50
-		$like_query = '%' . $wpdb->esc_like( $from_url ) . '%';
-		$p_offset   = 0;
-		while ( $p_offset < 10000 ) {
-			$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `meta_id`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_value` LIKE %s LIMIT %d, 50", $like_query, $p_offset ), ARRAY_A );
+		// 2. Metadados de posts (Elementor, galerias, custom fields) - paginado
+		$p_offset = 0;
+		while ( $p_offset < 20000 ) {
+			$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `meta_id`, `meta_key`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_value` LIKE %s OR `meta_value` LIKE %s OR `meta_value` LIKE %s LIMIT %d, 100", '%' . $wpdb->esc_like( $from_url ) . '%', '%' . $wpdb->esc_like( $from_escaped ) . '%', '%[elementor-tag%', $p_offset ), ARRAY_A );
 			if ( empty( $meta_rows ) || ! is_array( $meta_rows ) ) {
 				break;
 			}
 			foreach ( $meta_rows as $mrow ) {
-				$orig_val = $mrow['meta_value'];
-				if ( is_string( $orig_val ) && false !== strpos( $orig_val, $from_url ) ) {
-					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+				$orig_val  = $mrow['meta_value'];
+				$fixed_val = $orig_val;
+				if ( is_string( $orig_val ) ) {
+					if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
+						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+					}
+					$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
 					if ( $fixed_val !== $orig_val ) {
 						$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $mrow['meta_id'] ) );
 					}
 				}
 			}
-			if ( count( $meta_rows ) < 50 ) {
+			if ( count( $meta_rows ) < 100 ) {
 				break;
 			}
-			$p_offset += 50;
+			$p_offset += 100;
 		}
 
-		// 3. Opções gerais do site (widgets, plugins, temas) - paginado de 50 em 50
+		// 3. Opções gerais do site
 		$o_offset = 0;
-		while ( $o_offset < 5000 ) {
-			$opt_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `option_id`, `option_value` FROM `{$options_table}` WHERE `option_name` NOT IN ('siteurl', 'home') AND `option_value` LIKE %s LIMIT %d, 50", $like_query, $o_offset ), ARRAY_A );
+		while ( $o_offset < 10000 ) {
+			$opt_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `option_id`, `option_name`, `option_value` FROM `{$options_table}` WHERE `option_name` NOT IN ('siteurl', 'home') AND (`option_value` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s) LIMIT %d, 100", '%' . $wpdb->esc_like( $from_url ) . '%', '%' . $wpdb->esc_like( $from_escaped ) . '%', '%[elementor-tag%', $o_offset ), ARRAY_A );
 			if ( empty( $opt_rows ) || ! is_array( $opt_rows ) ) {
 				break;
 			}
 			foreach ( $opt_rows as $orow ) {
-				$orig_val = $orow['option_value'];
-				if ( is_string( $orig_val ) && false !== strpos( $orig_val, $from_url ) ) {
-					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+				$orig_val  = $orow['option_value'];
+				$fixed_val = $orig_val;
+				if ( is_string( $orig_val ) ) {
+					if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
+						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+					}
+					$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
 					if ( $fixed_val !== $orig_val ) {
 						$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_id` = %d", $fixed_val, (int) $orow['option_id'] ) );
 					}
 				}
 			}
-			if ( count( $opt_rows ) < 50 ) {
+			if ( count( $opt_rows ) < 100 ) {
 				break;
 			}
-			$o_offset += 50;
+			$o_offset += 100;
 		}
 
-		// 4. Limpa arquivos CSS gerados do Elementor para forçar regeneração limpa
+		// 4. Limpa caches antigos do Elementor no banco e em disco para forçar regeneração limpa
+		$wpdb->query( "DELETE FROM `{$postmeta_table}` WHERE `meta_key` IN ('_elementor_css', '_elementor_element_cache', '_elementor_inline_svg')" );
+		$wpdb->query( "DELETE FROM `{$options_table}` WHERE `option_name` LIKE '%_elementor_%' AND `option_name` LIKE '%_transient_%'" );
+
 		$elementor_css_dir = WP_CONTENT_DIR . '/uploads/elementor/css';
 		if ( is_dir( $elementor_css_dir ) ) {
 			$css_files = glob( $elementor_css_dir . '/*.css' );

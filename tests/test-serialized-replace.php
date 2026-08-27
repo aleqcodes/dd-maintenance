@@ -76,4 +76,15 @@ assert( is_array( $decoded_json ), 'JSON do Elementor decodificado com sucesso.'
 assert( $decoded_json[0]['settings']['image']['url'] === $new_url . '/wp-content/uploads/logo.png', 'URL da imagem no Elementor atualizada.' );
 assert( $decoded_json[0]['settings']['link']['url'] === $new_url . '/contato', 'Link no Elementor atualizado.' );
 
+// 3. Testa normalização de Dynamic Tags do Elementor para compatibilidade com PHP 8.2
+$tag_missing = '[elementor-tag id="a5a44c3" name="site-url"]';
+$tag_empty   = '[elementor-tag id="a5a44c3" name="site-url" settings=""]';
+$tag_null    = '[elementor-tag id="a5a44c3" name="site-url" settings="null"]';
+$tag_valid   = '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%22fallback%22%3A%22%22%7D"]';
+
+assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_missing ) === '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%7D"]', 'Tag sem settings deve receber settings=%7B%7D.' );
+assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_empty ) === '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%7D"]', 'Tag com settings vazia deve receber settings=%7B%7D.' );
+assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_null ) === '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%7D"]', 'Tag com settings null deve receber settings=%7B%7D.' );
+assert( DD_Maintenance_Restore::fix_elementor_dynamic_tags( $tag_valid ) === $tag_valid, 'Tag com settings válida deve permanecer inalterada.' );
+
 echo "Todos os testes de Search & Replace serializado e Elementor passaram com 100% de sucesso!\n";
