@@ -683,13 +683,86 @@ class DD_Maintenance_Settings {
 				}, 1000);
 			}
 
-			function downloadAllParts(files) {
+			var isBatchDownloading = false;
+
+			function downloadAllParts(files, btnEl) {
 				if (!files || !files.length) return;
-				files.forEach(function(file, i) {
+				if (isBatchDownloading) {
+					alert('Um download em lotes já está em andamento no navegador. Aguarde a conclusão.');
+					return;
+				}
+
+				var total        = files.length;
+				var batchSize    = 5;
+				var totalBatches = Math.ceil(total / batchSize);
+				var originalBtnHtml = btnEl ? btnEl.innerHTML : '';
+				var allBtnText   = document.getElementById('dd-maint-download-all-btn-text');
+				var modalBtn     = document.getElementById('dd-maint-download-all-btn');
+
+				isBatchDownloading = true;
+				if (btnEl) btnEl.disabled = true;
+				if (modalBtn) modalBtn.disabled = true;
+
+				function updateStatus(batchNum, startIdx, endIdx) {
+					var text = 'Baixando lote ' + batchNum + '/' + totalBatches + ' (' + (startIdx + 1) + '-' + endIdx + ' de ' + total + ')...';
+					if (btnEl) {
+						btnEl.innerHTML = '<span class="dashicons dashicons-update dd-maint-spin" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span> ' + text;
+					}
+					if (allBtnText) {
+						allBtnText.innerText = text;
+					}
+					if (consoleOut) {
+						consoleOut.innerText += (consoleOut.innerText ? '\n' : '') + '[Download Lote ' + batchNum + '/' + totalBatches + '] Disparando volumes ' + (startIdx + 1) + ' até ' + endIdx + ' de ' + total + '...';
+						consoleOut.scrollTop = consoleOut.scrollHeight;
+					}
+				}
+
+				function processBatch(batchIndex) {
+					if (batchIndex >= totalBatches) {
+						isBatchDownloading = false;
+						var doneText = 'Todos os ' + total + ' volumes enviados para download!';
+						if (btnEl) {
+							btnEl.innerHTML = '<span class="dashicons dashicons-yes" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span> ' + doneText;
+							setTimeout(function() {
+								btnEl.disabled = false;
+								btnEl.innerHTML = originalBtnHtml;
+							}, 4000);
+						}
+						if (modalBtn) {
+							modalBtn.disabled = false;
+						}
+						if (allBtnText) {
+							allBtnText.innerText = 'Baixar Todos os ' + total + ' Volumes';
+						}
+						if (consoleOut) {
+							consoleOut.innerText += (consoleOut.innerText ? '\n' : '') + '[Download OK] Todos os ' + total + ' volumes foram enviados com sucesso em lotes de ' + batchSize + '!';
+							consoleOut.scrollTop = consoleOut.scrollHeight;
+						}
+						return;
+					}
+
+					var start = batchIndex * batchSize;
+					var end   = Math.min(start + batchSize, total);
+					var batchFiles = files.slice(start, end);
+					var batchNum   = batchIndex + 1;
+
+					updateStatus(batchNum, start, end);
+
+					// Dispara cada um dos 5 arquivos do lote com intervalo de 700ms entre eles
+					batchFiles.forEach(function(file, i) {
+						setTimeout(function() {
+							triggerDownload(file);
+						}, i * 700);
+					});
+
+					// Aguarda o término do lote atual (5 * 700ms = 3.5s) mais 3.0s de pausa calculada antes do próximo lote
+					var batchDuration = (batchFiles.length * 700) + 3000;
 					setTimeout(function() {
-						triggerDownload(file);
-					}, i * 600);
-				});
+						processBatch(batchIndex + 1);
+					}, batchDuration);
+				}
+
+				processBatch(0);
 			}
 			window.ddMaintDownloadAll = downloadAllParts;
 
@@ -828,7 +901,7 @@ class DD_Maintenance_Settings {
 						allBtnText.innerText = 'Baixar Todos os ' + parts.length + ' Volumes';
 					}
 					downloadAllBtn.onclick = function() {
-						downloadAllParts(fileNamesToDownload);
+						downloadAllParts(fileNamesToDownload, downloadAllBtn);
 					};
 				} else {
 					downloadAllBtn.style.display = 'none';
@@ -1817,7 +1890,7 @@ class DD_Maintenance_Settings {
 								<td>
 									<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
 										<?php if ( ! empty( $b['is_multipart'] ) && count( $b['parts'] ) > 1 ) : ?>
-											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $b['parts'], 'filename' ) ) ); ?>);">
+											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $b['parts'], 'filename' ) ) ); ?>, this);">
 												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
 												<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
 											</button>
@@ -2626,7 +2699,7 @@ class DD_Maintenance_Settings {
 								<td>
 									<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
 										<?php if ( ! empty( $backup['is_multipart'] ) && count( $backup['parts'] ) > 1 ) : ?>
-											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $backup['parts'], 'filename' ) ) ); ?>);" title="<?php esc_attr_e( 'Inicia o download de todos os volumes sequencialmente no navegador', 'dd-maintenance' ); ?>">
+											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $backup['parts'], 'filename' ) ) ); ?>, this);" title="<?php esc_attr_e( 'Inicia o download de todos os volumes em lotes de 5 no navegador', 'dd-maintenance' ); ?>">
 												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
 												<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
 											</button>
