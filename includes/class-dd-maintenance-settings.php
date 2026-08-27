@@ -3783,7 +3783,8 @@ class DD_Maintenance_Settings {
 		}
 		@ignore_user_abort( true );
 
-		if ( DD_Maintenance_Config::has_password() ) {
+		$initiating_modes = array( 'upload_init', 'restore_init', 'upload', 'local' );
+		if ( in_array( $mode, $initiating_modes, true ) && DD_Maintenance_Config::has_password() ) {
 			$password = isset( $_POST['restore_password'] ) ? trim( (string) wp_unslash( $_POST['restore_password'] ) ) : '';
 			if ( ! DD_Maintenance_Config::verify_password( $password ) ) {
 				wp_send_json_error( array( 'message' => __( 'Senha de confirmação incorreta.', 'dd-maintenance' ) ) );

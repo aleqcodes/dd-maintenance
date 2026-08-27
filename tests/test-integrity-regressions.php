@@ -238,6 +238,17 @@ try {
 	assert( $restore->verify_restore_token( 'rst_progress', $token ) === true, 'O token correto deve autorizar a continuação.' );
 	assert( $restore->verify_restore_token( 'rst_progress', 'wrong-token' ) === false, 'Um token incorreto deve ser rejeitado.' );
 
+	$finalize_with_imported_password = $capture_response(
+		array(
+			'mode'               => 'restore_finalize',
+			'restore_session_id' => 'rst_progress',
+			'restore_token'      => $token,
+			'restore_password'   => '',
+		)
+	);
+	assert( $finalize_with_imported_password->success === true, 'A finalizacao autorizada via token nao deve falhar por senha importada.' );
+	assert( file_exists( WP_CONTENT_DIR . '/mu-plugins/dd-elementor-compat.php' ), 'O drop-in do Elementor deve ser instalado ao finalizar.' );
+
 	$failure_dir = DD_Maintenance::backup_dir() . '/restore_exec_rst_copy_failure';
 	wp_mkdir_p( $failure_dir );
 	file_put_contents( $failure_dir . '/restore_queue.jsonl', json_encode( array( 'src' => $failure_dir . '/missing.txt', 'dst' => ABSPATH . 'missing.txt' ) ) . "\n" );
