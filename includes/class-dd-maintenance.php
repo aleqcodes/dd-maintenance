@@ -86,7 +86,7 @@ class DD_Maintenance {
 	 * Intercepta _elementor_data e _elementor_page_settings para blindar contra tags dinamicas malformadas.
 	 */
 	public function filter_elementor_post_metadata( $value, $object_id, $meta_key, $single ) {
-		if ( ! in_array( $meta_key, array( '_elementor_data', '_elementor_page_settings' ), true ) ) {
+		if ( ! in_array( $meta_key, array( '_elementor_data', '_elementor_page_settings', '_elementor_controls_usage' ), true ) ) {
 			return $value;
 		}
 		static $in_filter = false;
@@ -115,6 +115,10 @@ class DD_Maintenance {
 	 * Aplica migrações e atualizações de configuração entre versões e plugins anteriores.
 	 */
 	public function maybe_upgrade() {
+		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
+			DD_Maintenance_Restore::install_permanent_elementor_shield();
+		}
+
 		$version = get_option( 'dd_maintenance_version', '0' );
 
 		// Migra configurações antigas do Backuper, se existirem.
@@ -405,6 +409,9 @@ class DD_Maintenance {
 	public static function activate() {
 		$dir = self::backup_dir();
 		@file_put_contents( $dir . '/index.php', '<?php // Silence is golden.' );
+		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
+			DD_Maintenance_Restore::install_permanent_elementor_shield();
+		}
 
 		self::maybe_schedule_cron();
 	}

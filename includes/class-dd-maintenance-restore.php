@@ -1943,75 +1943,138 @@ class DD_Maintenance_Restore {
 		$postmeta_table = $dump_prefix . 'postmeta';
 		$options_table  = $dump_prefix . 'options';
 
-		// 1. Posts e páginas simples (conteúdo, excerpt e guid)
-		if ( $from_url !== $to_url ) {
-			$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s), `post_excerpt` = REPLACE(`post_excerpt`, %s, %s), `guid` = REPLACE(`guid`, %s, %s)", $from_url, $to_url, $from_url, $to_url, $from_url, $to_url ) );
-			$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = REPLACE(`post_content`, %s, %s)", $from_escaped, $to_escaped ) );
-		}
-
-		// Normaliza dynamic tags no post_content de todos os posts/templates
-		$post_rows = $wpdb->get_results( "SELECT `ID`, `post_content` FROM `{$posts_table}` WHERE `post_content` LIKE '%[elementor-tag%' LIMIT 5000", ARRAY_A );
-		if ( ! empty( $post_rows ) && is_array( $post_rows ) ) {
+		// 1. Posts e templates (Elementor Library, Header, Footer, páginas)
+		$last_post_id = 0;
+		while ( true ) {
+			$post_rows = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT `ID`, `post_content`, `post_excerpt`, `guid` FROM `{$posts_table}` WHERE `ID` > %d ORDER BY `ID` ASC LIMIT 100",
+					$last_post_id
+				),
+				ARRAY_A
+			);
+			if ( empty( $post_rows ) || ! is_array( $post_rows ) ) {
+				break;
+			}
 			foreach ( $post_rows as $prow ) {
-				$fixed_content = self::fix_elementor_dynamic_tags( $prow['post_content'] );
-				if ( $fixed_content !== $prow['post_content'] ) {
-					$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_content` = %s WHERE `ID` = %d", $fixed_content, (int) $prow['ID'] ) );
+				$last_post_id = (int) $prow['ID'];
+				$content      = $prow['post_content'];
+				$excerpt      = $prow['post_excerpt'];
+				$guid         = $prow['guid'];
+				$changed      = false;
+
+				if ( $from_url !== $to_url ) {
+					if ( is_string( $content ) && ( false !== strpos( $content, $from_url ) || false !== strpos( $content, $from_escaped ) ) ) {
+						$content = str_replace( array( $from_url, $from_escaped ), array( $to_url, $to_escaped ), $content );
+						$changed = true;
+					}
+					if ( is_string( $excerpt ) && false !== strpos( $excerpt, $from_url ) ) {
+						$excerpt = str_replace( $from_url, $to_url, $excerpt );
+						$changed = true;
+					}
+					if ( is_string( $guid ) && false !== strpos( $guid, $from_url ) ) {
+						$guid    = str_replace( $from_url, $to_url, $guid );
+						$changed = true;
+					}
 				}
+
+				if ( is_string( $content ) && false !== strpos( $content, '[elementor-tag' ) ) {
+					$fixed_content = self::fix_elementor_dynamic_tags( $content );
+					if ( $fixed_content !== $content ) {
+						$content = $fixed_content;
+						$changed = true;
+					}
+				}
+
+				if ( $changed ) {
+					$wpdb->query(
+						$wpdb->prepare(
+							"UPDATE `{$posts_table}` SET `post_content` = %s, `post_excerpt` = %s, `guid` = %s WHERE `ID` = %d",
+							$content,
+							$excerpt,
+							$guid,
+							(int) $prow['ID']
+						)
+					);
+				}
+			}
+			if ( count( $post_rows ) < 100 ) {
+				break;
 			}
 		}
 
-		// 2. Metadados de posts (Elementor, galerias, custom fields) - paginado
-		$p_offset = 0;
-		while ( $p_offset < 20000 ) {
-			$meta_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `meta_id`, `meta_key`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_value` LIKE %s OR `meta_value` LIKE %s OR `meta_value` LIKE %s LIMIT %d, 100", '%' . $wpdb->esc_like( $from_url ) . '%', '%' . $wpdb->esc_like( $from_escaped ) . '%', '%[elementor-tag%', $p_offset ), ARRAY_A );
+		// 2. Metadados de posts (Elementor, galerias, custom fields) - paginação por meta_id
+		$last_meta_id = 0;
+		while ( true ) {
+			$meta_rows = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT `meta_id`, `meta_key`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_id` > %d AND (`meta_key` IN ('_elementor_data', '_elementor_page_settings', '_elementor_controls_usage') OR `meta_value` LIKE %s OR `meta_value` LIKE %s OR `meta_value` LIKE %s) ORDER BY `meta_id` ASC LIMIT 100",
+					$last_meta_id,
+					'%' . $wpdb->esc_like( $from_url ) . '%',
+					'%' . $wpdb->esc_like( $from_escaped ) . '%',
+					'%[elementor-tag%'
+				),
+				ARRAY_A
+			);
 			if ( empty( $meta_rows ) || ! is_array( $meta_rows ) ) {
 				break;
 			}
 			foreach ( $meta_rows as $mrow ) {
-				$orig_val  = $mrow['meta_value'];
+				$last_meta_id = (int) $mrow['meta_id'];
+				$orig_val     = $mrow['meta_value'];
+				if ( ! is_string( $orig_val ) || '' === $orig_val ) {
+					continue;
+				}
 				$fixed_val = $orig_val;
-				if ( is_string( $orig_val ) ) {
-					if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
-						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
-					}
-					$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
-					if ( $fixed_val !== $orig_val ) {
-						$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $mrow['meta_id'] ) );
-					}
+				if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
+					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+				}
+				$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
+				if ( $fixed_val !== $orig_val ) {
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$postmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $mrow['meta_id'] ) );
 				}
 			}
 			if ( count( $meta_rows ) < 100 ) {
 				break;
 			}
-			$p_offset += 100;
 		}
 
-		// 3. Opções gerais do site
-		$o_offset = 0;
-		while ( $o_offset < 10000 ) {
-			$opt_rows = $wpdb->get_results( $wpdb->prepare( "SELECT `option_id`, `option_name`, `option_value` FROM `{$options_table}` WHERE `option_name` NOT IN ('siteurl', 'home') AND (`option_value` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s) LIMIT %d, 100", '%' . $wpdb->esc_like( $from_url ) . '%', '%' . $wpdb->esc_like( $from_escaped ) . '%', '%[elementor-tag%', $o_offset ), ARRAY_A );
+		// 3. Opções gerais do site (widgets, kits do Elementor, condições do Pro Elements)
+		$last_opt_id = 0;
+		while ( true ) {
+			$opt_rows = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT `option_id`, `option_name`, `option_value` FROM `{$options_table}` WHERE `option_id` > %d AND `option_name` NOT IN ('siteurl', 'home') AND (`option_name` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s) ORDER BY `option_id` ASC LIMIT 100",
+					$last_opt_id,
+					'%elementor%',
+					'%' . $wpdb->esc_like( $from_url ) . '%',
+					'%' . $wpdb->esc_like( $from_escaped ) . '%',
+					'%[elementor-tag%'
+				),
+				ARRAY_A
+			);
 			if ( empty( $opt_rows ) || ! is_array( $opt_rows ) ) {
 				break;
 			}
 			foreach ( $opt_rows as $orow ) {
-				$orig_val  = $orow['option_value'];
+				$last_opt_id = (int) $orow['option_id'];
+				$orig_val    = $orow['option_value'];
+				if ( ! is_string( $orig_val ) || '' === $orig_val ) {
+					continue;
+				}
 				$fixed_val = $orig_val;
-				if ( is_string( $orig_val ) ) {
-					if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
-						$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
-					}
-					$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
-					if ( $fixed_val !== $orig_val ) {
-						$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_id` = %d", $fixed_val, (int) $orow['option_id'] ) );
-					}
+				if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
+					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+				}
+				$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
+				if ( $fixed_val !== $orig_val ) {
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_id` = %d", $fixed_val, (int) $orow['option_id'] ) );
 				}
 			}
 			if ( count( $opt_rows ) < 100 ) {
 				break;
 			}
-			$o_offset += 100;
 		}
-
 		// 4. Limpa caches antigos do Elementor no banco e em disco para forçar regeneração limpa
 		$wpdb->query( "DELETE FROM `{$postmeta_table}` WHERE `meta_key` IN ('_elementor_css', '_elementor_element_cache', '_elementor_inline_svg')" );
 		$wpdb->query( "DELETE FROM `{$options_table}` WHERE `option_name` LIKE '%_elementor_%' AND `option_name` LIKE '%_transient_%'" );
