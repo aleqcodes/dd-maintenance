@@ -2455,20 +2455,42 @@ class DD_Maintenance_Restore {
 				. " * Description: Previne Fatal TypeError no Elementor / Pro Elements em PHP 8.0+ normalizando tags dinamicas sem settings.\n"
 				. " */\n\n"
 				. "defined( 'ABSPATH' ) || exit;\n\n"
-				. "// 1. Auto-patch em disco para compatibilidade com PHP 8.2\n"
+				. "// 1. Auto-patch em disco para compatibilidade com PHP 8.0+\n"
 				. "\$el_candidates = array(\n"
 				. "    defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/elementor/core/dynamic-tags/manager.php' : '',\n"
 				. "    WP_CONTENT_DIR . '/plugins/elementor/core/dynamic-tags/manager.php',\n"
 				. "    defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php' : '',\n"
 				. ");\n"
+				. "if ( defined( 'WP_PLUGIN_DIR' ) && is_dir( WP_PLUGIN_DIR ) ) {\n"
+				. "    \$glob_el = glob( WP_PLUGIN_DIR . '/*elementor*/core/dynamic-tags/manager.php' );\n"
+				. "    if ( is_array( \$glob_el ) ) {\n"
+				. "        \$el_candidates = array_merge( \$el_candidates, \$glob_el );\n"
+				. "    }\n"
+				. "}\n"
 				. "foreach ( \$el_candidates as \$el_f ) {\n"
 				. "    if ( ! empty( \$el_f ) && file_exists( \$el_f ) && is_writable( \$el_f ) ) {\n"
 				. "        \$el_src = (string) file_get_contents( \$el_f );\n"
-				. "        if ( preg_match( '/function\\s+get_tag_data_content\\s*\\(\\s*(\\\$tag_id\\s*,\\s*\\\$tag_name\\s*,)\\s*array\\s*(\\\$settings\\b)/i', \$el_src ) ) {\n"
-				. "            \$el_patched = preg_replace( '/function\\s+get_tag_data_content\\s*\\(\\s*(\\\$tag_id\\s*,\\s*\\\$tag_name\\s*,)\\s*array\\s*(\\\$settings\\b)/i', 'function get_tag_data_content( \$1 \$2', \$el_src );\n"
-				. "            if ( is_string( \$el_patched ) && \$el_patched !== \$el_src ) {\n"
-				. "                @file_put_contents( \$el_f, \$el_patched );\n"
-				. "            }\n"
+				. "        \$el_patched = preg_replace(\n"
+				. "            '/function\\s+([a-zA-Z0-9_]+)\\s*\\(\\s*(\\\$tag_id\\s*,\\s*\\\$tag_name\\s*,)\\s*array\\s*(\\\$settings\\b)/i',\n"
+				. "            'function \$1( \$2 \$3',\n"
+				. "            \$el_src\n"
+				. "        );\n"
+				. "        if ( false === strpos( \$el_patched, '\$settings = is_array( \$settings ) ? \$settings : [];' ) ) {\n"
+				. "            \$el_patched = preg_replace(\n"
+				. "                '/(public\\s+function\\s+create_tag\\s*\\([^)]*\\)\\s*\\{)/i',\n"
+				. "                \"\$1\\n\\t\\t\" . '\$settings = is_array( \$settings ) ? \$settings : [];',\n"
+				. "                \$el_patched,\n"
+				. "                1\n"
+				. "            );\n"
+				. "            \$el_patched = preg_replace(\n"
+				. "                '/(public\\s+function\\s+get_tag_data_content\\s*\\([^)]*\\)\\s*\\{)/i',\n"
+				. "                \"\$1\\n\\t\\t\" . '\$settings = is_array( \$settings ) ? \$settings : [];',\n"
+				. "                \$el_patched,\n"
+				. "                1\n"
+				. "            );\n"
+				. "        }\n"
+				. "        if ( is_string( \$el_patched ) && \$el_patched !== \$el_src ) {\n"
+				. "            @file_put_contents( \$el_f, \$el_patched );\n"
 				. "        }\n"
 				. "    }\n"
 				. "}\n\n"
@@ -2546,26 +2568,50 @@ class DD_Maintenance_Restore {
 			defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/elementor/core/dynamic-tags/manager.php' : '',
 			WP_CONTENT_DIR . '/plugins/elementor/core/dynamic-tags/manager.php',
 			defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php' : '',
+			dirname( dirname( __DIR__ ) ) . '/elementor/core/dynamic-tags/manager.php',
+			dirname( dirname( dirname( __DIR__ ) ) ) . '/plugins/elementor/core/dynamic-tags/manager.php',
 			__DIR__ . '/../../elementor/core/dynamic-tags/manager.php',
 			__DIR__ . '/../../../plugins/elementor/core/dynamic-tags/manager.php',
 		);
 
+		if ( defined( 'WP_PLUGIN_DIR' ) && is_dir( WP_PLUGIN_DIR ) ) {
+			$glob_plugins = glob( WP_PLUGIN_DIR . '/*elementor*/core/dynamic-tags/manager.php' );
+			if ( is_array( $glob_plugins ) ) {
+				$candidates = array_merge( $candidates, $glob_plugins );
+			}
+		}
+
+		$patched_any = false;
 		foreach ( $candidates as $file ) {
 			if ( ! empty( $file ) && file_exists( $file ) && is_writable( $file ) ) {
 				$content = (string) file_get_contents( $file );
-				if ( preg_match( '/function\s+get_tag_data_content\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i', $content ) ) {
+				$patched = preg_replace(
+					'/function\s+([a-zA-Z0-9_]+)\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i',
+					'function $1( $2 $3',
+					$content
+				);
+				if ( false === strpos( $patched, '$settings = is_array( $settings ) ? $settings : [];' ) ) {
 					$patched = preg_replace(
-						'/function\s+get_tag_data_content\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i',
-						'function get_tag_data_content( $1 $2',
-						$content
+						'/(public\s+function\s+create_tag\s*\([^)]*\)\s*\{)/i',
+						"$1\n\t\t" . '$settings = is_array( $settings ) ? $settings : [];',
+						$patched,
+						1
 					);
-					if ( is_string( $patched ) && $patched !== $content ) {
-						return (bool) @file_put_contents( $file, $patched );
+					$patched = preg_replace(
+						'/(public\s+function\s+get_tag_data_content\s*\([^)]*\)\s*\{)/i',
+						"$1\n\t\t" . '$settings = is_array( $settings ) ? $settings : [];',
+						$patched,
+						1
+					);
+				}
+				if ( is_string( $patched ) && $patched !== $content ) {
+					if ( @file_put_contents( $file, $patched ) ) {
+						$patched_any = true;
 					}
 				}
 			}
 		}
-		return false;
+		return $patched_any;
 	}
 
 	/**
