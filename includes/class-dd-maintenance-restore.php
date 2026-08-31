@@ -2564,32 +2564,73 @@ class DD_Maintenance_Restore {
 	 * Aplica correcao direta no arquivo do Elementor caso detecte a assinatura incompativel com PHP 8.2.
 	 */
 	public static function patch_elementor_php8_compatibility(): bool {
-		$candidates = array(
-			defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/elementor/core/dynamic-tags/manager.php' : '',
-			WP_CONTENT_DIR . '/plugins/elementor/core/dynamic-tags/manager.php',
-			defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php' : '',
-			dirname( dirname( __DIR__ ) ) . '/elementor/core/dynamic-tags/manager.php',
-			dirname( dirname( dirname( __DIR__ ) ) ) . '/plugins/elementor/core/dynamic-tags/manager.php',
-			__DIR__ . '/../../elementor/core/dynamic-tags/manager.php',
-			__DIR__ . '/../../../plugins/elementor/core/dynamic-tags/manager.php',
-		);
+		$plugin_dir  = defined( 'WP_PLUGIN_DIR' ) ? str_replace( '\\', '/', (string) WP_PLUGIN_DIR ) : '';
+		$content_dir = defined( 'WP_CONTENT_DIR' ) ? str_replace( '\\', '/', (string) WP_CONTENT_DIR ) : '';
+		$abs_path    = defined( 'ABSPATH' ) ? str_replace( '\\', '/', (string) ABSPATH ) : '';
 
-		if ( defined( 'WP_PLUGIN_DIR' ) && is_dir( WP_PLUGIN_DIR ) ) {
-			$glob_plugins = glob( WP_PLUGIN_DIR . '/*elementor*/core/dynamic-tags/manager.php' );
-			if ( is_array( $glob_plugins ) ) {
-				$candidates = array_merge( $candidates, $glob_plugins );
+		$candidates = array();
+
+		if ( ! empty( $plugin_dir ) ) {
+			$candidates[] = $plugin_dir . '/elementor/core/dynamic-tags/manager.php';
+			$candidates[] = $plugin_dir . '/pro-elements/core/dynamic-tags/manager.php';
+			if ( is_dir( $plugin_dir ) ) {
+				$found = glob( $plugin_dir . '/*elementor*/core/dynamic-tags/manager.php' );
+				if ( is_array( $found ) ) {
+					$candidates = array_merge( $candidates, $found );
+				}
+				$found_pro = glob( $plugin_dir . '/*pro-elements*/core/dynamic-tags/manager.php' );
+				if ( is_array( $found_pro ) ) {
+					$candidates = array_merge( $candidates, $found_pro );
+				}
 			}
 		}
 
+		if ( ! empty( $content_dir ) ) {
+			$candidates[] = $content_dir . '/plugins/elementor/core/dynamic-tags/manager.php';
+			$candidates[] = $content_dir . '/plugins/pro-elements/core/dynamic-tags/manager.php';
+			if ( is_dir( $content_dir . '/plugins' ) ) {
+				$found = glob( $content_dir . '/plugins/*elementor*/core/dynamic-tags/manager.php' );
+				if ( is_array( $found ) ) {
+					$candidates = array_merge( $candidates, $found );
+				}
+			}
+		}
+
+		if ( ! empty( $abs_path ) ) {
+			$candidates[] = $abs_path . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php';
+			$candidates[] = $abs_path . 'wp-content/plugins/pro-elements/core/dynamic-tags/manager.php';
+		}
+
+		$candidates[] = dirname( dirname( __DIR__ ) ) . '/elementor/core/dynamic-tags/manager.php';
+		$candidates[] = dirname( dirname( dirname( __DIR__ ) ) ) . '/plugins/elementor/core/dynamic-tags/manager.php';
+		$candidates[] = __DIR__ . '/../../elementor/core/dynamic-tags/manager.php';
+		$candidates[] = __DIR__ . '/../../../plugins/elementor/core/dynamic-tags/manager.php';
+
 		$patched_any = false;
+		$seen        = array();
+
 		foreach ( $candidates as $file ) {
-			if ( ! empty( $file ) && file_exists( $file ) && is_writable( $file ) ) {
-				$content = (string) file_get_contents( $file );
+			if ( empty( $file ) ) {
+				continue;
+			}
+			$norm_file = str_replace( '\\', '/', (string) $file );
+			if ( isset( $seen[ $norm_file ] ) ) {
+				continue;
+			}
+			$seen[ $norm_file ] = true;
+
+			if ( file_exists( $norm_file ) && is_file( $norm_file ) ) {
+				$content = (string) @file_get_contents( $norm_file );
+				if ( empty( $content ) ) {
+					continue;
+				}
+
 				$patched = preg_replace(
 					'/function\s+([a-zA-Z0-9_]+)\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i',
 					'function $1( $2 $3',
 					$content
 				);
+
 				if ( false === strpos( $patched, '$settings = is_array( $settings ) ? $settings : [];' ) ) {
 					$patched = preg_replace(
 						'/(public\s+function\s+create_tag\s*\([^)]*\)\s*\{)/i',
@@ -2604,13 +2645,15 @@ class DD_Maintenance_Restore {
 						1
 					);
 				}
+
 				if ( is_string( $patched ) && $patched !== $content ) {
-					if ( @file_put_contents( $file, $patched ) ) {
+					if ( @file_put_contents( $norm_file, $patched ) ) {
 						$patched_any = true;
 					}
 				}
 			}
 		}
+
 		return $patched_any;
 	}
 
