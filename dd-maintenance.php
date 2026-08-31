@@ -57,6 +57,11 @@ require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-updater.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-settings.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance.php';
 
+// Blindagem imediata do Elementor contra Fatal TypeError no PHP 8.0+
+if ( class_exists( 'DD_Maintenance_Restore' ) ) {
+	DD_Maintenance_Restore::patch_elementor_php8_compatibility();
+	DD_Maintenance_Restore::install_permanent_elementor_shield();
+}
 // Classes legadas como aliases para compatibilidade retroativa.
 if ( ! class_exists( 'Backuper' ) ) {
 	class Backuper extends DD_Maintenance {}

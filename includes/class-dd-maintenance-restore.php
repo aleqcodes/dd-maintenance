@@ -981,13 +981,16 @@ class DD_Maintenance_Restore {
 					$item_path      = wp_normalize_path( $item->getPathname() );
 					$filename_lower = strtolower( $item->getFilename() );
 
-					// NUNCA sobrescreve o wp-config.php e não copia arquivos SQL soltos
+					// NUNCA sobrescreve o wp-config.php, arquivos SQL soltos e o próprio plugin em execução
 					if ( 'wp-config.php' === $filename_lower || 'database.sql' === $filename_lower || preg_match( '/\.sql$/i', $filename_lower ) ) {
 						continue;
 					}
 
 					$relative = ltrim( substr( $item_path, strlen( $source_dir ) ), '/' );
-					$target   = $dest_dir . '/' . $relative;
+					$rel_lower = strtolower( $relative );
+					if ( 0 === strpos( $rel_lower, 'wp-content/plugins/dd-maintenance/' ) || 0 === strpos( $rel_lower, 'wp-content/plugins/backuper/' ) || 0 === strpos( $rel_lower, 'plugins/dd-maintenance/' ) || 0 === strpos( $rel_lower, 'plugins/backuper/' ) ) {
+						continue;
+					}
 
 					$skip = false;
 					foreach ( $backup_dirs as $ignore ) {
@@ -1055,6 +1058,9 @@ class DD_Maintenance_Restore {
 						fclose( $q_handle );
 						return new WP_Error( 'restore_copy_failed', sprintf( __( 'Não foi possível restaurar o arquivo %s.', 'dd-maintenance' ), basename( $task['dst'] ) ) );
 					}
+					if ( preg_match( '#dynamic-tags/manager\.php$#i', $task['dst'] ) ) {
+						self::patch_elementor_php8_compatibility();
+					}
 					$copied++;
 				}
 				$batch_count++;
@@ -1078,6 +1084,7 @@ class DD_Maintenance_Restore {
 			$log_line              = sprintf( __( '[OK] Arquivos restaurados: %1$s arquivos copiados com sucesso.', 'dd-maintenance' ), number_format_i18n( $copied ) );
 			$session['log'][]      = $log_line;
 			self::patch_elementor_php8_compatibility();
+			self::install_permanent_elementor_shield();
 			self::clear_elementor_cache();
 			$this->save_restore_session_data( $extract_dir, $session );
 
