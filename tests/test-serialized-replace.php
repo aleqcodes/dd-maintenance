@@ -13,6 +13,7 @@ if ( ! defined( 'WP_CONTENT_DIR' ) ) {
 }
 
 function wp_normalize_path( $path ) { return str_replace( '\\', '/', (string) $path ); }
+function wp_mkdir_p( $path ) { return is_dir( $path ) || @mkdir( $path, 0777, true ); }
 function wp_json_encode( $val, $flags = 0 ) { return json_encode( $val, $flags ); }
 function size_format( $b ) { return $b . ' B'; }
 function __( $t ) { return $t; }
@@ -105,5 +106,39 @@ $fixed_elementor_data = DD_Maintenance_Restore::fix_elementor_dynamic_tags( $raw
 $decoded_fixed = json_decode( $fixed_elementor_data, true );
 assert( is_array( $decoded_fixed ), 'O JSON resultante deve ser 100% válido.' );
 assert( $decoded_fixed[0]['settings']['link']['url'] === '[elementor-tag id="a5a44c3" name="site-url" settings="%7B%7D"]', 'Tag dentro do JSON deve receber settings=%7B%7D.' );
+
+// 5. Testa substituição de URLs com barras escapadas (\/) em JSON e strings brutas
+$raw_escaped = 'http:\/\/localhost\/site1\/wp-content\/uploads\/banner.jpg';
+$replaced_escaped = DD_Maintenance_Restore::recursive_search_replace( $old_url, $new_url, $raw_escaped );
+assert( $replaced_escaped === 'https:\/\/meunovositeproducao.com.br\/wp-content\/uploads\/banner.jpg', 'URLs escapadas para JSON (\/) devem ser convertidas corretamente.' );
+
+// 6. Testa substituição de URLs codificadas (URL-encoded) em atributos
+$raw_encoded = rawurlencode( 'http://localhost/site1/pagina-exemplo' );
+$replaced_encoded = DD_Maintenance_Restore::recursive_search_replace( $old_url, $new_url, $raw_encoded );
+assert( $replaced_encoded === rawurlencode( 'https://meunovositeproducao.com.br/pagina-exemplo' ), 'URLs rawurlencoded devem ser substituídas no mesmo formato.' );
+
+// 7. Testa JSON com aspas escapadas (\") provenientes de dump direto no MySQL
+$slashed_json = '[{\"id\":\"sec1\",\"settings\":{\"image\":{\"url\":\"http:\\/\\/localhost\\/site1\\/foto.png\"}}}]';
+$replaced_slashed = DD_Maintenance_Restore::recursive_search_replace( $old_url, $new_url, $slashed_json );
+$decoded_slashed = json_decode( $replaced_slashed, true );
+assert( is_array( $decoded_slashed ), 'JSON com aspas escapadas deve ser recuperado e decodificado.' );
+assert( $decoded_slashed[0]['settings']['image']['url'] === 'https://meunovositeproducao.com.br/foto.png', 'A URL dentro do JSON com aspas escapadas deve ser atualizada.' );
+
+// 8. Testa mapa de substituição de URLs
+$map = DD_Maintenance_Restore::build_url_replacement_map( 'http://oldsite.com:8080/sub', 'https://newsite.com' );
+assert( isset( $map['https:\/\/oldsite.com:8080\/sub'] ), 'Mapa deve conter versão https escapada.' );
+assert( isset( $map['http:\/\/oldsite.com:8080\/sub'] ), 'Mapa deve conter versão http escapada.' );
+assert( isset( $map['https://oldsite.com:8080/sub'] ), 'Mapa deve conter versão https normal.' );
+assert( isset( $map['http://oldsite.com:8080/sub'] ), 'Mapa deve conter versão http normal.' );
+
+// 9. Testa limpeza de cache do Elementor em disco
+$css_dir = WP_CONTENT_DIR . '/uploads/elementor/css';
+wp_mkdir_p( $css_dir );
+file_put_contents( $css_dir . '/post-12.css', 'body{background:red;}' );
+file_put_contents( $css_dir . '/global.css', ':root{--color:blue;}' );
+assert( file_exists( $css_dir . '/post-12.css' ), 'Arquivo CSS deve existir antes da limpeza.' );
+DD_Maintenance_Restore::clear_elementor_cache();
+assert( ! file_exists( $css_dir . '/post-12.css' ), 'Arquivo CSS post-12.css deve ter sido excluído.' );
+assert( ! file_exists( $css_dir . '/global.css' ), 'Arquivo global.css deve ter sido excluído.' );
 
 echo "Todos os testes de Search & Replace serializado e Elementor passaram com 100% de sucesso!\n";

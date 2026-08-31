@@ -867,6 +867,10 @@ class DD_Maintenance_Restore {
 			// 6. Atualiza URLs de links e assets no banco e higieniza dados do Elementor
 			if ( ! empty( $old_siteurl ) && ! empty( $target_siteurl ) ) {
 				$this->perform_url_search_replace( $old_siteurl, $target_siteurl, $dump_prefix );
+			} else {
+				self::ensure_elementor_active_kit( $dump_prefix );
+				self::rebuild_elementor_theme_builder_conditions( $dump_prefix );
+				self::clear_elementor_cache( $dump_prefix );
 			}
 
 			if ( function_exists( 'wp_cache_flush' ) ) {
@@ -1074,6 +1078,7 @@ class DD_Maintenance_Restore {
 			$log_line              = sprintf( __( '[OK] Arquivos restaurados: %1$s arquivos copiados com sucesso.', 'dd-maintenance' ), number_format_i18n( $copied ) );
 			$session['log'][]      = $log_line;
 			self::patch_elementor_php8_compatibility();
+			self::clear_elementor_cache();
 			$this->save_restore_session_data( $extract_dir, $session );
 
 			return array(
@@ -1112,6 +1117,9 @@ class DD_Maintenance_Restore {
 		$temp_upload_dir = $session['temp_upload_dir'];
 		self::patch_elementor_php8_compatibility();
 		self::install_permanent_elementor_shield();
+		self::ensure_elementor_active_kit();
+		self::rebuild_elementor_theme_builder_conditions();
+		self::clear_elementor_cache();
 
 
 		$this->delete_directory( $extract_dir );
@@ -1803,6 +1811,61 @@ class DD_Maintenance_Restore {
 		}
 	}
 	/**
+	 * Constrói um mapa completo de variações de URL (normal, escapada para JSON, urlencoded, esquemas)
+	 * para garantir substituição 100% precisa em todos os tipos de dados do WordPress e Elementor.
+	 *
+	 * @param string $from_url URL de origem.
+	 * @param string $to_url   URL de destino.
+	 * @return array
+	 */
+	public static function build_url_replacement_map( string $from_url, string $to_url ): array {
+		$from_url = rtrim( trim( $from_url ), '/' );
+		$to_url   = rtrim( trim( $to_url ), '/' );
+		if ( empty( $from_url ) || empty( $to_url ) || $from_url === $to_url ) {
+			return array();
+		}
+
+		$from_no_proto = preg_replace( '#^https?:?//#i', '', $from_url );
+		$to_no_proto   = preg_replace( '#^https?:?//#i', '', $to_url );
+
+		$is_to_ssl = ( 0 === stripos( $to_url, 'https://' ) );
+
+		$map = array();
+
+		// 1. URLs escapadas para JSON (\/)
+		$from_esc_https = 'https:\/\/' . str_replace( '/', '\/', $from_no_proto );
+		$from_esc_http  = 'http:\/\/' . str_replace( '/', '\/', $from_no_proto );
+		$from_esc_proto = '\/\/' . str_replace( '/', '\/', $from_no_proto );
+
+		$to_esc_target = ( $is_to_ssl ? 'https:\/\/' : 'http:\/\/' ) . str_replace( '/', '\/', $to_no_proto );
+		$to_esc_proto  = '\/\/' . str_replace( '/', '\/', $to_no_proto );
+
+		$map[ $from_esc_https ] = $to_esc_target;
+		$map[ $from_esc_http ]  = $to_esc_target;
+		$map[ $from_esc_proto ] = $to_esc_proto;
+
+		// 2. URLs codificadas (URL-encoded para tags dinâmicas e atributos de widgets)
+		$map[ rawurlencode( 'https://' . $from_no_proto ) ] = rawurlencode( $is_to_ssl ? 'https://' . $to_no_proto : 'http://' . $to_no_proto );
+		$map[ rawurlencode( 'http://' . $from_no_proto ) ]  = rawurlencode( $is_to_ssl ? 'https://' . $to_no_proto : 'http://' . $to_no_proto );
+		$map[ urlencode( 'https://' . $from_no_proto ) ]    = urlencode( $is_to_ssl ? 'https://' . $to_no_proto : 'http://' . $to_no_proto );
+		$map[ urlencode( 'http://' . $from_no_proto ) ]     = urlencode( $is_to_ssl ? 'https://' . $to_no_proto : 'http://' . $to_no_proto );
+		$map[ rawurlencode( '//' . $from_no_proto ) ]       = rawurlencode( '//' . $to_no_proto );
+		$map[ urlencode( '//' . $from_no_proto ) ]          = urlencode( '//' . $to_no_proto );
+
+		// 3. URLs normais completas
+		$map[ 'https://' . $from_no_proto ] = $is_to_ssl ? 'https://' . $to_no_proto : 'http://' . $to_no_proto;
+		$map[ 'http://' . $from_no_proto ]  = $is_to_ssl ? 'https://' . $to_no_proto : 'http://' . $to_no_proto;
+		$map[ '//' . $from_no_proto ]       = '//' . $to_no_proto;
+
+		// Ordena por comprimento decrescente para priorizar padrões mais específicos
+		uksort( $map, static function( $a, $b ) {
+			return strlen( $b ) <=> strlen( $a );
+		} );
+
+		return $map;
+	}
+
+	/**
 	 * Normaliza tags dinâmicas do Elementor para garantir compatibilidade estrita com PHP 8.0+.
 	 * Se o atributo settings="" estiver ausente, vazio ou inválido, insere settings="%7B%7D"
 	 * para que o json_decode retorne array vazio em vez de null.
@@ -1815,8 +1878,13 @@ class DD_Maintenance_Restore {
 			return $content;
 		}
 
-		if ( 0 === strpos( $content, '{' ) || 0 === strpos( $content, '[' ) ) {
-			$json = json_decode( $content, true );
+		$trimmed = trim( $content );
+		if ( '' !== $trimmed && ( '{' === $trimmed[0] || '[' === $trimmed[0] ) ) {
+			$json = json_decode( $trimmed, true );
+			if ( null === $json && JSON_ERROR_NONE !== json_last_error() ) {
+				$unslashed = stripslashes( $trimmed );
+				$json      = json_decode( $unslashed, true );
+			}
 			if ( null !== $json && JSON_ERROR_NONE === json_last_error() ) {
 				array_walk_recursive( $json, static function( &$item ) {
 					if ( is_string( $item ) && false !== strpos( $item, '[elementor-tag' ) ) {
@@ -1845,8 +1913,9 @@ class DD_Maintenance_Restore {
 				$q          = $is_escaped ? '\"' : '"';
 
 				if ( preg_match( '/\bsettings\s*=\s*(?:\\\\"([^\\\\"]*)\\\\"|"([^"]*)")/i', $attrs_str, $sm ) ) {
-					$val = isset( $sm[2] ) && '' !== $sm[2] ? $sm[2] : ( $sm[1] ?? '' );
-					if ( '' !== trim( $val ) && '%22%22' !== $val && 'null' !== strtolower( trim( $val ) ) ) {
+					$val      = isset( $sm[2] ) && '' !== $sm[2] ? $sm[2] : ( $sm[1] ?? '' );
+					$val_trim = trim( $val );
+					if ( '' !== $val_trim && '%22%22' !== $val_trim && 'null' !== strtolower( $val_trim ) && '%7B%7D' !== $val_trim ) {
 						return $matches[0];
 					}
 				}
@@ -1860,54 +1929,70 @@ class DD_Maintenance_Restore {
 		);
 	}
 
-
 	/**
 	 * Realiza Search & Replace recursivo seguro com suporte a strings serializadas PHP e JSON.
 	 *
-	 * @param string $from Texto de busca.
-	 * @param string $to   Texto de substituição.
-	 * @param mixed  $data Dado a ser processado.
+	 * @param mixed $from           Texto de busca ou mapa associativo [de => para].
+	 * @param string $to            Texto de substituição (se $from for string).
+	 * @param mixed  $data          Dado a ser processado.
 	 * @param bool   $was_serialized Indica se o dado original era serializado.
 	 * @return mixed
 	 */
 	public static function recursive_search_replace( $from, $to, $data, bool $was_serialized = false ) {
-		if ( empty( $from ) || $from === $to ) {
-			return $data;
+		if ( is_array( $from ) ) {
+			$map = $from;
+		} else {
+			if ( empty( $from ) || $from === $to ) {
+				return is_string( $data ) ? self::fix_elementor_dynamic_tags( $data ) : $data;
+			}
+			$map = self::build_url_replacement_map( (string) $from, (string) $to );
+			if ( empty( $map ) ) {
+				$map = array( (string) $from => (string) $to );
+			}
 		}
 
 		try {
 			if ( is_string( $data ) ) {
+				$trimmed = trim( $data );
+				if ( '' === $trimmed ) {
+					return $data;
+				}
+
 				// 1. String PHP serializada
-				if ( ( 0 === strpos( $data, 'a:' ) || 0 === strpos( $data, 's:' ) || 0 === strpos( $data, 'O:' ) ) && false === strpos( $data, 'O:8:"DateTime":0:{}' ) ) {
+				if ( ( 0 === strpos( $trimmed, 'a:' ) || 0 === strpos( $trimmed, 's:' ) || 0 === strpos( $trimmed, 'O:' ) ) && false === strpos( $trimmed, 'O:8:"DateTime":0:{}' ) ) {
 					$unserialized = @unserialize( $data, array( 'allowed_classes' => false ) );
 					if ( false === $unserialized && 'b:0;' !== $data ) {
 						$unserialized = @unserialize( $data );
 					}
 					if ( false !== $unserialized || 'b:0;' === $data ) {
-						$replaced = self::recursive_search_replace( $from, $to, $unserialized, true );
+						$replaced = self::recursive_search_replace( $map, '', $unserialized, true );
 						return serialize( $replaced );
 					}
 				}
 
-				// 2. String JSON (Elementor _elementor_data, Gutenberg)
-				if ( 0 === strpos( $data, '{' ) || 0 === strpos( $data, '[' ) ) {
-					$json = json_decode( $data, true );
+				// 2. String JSON (Elementor _elementor_data, _elementor_page_settings, Gutenberg)
+				if ( '{' === $trimmed[0] || '[' === $trimmed[0] ) {
+					$json = json_decode( $trimmed, true );
+					if ( null === $json && JSON_ERROR_NONE !== json_last_error() ) {
+						$unslashed = stripslashes( $trimmed );
+						$json      = json_decode( $unslashed, true );
+					}
 					if ( null !== $json && JSON_ERROR_NONE === json_last_error() ) {
-						$replaced = self::recursive_search_replace( $from, $to, $json, false );
+						$replaced = self::recursive_search_replace( $map, '', $json, false );
 						return wp_json_encode( $replaced, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 					}
 				}
 
-				// 3. String simples
-				$replaced = str_replace( $from, $to, $data );
+				// 3. String simples (substituição via mapa de pares)
+				$replaced = str_replace( array_keys( $map ), array_values( $map ), $data );
 				return self::fix_elementor_dynamic_tags( $replaced );
 			}
 
 			if ( is_array( $data ) ) {
 				$new_array = array();
 				foreach ( $data as $key => $val ) {
-					$new_key               = is_string( $key ) ? str_replace( $from, $to, $key ) : $key;
-					$new_array[ $new_key ] = self::recursive_search_replace( $from, $to, $val, false );
+					$new_key               = is_string( $key ) ? str_replace( array_keys( $map ), array_values( $map ), $key ) : $key;
+					$new_array[ $new_key ] = self::recursive_search_replace( $map, '', $val, false );
 				}
 				return $new_array;
 			}
@@ -1915,11 +2000,11 @@ class DD_Maintenance_Restore {
 			if ( is_object( $data ) ) {
 				$new_obj = clone $data;
 				foreach ( get_object_vars( $data ) as $prop => $val ) {
-					$new_obj->$prop = self::recursive_search_replace( $from, $to, $val, false );
+					$new_obj->$prop = self::recursive_search_replace( $map, '', $val, false );
 				}
 				return $new_obj;
 			}
-		} catch ( Exception $e ) {
+		} catch ( Throwable $e ) {
 			return $data;
 		}
 
@@ -1937,10 +2022,11 @@ class DD_Maintenance_Restore {
 	private function perform_url_search_replace( string $from_url, string $to_url, string $dump_prefix ): void {
 		global $wpdb;
 
-		$from_url       = rtrim( $from_url, '/' );
-		$to_url         = rtrim( $to_url, '/' );
+		$from_url       = rtrim( trim( $from_url ), '/' );
+		$to_url         = rtrim( trim( $to_url ), '/' );
+		$replace_map    = self::build_url_replacement_map( $from_url, $to_url );
 		$from_escaped   = str_replace( '/', '\/', $from_url );
-		$to_escaped     = str_replace( '/', '\/', $to_url );
+		$from_no_proto  = preg_replace( '#^https?:?//#i', '', $from_url );
 		$posts_table    = $dump_prefix . 'posts';
 		$postmeta_table = $dump_prefix . 'postmeta';
 		$options_table  = $dump_prefix . 'options';
@@ -1965,17 +2051,17 @@ class DD_Maintenance_Restore {
 				$guid         = $prow['guid'];
 				$changed      = false;
 
-				if ( $from_url !== $to_url ) {
-					if ( is_string( $content ) && ( false !== strpos( $content, $from_url ) || false !== strpos( $content, $from_escaped ) ) ) {
-						$content = str_replace( array( $from_url, $from_escaped ), array( $to_url, $to_escaped ), $content );
+				if ( ! empty( $replace_map ) ) {
+					if ( is_string( $content ) && ( false !== strpos( $content, $from_url ) || false !== strpos( $content, $from_escaped ) || false !== strpos( $content, $from_no_proto ) ) ) {
+						$content = str_replace( array_keys( $replace_map ), array_values( $replace_map ), $content );
 						$changed = true;
 					}
-					if ( is_string( $excerpt ) && false !== strpos( $excerpt, $from_url ) ) {
-						$excerpt = str_replace( $from_url, $to_url, $excerpt );
+					if ( is_string( $excerpt ) && ( false !== strpos( $excerpt, $from_url ) || false !== strpos( $excerpt, $from_no_proto ) ) ) {
+						$excerpt = str_replace( array_keys( $replace_map ), array_values( $replace_map ), $excerpt );
 						$changed = true;
 					}
-					if ( is_string( $guid ) && false !== strpos( $guid, $from_url ) ) {
-						$guid    = str_replace( $from_url, $to_url, $guid );
+					if ( is_string( $guid ) && ( false !== strpos( $guid, $from_url ) || false !== strpos( $guid, $from_no_proto ) ) ) {
+						$guid    = str_replace( array_keys( $replace_map ), array_values( $replace_map ), $guid );
 						$changed = true;
 					}
 				}
@@ -2010,10 +2096,11 @@ class DD_Maintenance_Restore {
 		while ( true ) {
 			$meta_rows = $wpdb->get_results(
 				$wpdb->prepare(
-					"SELECT `meta_id`, `meta_key`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_id` > %d AND (`meta_key` IN ('_elementor_data', '_elementor_page_settings', '_elementor_controls_usage') OR `meta_value` LIKE %s OR `meta_value` LIKE %s OR `meta_value` LIKE %s) ORDER BY `meta_id` ASC LIMIT 100",
+					"SELECT `meta_id`, `meta_key`, `meta_value` FROM `{$postmeta_table}` WHERE `meta_id` > %d AND (`meta_key` IN ('_elementor_data', '_elementor_page_settings', '_elementor_controls_usage', '_elementor_conditions') OR `meta_value` LIKE %s OR `meta_value` LIKE %s OR `meta_value` LIKE %s OR `meta_value` LIKE %s) ORDER BY `meta_id` ASC LIMIT 100",
 					$last_meta_id,
 					'%' . $wpdb->esc_like( $from_url ) . '%',
 					'%' . $wpdb->esc_like( $from_escaped ) . '%',
+					'%' . $wpdb->esc_like( $from_no_proto ) . '%',
 					'%[elementor-tag%'
 				),
 				ARRAY_A
@@ -2028,8 +2115,8 @@ class DD_Maintenance_Restore {
 					continue;
 				}
 				$fixed_val = $orig_val;
-				if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
-					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+				if ( ! empty( $replace_map ) && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) || false !== strpos( $orig_val, $from_no_proto ) ) ) {
+					$fixed_val = self::recursive_search_replace( $replace_map, '', $orig_val );
 				}
 				$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
 				if ( $fixed_val !== $orig_val ) {
@@ -2046,11 +2133,12 @@ class DD_Maintenance_Restore {
 		while ( true ) {
 			$opt_rows = $wpdb->get_results(
 				$wpdb->prepare(
-					"SELECT `option_id`, `option_name`, `option_value` FROM `{$options_table}` WHERE `option_id` > %d AND `option_name` NOT IN ('siteurl', 'home') AND (`option_name` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s) ORDER BY `option_id` ASC LIMIT 100",
+					"SELECT `option_id`, `option_name`, `option_value` FROM `{$options_table}` WHERE `option_id` > %d AND `option_name` NOT IN ('siteurl', 'home') AND (`option_name` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s OR `option_value` LIKE %s) ORDER BY `option_id` ASC LIMIT 100",
 					$last_opt_id,
 					'%elementor%',
 					'%' . $wpdb->esc_like( $from_url ) . '%',
 					'%' . $wpdb->esc_like( $from_escaped ) . '%',
+					'%' . $wpdb->esc_like( $from_no_proto ) . '%',
 					'%[elementor-tag%'
 				),
 				ARRAY_A
@@ -2065,8 +2153,8 @@ class DD_Maintenance_Restore {
 					continue;
 				}
 				$fixed_val = $orig_val;
-				if ( $from_url !== $to_url && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) ) ) {
-					$fixed_val = self::recursive_search_replace( $from_url, $to_url, $orig_val );
+				if ( ! empty( $replace_map ) && ( false !== strpos( $orig_val, $from_url ) || false !== strpos( $orig_val, $from_escaped ) || false !== strpos( $orig_val, $from_no_proto ) ) ) {
+					$fixed_val = self::recursive_search_replace( $replace_map, '', $orig_val );
 				}
 				$fixed_val = self::fix_elementor_dynamic_tags( $fixed_val );
 				if ( $fixed_val !== $orig_val ) {
@@ -2078,17 +2166,223 @@ class DD_Maintenance_Restore {
 			}
 		}
 
-		// 4. Limpa caches antigos do Elementor no banco e em disco para forçar regeneração limpa
-		$wpdb->query( "DELETE FROM `{$postmeta_table}` WHERE `meta_key` IN ('_elementor_css', '_elementor_element_cache', '_elementor_inline_svg')" );
-		$wpdb->query( "DELETE FROM `{$options_table}` WHERE `option_name` LIKE '%_elementor_%' AND `option_name` LIKE '%_transient_%'" );
-
-		$elementor_css_dir = WP_CONTENT_DIR . '/uploads/elementor/css';
-		if ( is_dir( $elementor_css_dir ) ) {
-			$css_files = glob( $elementor_css_dir . '/*.css' );
-			if ( ! empty( $css_files ) ) {
-				foreach ( $css_files as $cf ) {
-					@unlink( $cf );
+		// 4. Termmeta e Usermeta (caso existam)
+		$termmeta_table = $dump_prefix . 'termmeta';
+		if ( $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $termmeta_table ) ) && ! empty( $replace_map ) ) {
+			$last_tm_id = 0;
+			while ( true ) {
+				$tm_rows = $wpdb->get_results(
+					$wpdb->prepare(
+						"SELECT `meta_id`, `meta_value` FROM `{$termmeta_table}` WHERE `meta_id` > %d AND (`meta_value` LIKE %s OR `meta_value` LIKE %s) ORDER BY `meta_id` ASC LIMIT 100",
+						$last_tm_id,
+						'%' . $wpdb->esc_like( $from_url ) . '%',
+						'%' . $wpdb->esc_like( $from_escaped ) . '%'
+					),
+					ARRAY_A
+				);
+				if ( empty( $tm_rows ) || ! is_array( $tm_rows ) ) {
+					break;
 				}
+				foreach ( $tm_rows as $trow ) {
+					$last_tm_id = (int) $trow['meta_id'];
+					$orig_val   = $trow['meta_value'];
+					if ( is_string( $orig_val ) && '' !== $orig_val ) {
+						$fixed_val = self::recursive_search_replace( $replace_map, '', $orig_val );
+						if ( $fixed_val !== $orig_val ) {
+							$wpdb->query( $wpdb->prepare( "UPDATE `{$termmeta_table}` SET `meta_value` = %s WHERE `meta_id` = %d", $fixed_val, (int) $trow['meta_id'] ) );
+						}
+					}
+				}
+				if ( count( $tm_rows ) < 100 ) {
+					break;
+				}
+			}
+		}
+
+		// 5. Garante integridade do Elementor Kit, Theme Builder e limpa caches
+		self::ensure_elementor_active_kit( $dump_prefix );
+		self::rebuild_elementor_theme_builder_conditions( $dump_prefix );
+		self::clear_elementor_cache( $dump_prefix );
+	}
+
+	/**
+	 * Verifica e repara o Elementor Kit Ativo (elementor_active_kit) no banco restaurado.
+	 * Se o kit ativo estiver ausente, corrompido ou despublicado, restaura a referência correta
+	 * para evitar que o Elementor reinicialize um kit em branco perdendo todas as fontes e cores.
+	 *
+	 * @param string $dump_prefix Prefixo das tabelas.
+	 * @return void
+	 */
+	public static function ensure_elementor_active_kit( string $dump_prefix = '' ): void {
+		global $wpdb;
+
+		if ( empty( $dump_prefix ) && isset( $wpdb->prefix ) ) {
+			$dump_prefix = $wpdb->prefix;
+		}
+
+		$options_table  = $dump_prefix . 'options';
+		$posts_table    = $dump_prefix . 'posts';
+		$postmeta_table = $dump_prefix . 'postmeta';
+
+		if ( ! $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $options_table ) ) ) {
+			return;
+		}
+
+		$kit_id    = (int) $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'elementor_active_kit' LIMIT 1" );
+		$valid_kit = false;
+
+		if ( $kit_id > 0 ) {
+			$post = $wpdb->get_row( $wpdb->prepare( "SELECT `ID`, `post_status` FROM `{$posts_table}` WHERE `ID` = %d AND `post_type` = 'elementor_library' LIMIT 1", $kit_id ) );
+			if ( $post ) {
+				$valid_kit = true;
+				if ( 'publish' !== $post->post_status ) {
+					$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_status` = 'publish' WHERE `ID` = %d", $kit_id ) );
+				}
+			}
+		}
+
+		if ( ! $valid_kit ) {
+			$found_kit_id = (int) $wpdb->get_var(
+				"SELECT p.`ID` FROM `{$posts_table}` p
+				 INNER JOIN `{$postmeta_table}` pm ON p.`ID` = pm.`post_id`
+				 WHERE p.`post_type` = 'elementor_library' AND pm.`meta_key` = '_elementor_template_type' AND pm.`meta_value` = 'kit'
+				 ORDER BY p.`ID` DESC LIMIT 1"
+			);
+
+			if ( ! $found_kit_id ) {
+				$found_kit_id = (int) $wpdb->get_var(
+					"SELECT `ID` FROM `{$posts_table}`
+					 WHERE `post_type` = 'elementor_library' AND (`post_title` LIKE '%Kit%' OR `post_name` LIKE '%kit%')
+					 ORDER BY `ID` DESC LIMIT 1"
+				);
+			}
+
+			if ( $found_kit_id > 0 ) {
+				$wpdb->query( $wpdb->prepare( "UPDATE `{$posts_table}` SET `post_status` = 'publish' WHERE `ID` = %d", $found_kit_id ) );
+				$wpdb->query( $wpdb->prepare( "INSERT INTO `{$options_table}` (`option_name`, `option_value`, `autoload`) VALUES ('elementor_active_kit', %s, 'yes') ON DUPLICATE KEY UPDATE `option_value` = %s", (string) $found_kit_id, (string) $found_kit_id ) );
+
+				$has_type = $wpdb->get_var( $wpdb->prepare( "SELECT `meta_id` FROM `{$postmeta_table}` WHERE `post_id` = %d AND `meta_key` = '_elementor_template_type' LIMIT 1", $found_kit_id ) );
+				if ( ! $has_type ) {
+					$wpdb->query( $wpdb->prepare( "INSERT INTO `{$postmeta_table}` (`post_id`, `meta_key`, `meta_value`) VALUES (%d, '_elementor_template_type', 'kit')", $found_kit_id ) );
+				}
+
+				$has_mode = $wpdb->get_var( $wpdb->prepare( "SELECT `meta_id` FROM `{$postmeta_table}` WHERE `post_id` = %d AND `meta_key` = '_elementor_edit_mode' LIMIT 1", $found_kit_id ) );
+				if ( ! $has_mode ) {
+					$wpdb->query( $wpdb->prepare( "INSERT INTO `{$postmeta_table}` (`post_id`, `meta_key`, `meta_value`) VALUES (%d, '_elementor_edit_mode', 'builder')", $found_kit_id ) );
+				}
+			}
+		}
+	}
+
+	/**
+	 * Reconstrói as condições globais de Header, Footer e Templates do Theme Builder do Elementor Pro / Pro Elements
+	 * caso o array serializado na tabela options tenha sido perdido na restauração.
+	 *
+	 * @param string $dump_prefix Prefixo das tabelas.
+	 * @return void
+	 */
+	public static function rebuild_elementor_theme_builder_conditions( string $dump_prefix = '' ): void {
+		global $wpdb;
+
+		if ( empty( $dump_prefix ) && isset( $wpdb->prefix ) ) {
+			$dump_prefix = $wpdb->prefix;
+		}
+
+		$options_table  = $dump_prefix . 'options';
+		$postmeta_table = $dump_prefix . 'postmeta';
+
+		if ( ! $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $options_table ) ) ) {
+			return;
+		}
+
+		$current_opt = $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'elementor_pro_theme_builder_conditions' LIMIT 1" );
+		$current_val = is_string( $current_opt ) ? @unserialize( $current_opt ) : null;
+
+		if ( empty( $current_val ) || ! is_array( $current_val ) ) {
+			$condition_rows = $wpdb->get_results(
+				"SELECT pm.`post_id`, pm.`meta_value` as `conditions`, pt.`meta_value` as `template_type`
+				 FROM `{$postmeta_table}` pm
+				 LEFT JOIN `{$postmeta_table}` pt ON pm.`post_id` = pt.`post_id` AND pt.`meta_key` = '_elementor_template_type'
+				 WHERE pm.`meta_key` = '_elementor_conditions'",
+				ARRAY_A
+			);
+
+			if ( ! empty( $condition_rows ) && is_array( $condition_rows ) ) {
+				$rebuilt = array();
+				foreach ( $condition_rows as $crow ) {
+					$cond = @unserialize( $crow['conditions'] );
+					if ( is_array( $cond ) && ! empty( $cond ) ) {
+						$type = ! empty( $crow['template_type'] ) ? $crow['template_type'] : 'single';
+						if ( ! isset( $rebuilt[ $type ] ) ) {
+							$rebuilt[ $type ] = array();
+						}
+						$rebuilt[ $type ][ (int) $crow['post_id'] ] = $cond;
+					}
+				}
+				if ( ! empty( $rebuilt ) ) {
+					$serialized = serialize( $rebuilt );
+					$wpdb->query( $wpdb->prepare( "INSERT INTO `{$options_table}` (`option_name`, `option_value`, `autoload`) VALUES ('elementor_pro_theme_builder_conditions', %s, 'yes') ON DUPLICATE KEY UPDATE `option_value` = %s", $serialized, $serialized ) );
+				}
+			}
+		}
+	}
+
+	/**
+	 * Limpa todos os caches compilados de CSS e metadados do Elementor para forçar regeneração limpa com novas URLs.
+	 *
+	 * @param string $dump_prefix Prefixo das tabelas.
+	 * @return void
+	 */
+	public static function clear_elementor_cache( string $dump_prefix = '' ): void {
+		global $wpdb;
+
+		if ( empty( $dump_prefix ) && isset( $wpdb->prefix ) ) {
+			$dump_prefix = $wpdb->prefix;
+		}
+
+		if ( ! empty( $dump_prefix ) && isset( $wpdb ) && is_object( $wpdb ) ) {
+			$options_table  = $dump_prefix . 'options';
+			$postmeta_table = $dump_prefix . 'postmeta';
+
+			if ( $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $postmeta_table ) ) ) {
+				// 1. Limpa metadados de CSS compilado e cache de elementos nos posts
+				$wpdb->query( "DELETE FROM `{$postmeta_table}` WHERE `meta_key` IN ('_elementor_css', '_elementor_element_cache', '_elementor_inline_svg', '_elementor_page_assets')" );
+			}
+
+			if ( $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $options_table ) ) ) {
+				// 2. Limpa transients e opções de cache do Elementor
+				$wpdb->query( "DELETE FROM `{$options_table}` WHERE `option_name` LIKE '%_elementor_%' AND (`option_name` LIKE '%_transient_%' OR `option_name` LIKE '%_cache%')" );
+				$wpdb->query( "DELETE FROM `{$options_table}` WHERE `option_name` IN ('_elementor_global_css', '_elementor_assets_data', 'elementor_remote_info_library')" );
+
+				// 3. Força atualização do timestamp global de CSS do Elementor
+				$now = (string) time();
+				$wpdb->query( $wpdb->prepare( "INSERT INTO `{$options_table}` (`option_name`, `option_value`, `autoload`) VALUES ('elementor_global_css_time', %s, 'yes') ON DUPLICATE KEY UPDATE `option_value` = %s", $now, $now ) );
+				$wpdb->query( $wpdb->prepare( "INSERT INTO `{$options_table}` (`option_name`, `option_value`, `autoload`) VALUES ('elementor_css_version', %s, 'yes') ON DUPLICATE KEY UPDATE `option_value` = %s", $now, $now ) );
+			}
+		}
+
+		// 4. Exclui todos os arquivos .css em wp-content/uploads/elementor/css/
+		$upload_dir_base = defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR . '/uploads' : ( defined( 'ABSPATH' ) ? ABSPATH . 'wp-content/uploads' : '' );
+		if ( ! empty( $upload_dir_base ) ) {
+			$css_dir = $upload_dir_base . '/elementor/css';
+			if ( is_dir( $css_dir ) ) {
+				$files = glob( $css_dir . '/*.css' );
+				if ( is_array( $files ) ) {
+					foreach ( $files as $f ) {
+						if ( is_file( $f ) ) {
+							@unlink( $f );
+						}
+					}
+				}
+			}
+		}
+
+		// 5. Se o Elementor estiver ativo na memória do PHP, invoca o Files_Manager do próprio plugin
+		if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
+			try {
+				\Elementor\Plugin::$instance->files_manager->clear_cache();
+			} catch ( Throwable $e ) {
+				// Suprime silenciosamente caso o Elementor não esteja pronto
 			}
 		}
 	}
