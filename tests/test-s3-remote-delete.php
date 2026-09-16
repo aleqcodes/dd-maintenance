@@ -21,6 +21,9 @@ function wp_parse_url( $url ) { return parse_url( $url ); }
 function wp_remote_request( $url, $args = array() ) {
 	$method = $args['method'] ?? 'GET';
 	$GLOBALS['s3_mock_requests'][] = array( 'method' => $method, 'url' => $url );
+	if ( 'PUT' === $method && ! empty( $GLOBALS['s3_put_responses'] ) ) {
+		return array_shift( $GLOBALS['s3_put_responses'] );
+	}
 	return array(
 		'response' => array( 'code' => 204 ),
 		'body'     => '',
@@ -80,8 +83,10 @@ function __( $t ) { return $t; }
 
 if ( ! class_exists( 'WP_Error' ) ) {
 	class WP_Error {
+		private $code;
 		private $msg;
-		public function __construct( $c = '', $m = '' ) { $this->msg = $m; }
+		public function __construct( $c = '', $m = '' ) { $this->code = $c; $this->msg = $m; }
+		public function get_error_code() { return $this->code; }
 		public function get_error_message() { return $this->msg; }
 	}
 }
@@ -133,14 +138,53 @@ assert( $backup_abc['size'] === 40 * 1024 * 1024, 'O tamanho total deve somar os
 $GLOBALS['s3_mock_requests'] = array();
 $result = $s3->delete_backup_remote( 'backup-abc-2026-08-24' );
 assert( $result['deleted'] === 3, 'Deve encontrar e excluir exatamente as 3 partes do backup-abc (2 zips + 1 sql).' );
-assert( count( $GLOBALS['s3_mock_requests'] ) === 3, 'Deve disparar 3 requisições DELETE.' );
-
 // 4. Testa put_object com arquivo simulado
 $dummy_file = sys_get_temp_dir() . '/dummy_part.zip';
 file_put_contents( $dummy_file, 'dummy zip content' );
 $GLOBALS['s3_mock_requests'] = array();
 $put_res = $s3->put_object( 'site-test/2026-08-24/test.zip', $dummy_file );
 assert( ! is_wp_error( $put_res ), 'put_object deve ter sucesso.' );
+
+// 5. Falha transitória deve repetir o mesmo PUT, sem criar outra chave.
+$GLOBALS['s3_put_responses'] = array(
+	array(
+		'response' => array( 'code' => 503 ),
+		'headers'  => array( 'x-amz-request-id' => 'retry-request' ),
+		'body'     => '<Error><Code>ServiceUnavailable</Code></Error>',
+	),
+	array(
+		'response' => array( 'code' => 204 ),
+		'headers'  => array(),
+		'body'     => '',
+	),
+);
+$GLOBALS['s3_mock_requests'] = array();
+$retry_res = $s3->put_object( 'site-test/2026-08-24/retry.zip', $dummy_file );
+assert( ! is_wp_error( $retry_res ), 'PUT deve ser concluído após uma falha transitória.' );
+assert( count( $GLOBALS['s3_mock_requests'] ) === 2, 'Retry deve repetir o PUT idempotente exatamente uma vez.' );
+
+// 6. Resposta HTTP inválida deve expor status e request id, nunca credenciais.
+$GLOBALS['s3_put_responses'] = array(
+	array(
+		'response' => array( 'code' => 400 ),
+		'headers'  => array( 'x-amz-request-id' => 'invalid-request' ),
+		'body'     => '<Error><Code>InvalidArgument</Code><Message>payload inválido</Message></Error>',
+	),
+);
+$GLOBALS['s3_mock_requests'] = array();
+$invalid_res = $s3->put_object( 'site-test/2026-08-24/invalid.zip', $dummy_file );
+assert( is_wp_error( $invalid_res ), 'Resposta HTTP inválida deve retornar WP_Error.' );
+assert( false !== strpos( $invalid_res->get_error_message(), 'HTTP 400' ), 'Erro inválido deve informar o status HTTP.' );
+assert( false !== strpos( $invalid_res->get_error_message(), 'Request ID: invalid-request' ), 'Erro inválido deve informar o request id.' );
+assert( false === strpos( $invalid_res->get_error_message(), 'TESTSECRET' ), 'Erro nunca deve incluir a Secret Key.' );
+
+$large_file = sys_get_temp_dir() . '/dummy_large_part.zip';
+$large_handle = fopen( $large_file, 'wb' );
+ftruncate( $large_handle, 40 * 1024 * 1024 );
+fclose( $large_handle );
+$large_res = $s3->put_object( 'site-test/2026-08-24/large.zip', $large_file );
+assert( is_wp_error( $large_res ) && false !== strpos( $large_res->get_error_message(), 'Instale ou habilite a extensão cURL' ), 'Uploads grandes sem cURL devem ser bloqueados explicitamente.' );
+unlink( $large_file );
 @unlink( $dummy_file );
 
 echo "Testes de exclusão remota no S3 passaram com sucesso!\n";

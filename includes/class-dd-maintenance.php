@@ -6,6 +6,11 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
+require_once __DIR__ . '/class-dd-maintenance-cron-job-store.php';
+require_once __DIR__ . '/class-dd-maintenance-elementor-compatibility.php';
+
+
 
 class DD_Maintenance {
 
@@ -15,6 +20,34 @@ class DD_Maintenance {
 	 * @var DD_Maintenance|null
 	 */
 	private static $instance = null;
+	/**
+	 * Repositório de configurações.
+	 *
+	 * @var DD_Maintenance_Settings_Repository
+	 */
+	private $settings_repository;
+
+	/**
+	 * Persistência do job agendado.
+	 *
+	 * @var DD_Maintenance_Cron_Job_Store
+	 */
+	private $cron_job_store;
+	/**
+	 * Caso de uso de backup.
+	 *
+	 * @var DD_Maintenance_Backup_Workflow
+	 */
+	private $backup_workflow;
+
+
+	/**
+	 * Caso de uso do cron.
+	 *
+	 * @var DD_Maintenance_Cron_Workflow
+	 */
+	private $cron_workflow;
+
 
 	/**
 	 * Retorna a instância única.
@@ -32,6 +65,14 @@ class DD_Maintenance {
 	 * Construtor.
 	 */
 	private function __construct() {
+		require_once __DIR__ . '/class-dd-maintenance-backup-workflow.php';
+		require_once __DIR__ . '/class-dd-maintenance-restore-workflow.php';
+		require_once __DIR__ . '/class-dd-maintenance-cron-workflow.php';
+		$this->settings_repository = new DD_Maintenance_Settings_Repository();
+		$this->cron_job_store      = new DD_Maintenance_Cron_Job_Store();
+		$this->backup_workflow  = new DD_Maintenance_Backup_Workflow();
+		$this->cron_workflow    = new DD_Maintenance_Cron_Workflow( $this->backup_workflow, $this->cron_job_store, array( $this, 'apply_retention_policy' ) );
+		self::migrate_legacy_settings();
 		new DD_Maintenance_Settings();
 
 		add_filter( 'cron_schedules', array( $this, 'add_cron_schedules' ) );
@@ -42,10 +83,6 @@ class DD_Maintenance {
 		add_action( 'backuper_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
 		add_action( 'dd_maintenance_backup_continue', array( $this, 'cron_backup_continue' ), 10, 1 );
 		add_action( 'plugins_loaded', array( $this, 'register_elementor_compatibility' ), 1 );
-		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
-			DD_Maintenance_Restore::patch_elementor_php8_compatibility();
-			DD_Maintenance_Restore::install_permanent_elementor_shield();
-		}
 	}
 
 	/**
@@ -78,13 +115,11 @@ class DD_Maintenance {
 	 * Garante compatibilidade de tags dinâmicas do Elementor com PHP 8.0+.
 	 */
 	public function register_elementor_compatibility() {
-		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
-			DD_Maintenance_Restore::patch_elementor_php8_compatibility();
-			DD_Maintenance_Restore::install_permanent_elementor_shield();
-			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
-			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 999 );
-			add_filter( 'the_content', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
-			add_filter( 'widget_text', array( 'DD_Maintenance_Restore', 'fix_elementor_dynamic_tags' ), 1 );
+		if ( class_exists( 'DD_Maintenance_Elementor_Compatibility' ) ) {
+			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Elementor_Compatibility', 'fix_elementor_dynamic_tags' ), 1 );
+			add_filter( 'elementor/dynamic_tags/parse_tag_text', array( 'DD_Maintenance_Elementor_Compatibility', 'fix_elementor_dynamic_tags' ), 999 );
+			add_filter( 'the_content', array( 'DD_Maintenance_Elementor_Compatibility', 'fix_elementor_dynamic_tags' ), 1 );
+			add_filter( 'widget_text', array( 'DD_Maintenance_Elementor_Compatibility', 'fix_elementor_dynamic_tags' ), 1 );
 			add_filter( 'get_post_metadata', array( $this, 'filter_elementor_post_metadata' ), 10, 4 );
 		}
 	}
@@ -105,29 +140,33 @@ class DD_Maintenance {
 		$in_filter = false;
 
 		if ( is_string( $meta ) && false !== strpos( $meta, '[elementor-tag' ) ) {
-			$fixed = DD_Maintenance_Restore::fix_elementor_dynamic_tags( $meta );
+			$fixed = DD_Maintenance_Elementor_Compatibility::fix_elementor_dynamic_tags( $meta );
 			return $single ? $fixed : array( $fixed );
 		}
 		return $value;
 	}
 
 	/**
+	 * Migra a configuração legada antes de qualquer fluxo poder consumi-la.
+	 */
+	private static function migrate_legacy_settings(): void {
+		$legacy_settings  = get_option( 'backuper_settings', null );
+		$current_settings = get_option( 'dd_maintenance_settings', null );
+
+		if ( null === $current_settings && is_array( $legacy_settings ) ) {
+			update_option( 'dd_maintenance_settings', $legacy_settings, false );
+		}
+		if ( is_array( $legacy_settings ) ) {
+			delete_option( 'backuper_settings' );
+		}
+	}
+
+	/**
 	 * Aplica migrações e atualizações de configuração entre versões e plugins anteriores.
 	 */
 	public function maybe_upgrade() {
-		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
-			DD_Maintenance_Restore::install_permanent_elementor_shield();
-		}
 
 		$version = get_option( 'dd_maintenance_version', '0' );
-
-		// Migra configurações antigas do Backuper, se existirem.
-		$legacy_backuper_settings = get_option( 'backuper_settings', null );
-		$current_settings         = get_option( 'dd_maintenance_settings', null );
-
-		if ( null === $current_settings && is_array( $legacy_backuper_settings ) ) {
-			update_option( 'dd_maintenance_settings', $legacy_backuper_settings );
-		}
 
 		// Migra hash de senha do Gerenciador de Updates DD antigo, se existir.
 		$legacy_hash = get_option( 'dd_gerenciador_updates_password_hash', '' );
@@ -141,21 +180,8 @@ class DD_Maintenance {
 		}
 
 		// Garante configurações padrão.
-		$settings = wp_parse_args(
-			get_option( 'dd_maintenance_settings', array() ),
-			array(
-				'include_db'         => 1,
-				'include_wpcontent'  => 1,
-				'include_wpconfig'   => 1,
-				'include_entire'     => 1,
-				'keep_local'         => 1,
-				'schedule_enabled'   => 0,
-				'schedule_frequency' => 'daily',
-				'schedule_time'      => '03:00',
-				'retention_local'    => 5,
-			)
-		);
-		update_option( 'dd_maintenance_settings', $settings );
+		$settings = $this->settings_repository->get();
+		$this->settings_repository->save( $settings );
 
 		update_option( 'dd_maintenance_version', DD_MAINTENANCE_VERSION );
 	}
@@ -167,13 +193,16 @@ class DD_Maintenance {
 	 */
 	public static function backup_dir() {
 		$dir = WP_CONTENT_DIR . '/uploads/dd-maintenance';
+		if ( is_link( $dir ) ) {
+			return $dir;
+		}
 		if ( ! is_dir( $dir ) ) {
 			wp_mkdir_p( $dir );
 		}
 
 		$index_file = $dir . '/index.php';
 		if ( ! file_exists( $index_file ) ) {
-			@file_put_contents( $index_file, '<?php // Silence is golden.' );
+			file_put_contents( $index_file, '<?php // Silence is golden.' );
 		}
 
 		// Proteção .htaccess para servidores Apache e LiteSpeed (bloqueia download direto de .zip e .sql).
@@ -187,7 +216,7 @@ class DD_Maintenance {
 				. "<IfModule authz_core_module>\n"
 				. "Require all denied\n"
 				. "</IfModule>\n";
-			@file_put_contents( $htaccess_file, $htaccess_content );
+			file_put_contents( $htaccess_file, $htaccess_content );
 		}
 
 		// Proteção web.config para servidores IIS.
@@ -201,7 +230,7 @@ class DD_Maintenance {
 				. "    </authorization>\n"
 				. "  </system.webServer>\n"
 				. "</configuration>\n";
-			@file_put_contents( $webconfig_file, $webconfig_content );
+			file_put_contents( $webconfig_file, $webconfig_content );
 		}
 
 		return $dir;
@@ -220,7 +249,7 @@ class DD_Maintenance {
 
 		$index_file = $dir . '/index.php';
 		if ( ! file_exists( $index_file ) ) {
-			@file_put_contents( $index_file, '<?php // Silence is golden.' );
+			file_put_contents( $index_file, '<?php // Silence is golden.' );
 		}
 
 		return $dir;
@@ -232,7 +261,7 @@ class DD_Maintenance {
 	 * @param array|string $log       Linhas do log ou texto.
 	 * @param string       $status    'success' | 'failure' | 'info'.
 	 * @param string       $base_name Identificador do backup (ex: site-2026-08-21-1430).
-	 * @return string Caminho do arquivo de log criado.
+	 * @return string Caminho criado ou string vazia se a gravação falhar.
 	 */
 	public static function save_log( $log, string $status = 'success', string $base_name = '' ): string {
 		$lines = is_array( $log ) ? $log : explode( "\n", (string) $log );
@@ -258,10 +287,10 @@ class DD_Maintenance {
 		$filepath = $logs_dir . '/' . $filename;
 		$content  = implode( "\n", $lines ) . "\n";
 
-		@file_put_contents( $filepath, $content );
+		$written = file_put_contents( $filepath, $content );
 		self::purge_old_log_files( 30 );
 
-		return $filepath;
+		return false === $written ? '' : $filepath;
 	}
 
 	/**
@@ -286,7 +315,7 @@ class DD_Maintenance {
 		$total = count( $files );
 		for ( $i = $keep; $i < $total; $i++ ) {
 			if ( is_file( $files[ $i ] ) ) {
-				@unlink( $files[ $i ] );
+				unlink( $files[ $i ] );
 			}
 		}
 	}
@@ -372,7 +401,7 @@ class DD_Maintenance {
 		$path     = $dir . '/' . $filename;
 
 		if ( ! empty( $filename ) && is_file( $path ) ) {
-			return @unlink( $path );
+			return unlink( $path );
 		}
 
 		return false;
@@ -392,7 +421,7 @@ class DD_Maintenance {
 
 		$count = 0;
 		foreach ( $files as $file ) {
-			if ( is_file( $file ) && @unlink( $file ) ) {
+			if ( is_file( $file ) && unlink( $file ) ) {
 				$count++;
 			}
 		}
@@ -407,11 +436,6 @@ class DD_Maintenance {
 	 * Ativa o plugin.
 	 */
 	public static function activate() {
-		$dir = self::backup_dir();
-		@file_put_contents( $dir . '/index.php', '<?php // Silence is golden.' );
-		if ( class_exists( 'DD_Maintenance_Restore' ) ) {
-			DD_Maintenance_Restore::install_permanent_elementor_shield();
-		}
 
 		self::maybe_schedule_cron();
 	}
@@ -460,10 +484,7 @@ class DD_Maintenance {
 	 * Agenda (ou remove) o cron de manutenção conforme frequência e horário configurados.
 	 */
 	public static function maybe_schedule_cron() {
-		$settings = get_option( 'dd_maintenance_settings', array() );
-		if ( empty( $settings ) ) {
-			$settings = get_option( 'backuper_settings', array() );
-		}
+		$settings = ( new DD_Maintenance_Settings_Repository() )->get();
 
 		// Limpa agendamentos antigos para reagendar com nova frequência/horário.
 		wp_clear_scheduled_hook( 'dd_maintenance_daily_maintenance' );
@@ -504,8 +525,8 @@ class DD_Maintenance {
 	 * @return array Lista de backups locais removidos.
 	 */
 	public function apply_retention_policy(): array {
-		$settings  = get_option( 'dd_maintenance_settings', array() );
-		$retention = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
+		$settings  = $this->settings_repository->get();
+		$retention = (int) $settings['retention_local'];
 
 		// 0 significa retenção ilimitada (não apaga backups).
 		if ( $retention <= 0 ) {
@@ -536,40 +557,7 @@ class DD_Maintenance {
 	 * Cada evento seguinte executa apenas um lote persistido.
 	 */
 	public function cron_full_maintenance() {
-		$active = get_option( 'dd_maintenance_background_job', array() );
-		$now    = time();
-		if ( is_array( $active ) && isset( $active['status'], $active['session_id'], $active['started_at'] ) && 'running' === $active['status'] ) {
-			if ( ( $now - (int) $active['started_at'] ) < 3600 ) {
-				$this->schedule_backup_continuation( $active['session_id'] );
-				return;
-			}
-			$backup = new DD_Maintenance_Backup();
-			$backup->cleanup_failed_session( $active['session_id'], __( 'Job agendado expirado por tempo limite.', 'dd-maintenance' ) );
-		}
-		$backup  = new DD_Maintenance_Backup();
-		$session = $backup->init_session();
-		if ( is_wp_error( $session ) ) {
-			$log = array( '[ERRO] Backup: ' . $session->get_error_message() );
-			set_transient( 'dd_maintenance_last_log', $log, DAY_IN_SECONDS );
-			set_transient( 'backuper_last_log', $log, DAY_IN_SECONDS );
-			return;
-		}
-
-		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
-		$job       = array(
-			'status'       => 'running',
-			'phase'        => 'database',
-			'session_id'   => $session['session_id'],
-			'session_dir'  => $session['session_dir'],
-			'folder'       => ( $site_slug ? $site_slug : 'site' ) . '/' . current_time( 'Y-m-d' ),
-			'parts'        => array(),
-			'upload_index' => 0,
-			'total_size'   => 0,
-			'started_at'   => time(),
-			'log'          => array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) ),
-		);
-		update_option( 'dd_maintenance_background_job', $job, false );
-		$this->schedule_backup_continuation( $session['session_id'] );
+		$this->cron_workflow->start();
 	}
 
 	/**
@@ -578,148 +566,14 @@ class DD_Maintenance {
 	 * @param string $session_id ID da sessão.
 	 */
 	public function cron_backup_continue( $session_id ) {
-		$job = get_option( 'dd_maintenance_background_job', array() );
-		if ( ! is_array( $job ) || 'running' !== ( $job['status'] ?? '' ) || $session_id !== ( $job['session_id'] ?? '' ) ) {
-			return;
-		}
-
-		$backup = new DD_Maintenance_Backup();
-		$result = true;
-
-		switch ( $job['phase'] ) {
-			case 'database':
-				$result = $backup->dump_database_step( $session_id );
-				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
-					$job['phase'] = 'index';
-					$job['log'][] = $result['log'];
-				}
-				break;
-
-			case 'index':
-				$result = $backup->index_files_step( $session_id );
-				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
-					$job['phase'] = 'zip';
-					$job['log'][] = $result['log'];
-				}
-				break;
-
-			case 'zip':
-				$result = $backup->zip_batch_step( $session_id );
-				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
-					$job['phase'] = 'finalize';
-					$job['log'][] = $result['log'];
-				}
-				break;
-
-			case 'finalize':
-				$result = $backup->finalize_and_split_step( $session_id );
-				if ( ! is_wp_error( $result ) && ! empty( $result['completed'] ) ) {
-					$job['phase']      = 'upload';
-					$job['parts']      = $result['parts'];
-					$job['total_size'] = $result['total_size'];
-					$job['log'][]      = $result['log'];
-				}
-				break;
-
-			case 'upload':
-				$s3 = new DD_Maintenance_S3();
-				if ( ! $s3->is_configured() ) {
-					$result = new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
-					break;
-				}
-
-				$index = (int) $job['upload_index'];
-				if ( $index < count( $job['parts'] ) ) {
-					$part   = $job['parts'][ $index ];
-					$result = $s3->put_object( $job['folder'] . '/' . $part['name'], $part['file'] );
-					if ( is_wp_error( $result ) ) {
-						break;
-					}
-					$job['upload_index']++;
-					$job['log'][] = sprintf(
-						__( '[OK] Parte %1$d/%2$d enviada: %3$s', 'dd-maintenance' ),
-						$job['upload_index'],
-						count( $job['parts'] ),
-						$part['name']
-					);
-				}
-				if ( $job['upload_index'] >= count( $job['parts'] ) ) {
-					$job['phase'] = 'retention';
-				}
-				break;
-
-			case 'retention':
-				$purged = $this->apply_retention_policy();
-				$job['log'][] = sprintf( __( '[Retenção] %d backup(s) antigo(s) removido(s).', 'dd-maintenance' ), count( $purged ) );
-				$backup->cleanup_session_step( $session_id );
-				$job['phase'] = 'plugins';
-				break;
-
-			case 'plugins':
-				$updater = new DD_Maintenance_Updater();
-				$result  = $updater->update_plugins();
-				if ( is_wp_error( $result ) ) {
-					$job['log'][] = '[ERRO] Plugins: ' . $result->get_error_message();
-					$result       = true;
-				} else {
-					$job['log'][] = '[OK] Plugins atualizados: ' . $result['updated'];
-				}
-				$job['phase'] = 'core';
-				break;
-
-			case 'core':
-				$updater = new DD_Maintenance_Updater();
-				$result  = $updater->update_core();
-				if ( is_wp_error( $result ) ) {
-					$job['log'][] = '[ERRO] Core: ' . $result->get_error_message();
-				} else {
-					$job['log'][] = '[Core] ' . $result['message'];
-				}
-				$job['log'][]     = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
-				$job['phase']     = 'done';
-				$job['status']    = 'completed';
-				$job['finished_at'] = time();
-				$result = true;
-				break;
-		}
-
-		if ( is_wp_error( $result ) ) {
-			$job['status']      = 'error';
-			$job['finished_at'] = time();
-			$job['log'][]       = '[ERRO] ' . $result->get_error_message();
-			$job['log'][]       = '[AUTOLIMPEZA] Backup encerrado por erro. Arquivos residuais limpos.';
-			$job['log'][]       = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
-			if ( ! empty( $session_id ) ) {
-				$backup->cleanup_failed_session( $session_id, $result->get_error_message(), $job['log'] );
-			} else {
-				self::save_log( $job['log'], 'failure' );
-			}
-		} elseif ( 'completed' === $job['status'] ) {
-			self::save_log( $job['log'], 'success', $job['base_name'] ?? '' );
-		}
-		update_option( 'dd_maintenance_background_job', $job, false );
-
-
-		if ( 'running' === $job['status'] ) {
-			$this->schedule_backup_continuation( $session_id );
-		}
+		$this->cron_workflow->continue( (string) $session_id );
 	}
 
-	/**
-	 * Agenda a próxima unidade de trabalho sem manter a requisição atual aberta.
-	 *
-	 * @param string $session_id ID da sessão.
-	 */
-	private function schedule_backup_continuation( $session_id ) {
-		if ( ! wp_next_scheduled( 'dd_maintenance_backup_continue', array( $session_id ) ) ) {
-			wp_schedule_single_event( time() + 1, 'dd_maintenance_backup_continue', array( $session_id ) );
-		}
-	}
 
 	/**
 	 * Executa a manutenção completa:
 	 * 1. Verificação de travas no wp-config (aviso caso DISALLOW_FILE_MODS esteja ativo).
-	 * 2. Backup do site (com divisão em partes de 25MB).
+	 * 2. Backup do site (com divisão em volumes configuráveis).
 	 * 3. Envio para o bucket S3 (DigitalOcean Spaces).
 	 * 4. Aplicação da política de retenção local.
 	 * 5. Atualização de todos os plugins.
@@ -728,131 +582,7 @@ class DD_Maintenance {
 	 * @return array Log de execução.
 	 */
 	public function run_full() {
-		$this->set_time_limit( 0 );
-
-		$log = array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) );
-
-		// Verificação de travas no wp-config.php.
-		$config_status = DD_Maintenance_Config::get_wp_config_status();
-		$file_mods     = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_MODS' );
-		if ( true === $file_mods ) {
-			$log[] = '[Aviso] DISALLOW_FILE_MODS está ATIVO no wp-config.php. Se as atualizações falharem, desative-o na aba "Travas wp-config.php".';
-		}
-
-		// 1. Backup.
-		$backup = new DD_Maintenance_Backup();
-		$result = $backup->run();
-
-		if ( is_wp_error( $result ) ) {
-			$log[] = '[ERRO] Backup: ' . $result->get_error_message();
-			$log[] = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
-			return $log;
-		}
-
-		$parts       = isset( $result['parts'] ) ? $result['parts'] : array( array( 'file' => $result['file'], 'name' => $result['name'], 'size' => $result['size'], 'part' => 1 ) );
-		$total_parts = count( $parts );
-		$total_size  = isset( $result['total_size'] ) ? $result['total_size'] : $result['size'];
-
-		$log[] = sprintf(
-			/* translators: 1: Quantidade de partes, 2: Tamanho total */
-			__( '[OK] Backup criado com sucesso: %1$d parte(s) de até 25MB (Total: %2$s)', 'dd-maintenance' ),
-			$total_parts,
-			size_format( $total_size )
-		);
-
-		// 2. Envio para o S3.
-		$s3 = new DD_Maintenance_S3();
-
-		if ( ! $s3->is_configured() ) {
-			$log[] = '[ERRO] S3: ' . __( 'Configure as credenciais do S3 / DigitalOcean Spaces na aba de configurações.', 'dd-maintenance' );
-			$log[] = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
-			return $log;
-		}
-
-		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
-		$site_slug = $site_slug ? $site_slug : 'site';
-		$folder    = $site_slug . '/' . current_time( 'Y-m-d' );
-
-		$log[] = '[OK] Pasta de destino no S3: ' . $folder;
-
-		$upload_error = false;
-		foreach ( $parts as $idx => $part ) {
-			$key    = $folder . '/' . $part['name'];
-			$upload = $s3->put_object( $key, $part['file'] );
-
-			if ( is_wp_error( $upload ) ) {
-				$log[] = sprintf(
-					/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome do arquivo, 4: Mensagem de erro */
-					__( '[ERRO] Envio da parte %1$d/%2$d (%3$s): %4$s', 'dd-maintenance' ),
-					$idx + 1,
-					$total_parts,
-					$part['name'],
-					$upload->get_error_message()
-				);
-				$upload_error = true;
-				break;
-			} else {
-				$log[] = sprintf(
-					/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome do arquivo, 4: Tamanho da parte */
-					__( '[OK] Parte %1$d/%2$d enviada: %3$s (%4$s)', 'dd-maintenance' ),
-					$idx + 1,
-					$total_parts,
-					$part['name'],
-					size_format( $part['size'] )
-				);
-			}
-		}
-
-		if ( $upload_error ) {
-			$log[] = '[Fim com Erro no S3] ' . current_time( 'Y-m-d H:i:s' );
-			return $log;
-		}
-
-		$log[] = sprintf(
-			/* translators: 1: Quantidade de partes, 2: Nome do bucket, 3: Pasta no bucket */
-			__( '[OK] Todas as %1$d parte(s) enviadas para o bucket "%2$s" em "%3$s".', 'dd-maintenance' ),
-			$total_parts,
-			$s3->get_bucket(),
-			$folder
-		);
-
-		// 3. Aplica política de retenção local de backups.
-		$purged_backups = $this->apply_retention_policy();
-		if ( ! empty( $purged_backups ) ) {
-			$log[] = sprintf(
-				/* translators: %s: Lista de backups removidos */
-				__( '[Retenção] %d backup(s) antigo(s) removido(s) conforme a política de retenção.', 'dd-maintenance' ),
-				count( $purged_backups )
-			);
-		}
-
-		// 4. Plugins.
-		$updater = new DD_Maintenance_Updater();
-		$plugins = $updater->update_plugins();
-
-		if ( is_wp_error( $plugins ) ) {
-			$log[] = '[ERRO] Plugins: ' . $plugins->get_error_message();
-		} else {
-			foreach ( $plugins['logs'] as $line ) {
-				$log[] = '[Plugins] ' . $line;
-			}
-			$log[] = '[OK] Plugins atualizados: ' . $plugins['updated'];
-		}
-
-		// 5. Core.
-		$core = $updater->update_core();
-
-		if ( is_wp_error( $core ) ) {
-			$log[] = '[ERRO] Core: ' . $core->get_error_message();
-		} elseif ( $core['updated'] ) {
-			$log[] = '[OK] ' . $core['message'];
-		} else {
-			$log[] = '[Core] ' . $core['message'];
-		}
-
-		$log[] = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
-
-		return $log;
+		return $this->backup_workflow->run_full( array( $this, 'apply_retention_policy' ) );
 	}
 
 	/**
@@ -873,7 +603,7 @@ class DD_Maintenance {
 	 */
 	private function set_time_limit( $seconds = 0 ) {
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
-			@set_time_limit( $seconds );
+			set_time_limit( $seconds );
 		}
 	}
 }

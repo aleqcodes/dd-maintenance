@@ -1,13 +1,34 @@
 <?php
 /**
- * Responsável pela restauração de backups (banco de dados + arquivos), suportando arquivos únicos e divididos em partes de 25MB.
+ * Responsável pela restauração de backups (banco de dados + arquivos), suportando arquivos únicos e divididos em volumes configuráveis.
  *
  * @package DD_Maintenance
  */
 
 defined( 'ABSPATH' ) || exit;
 
+require_once __DIR__ . '/class-dd-maintenance-session-store.php';
+require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
+require_once __DIR__ . '/class-dd-maintenance-file-security.php';
+require_once __DIR__ . '/class-dd-maintenance-elementor-compatibility.php';
+
+ 
+
 class DD_Maintenance_Restore {
+
+	/**
+	 * Armazenamento centralizado do estado das sessões.
+	 *
+	 * @var DD_Maintenance_Session_Store
+	 */
+	private $session_store;
+
+	/**
+	 * Construtor.
+	 */
+	public function __construct() {
+		$this->session_store = new DD_Maintenance_Session_Store();
+	}
 
 	/**
 	 * Restaura o site a partir de arquivo(s) .zip enviados via upload (suporta arquivo único ou múltiplas partes).
@@ -15,7 +36,7 @@ class DD_Maintenance_Restore {
 	 * @param array $file_input Array de upload ($_FILES['backup_zip']).
 	 * @return array|WP_Error
 	 */
-	public function restore_from_upload( array $file_input ) {
+	public function restore_from_upload( array $file_input, bool $apply_elementor_compatibility = false ) {
 		$this->set_time_and_memory_limits();
 
 		if ( empty( $file_input['tmp_name'] ) ) {
@@ -80,11 +101,11 @@ class DD_Maintenance_Restore {
 				);
 			}
 
-			$result = $this->restore_archive( $single_file );
+			$result = $this->restore_archive( $single_file, $apply_elementor_compatibility );
 			$this->delete_directory( $temp_dir );
 			return $result;
 		}
-		return $this->restore_from_temp_directory( $temp_dir );
+		return $this->restore_from_temp_directory( $temp_dir, $apply_elementor_compatibility );
 	}
 
 	/**
@@ -93,13 +114,17 @@ class DD_Maintenance_Restore {
 	 * @param string $temp_dir Caminho completo da pasta temporária.
 	 * @return array|WP_Error
 	 */
-	public function restore_from_temp_directory( string $temp_dir ) {
+	public function restore_from_temp_directory( string $temp_dir, bool $apply_elementor_compatibility = false ) {
 		$this->set_time_and_memory_limits();
 
-		$temp_dir = wp_normalize_path( realpath( $temp_dir ) ? realpath( $temp_dir ) : $temp_dir );
-		if ( ! is_dir( $temp_dir ) ) {
+		if ( is_link( $temp_dir ) ) {
+			return new WP_Error( 'restore_temp_dir_unsafe', __( 'Pasta temporária simbólica não permitida.', 'dd-maintenance' ) );
+		}
+		$temp_real = realpath( $temp_dir );
+		if ( false === $temp_real || ! is_dir( $temp_real ) ) {
 			return new WP_Error( 'restore_temp_dir_missing', __( 'Pasta temporária de restauração não encontrada.', 'dd-maintenance' ) );
 		}
+		$temp_dir = wp_normalize_path( $temp_real );
 
 		$files = glob( $temp_dir . '/*.zip' );
 		if ( empty( $files ) ) {
@@ -128,12 +153,12 @@ class DD_Maintenance_Restore {
 				);
 			}
 
-			$result = $this->restore_archive( $single_file );
+			$result = $this->restore_archive( $single_file, $apply_elementor_compatibility );
 			$this->delete_directory( $temp_dir );
 			return $result;
 		}
 
-		$result = $this->restore_part_files( $files, $temp_dir );
+		$result = $this->restore_part_files( $files, $temp_dir, $apply_elementor_compatibility );
 		$this->delete_directory( $temp_dir );
 		return $result;
 	}
@@ -145,7 +170,7 @@ class DD_Maintenance_Restore {
 	 * @param string $identifier Nome do arquivo ou identificador base do backup.
 	 * @return array|WP_Error
 	 */
-	public function restore_from_local_file( string $identifier ) {
+	public function restore_from_local_file( string $identifier, bool $apply_elementor_compatibility = false ) {
 		$this->set_time_and_memory_limits();
 
 		$identifier = sanitize_file_name( $identifier );
@@ -153,8 +178,8 @@ class DD_Maintenance_Restore {
 
 		// Caso 1: Arquivo direto existe (ex: site-2026-08-20.zip).
 		$direct_path = $backup_dir . '/' . $identifier;
-		if ( file_exists( $direct_path ) && is_file( $direct_path ) && ! preg_match( '/\.part\d+\.zip$/i', $identifier ) ) {
-			return $this->restore_archive( $direct_path );
+		if ( ! is_link( $direct_path ) && is_file( $direct_path ) && ! preg_match( '/\.part\d+\.zip$/i', $identifier ) ) {
+			return $this->restore_archive( $direct_path, $apply_elementor_compatibility );
 		}
 
 		// Caso 2: Backup dividido em partes (procura todas as partes do mesmo backup base).
@@ -165,19 +190,19 @@ class DD_Maintenance_Restore {
 
 		if ( empty( $part_files ) ) {
 			// Tenta arquivo zip simples com a base
-			if ( file_exists( $backup_dir . '/' . $base_name . '.zip' ) ) {
-				return $this->restore_archive( $backup_dir . '/' . $base_name . '.zip' );
+			if ( ! is_link( $backup_dir . '/' . $base_name . '.zip' ) && is_file( $backup_dir . '/' . $base_name . '.zip' ) ) {
+				return $this->restore_archive( $backup_dir . '/' . $base_name . '.zip', $apply_elementor_compatibility );
 			}
 
 			return new WP_Error( 'restore_local_not_found', __( 'Arquivo(s) de backup local não encontrado(s).', 'dd-maintenance' ) );
 		}
 
 		$temp_dir = $backup_dir . '/local-restore-' . time() . '-' . wp_generate_password( 8, false );
-		if ( ! wp_mkdir_p( $temp_dir ) ) {
+		if ( is_link( $temp_dir ) || ! wp_mkdir_p( $temp_dir ) || is_link( $temp_dir ) ) {
 			return new WP_Error( 'restore_temp_failed', __( 'Não foi possível criar pasta temporária para processar os lotes.', 'dd-maintenance' ) );
 		}
 
-		$result = $this->restore_part_files( $part_files, $temp_dir );
+		$result = $this->restore_part_files( $part_files, $temp_dir, $apply_elementor_compatibility );
 		$this->delete_directory( $temp_dir );
 		return $result;
 	}
@@ -189,7 +214,7 @@ class DD_Maintenance_Restore {
 	 * @param string $temp_dir   Pasta para eventual união legada.
 	 * @return array|WP_Error
 	 */
-	private function restore_part_files( array $part_files, string $temp_dir ) {
+	private function restore_part_files( array $part_files, string $temp_dir, bool $apply_elementor_compatibility = false ) {
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'restore_zip_missing', __( 'A extensão PHP ZipArchive não está disponível no servidor.', 'dd-maintenance' ) );
 		}
@@ -209,7 +234,7 @@ class DD_Maintenance_Restore {
 		}
 
 		if ( $independent ) {
-			return $this->restore_archive_set( $part_files );
+			return $this->restore_archive_set( $part_files, $apply_elementor_compatibility );
 		}
 
 		$merged = $temp_dir . '/merged_legacy_' . time() . '.zip';
@@ -217,7 +242,7 @@ class DD_Maintenance_Restore {
 		if ( is_wp_error( $joined ) ) {
 			return $joined;
 		}
-		return $this->restore_archive( $merged );
+		return $this->restore_archive( $merged, $apply_elementor_compatibility );
 	}
 
 	/**
@@ -242,6 +267,9 @@ class DD_Maintenance_Restore {
 
 		$expected = 1;
 		foreach ( $part_files as $file ) {
+			if ( is_link( $file ) || ! is_file( $file ) ) {
+				return new WP_Error( 'join_source_unsupported', __( 'Parte de restauração inválida ou simbólica.', 'dd-maintenance' ) );
+			}
 			if ( preg_match( '/\.part(\d+)\.zip$/i', basename( $file ), $match ) ) {
 				$current = (int) $match[1];
 				if ( $current !== $expected ) {
@@ -272,7 +300,11 @@ class DD_Maintenance_Restore {
 		if ( is_wp_error( $part_files ) ) {
 			return $part_files;
 		}
-
+		$parent      = dirname( $output_file );
+		$parent_real = realpath( $parent );
+		if ( is_link( $output_file ) || is_link( $parent ) || false === $parent_real || wp_normalize_path( $parent_real ) !== wp_normalize_path( $parent ) ) {
+			return new WP_Error( 'join_output_unsafe', __( 'Destino temporário de união inseguro.', 'dd-maintenance' ) );
+		}
 		$out_handle = fopen( $output_file, 'wb' );
 		if ( ! $out_handle ) {
 			return new WP_Error( 'join_open_output_failed', __( 'Não foi possível criar o arquivo temporário de união das partes.', 'dd-maintenance' ) );
@@ -284,7 +316,7 @@ class DD_Maintenance_Restore {
 			$in_handle = fopen( $file, 'rb' );
 			if ( ! $in_handle ) {
 				fclose( $out_handle );
-				@unlink( $output_file );
+				unlink( $output_file );
 				return new WP_Error(
 					'join_open_input_failed',
 					sprintf(
@@ -309,7 +341,7 @@ class DD_Maintenance_Restore {
 		fclose( $out_handle );
 
 		if ( ! file_exists( $output_file ) || filesize( $output_file ) <= 0 ) {
-			@unlink( $output_file );
+			unlink( $output_file );
 			return new WP_Error( 'join_file_empty', __( 'O arquivo reconstruído a partir das partes está vazio.', 'dd-maintenance' ) );
 		}
 
@@ -322,8 +354,8 @@ class DD_Maintenance_Restore {
 	 * @param string $zip_path Caminho absoluto do arquivo .zip.
 	 * @return array|WP_Error
 	 */
-	public function restore_archive( string $zip_path ) {
-		return $this->restore_archive_set( array( $zip_path ) );
+	public function restore_archive( string $zip_path, bool $apply_elementor_compatibility = false ) {
+		return $this->restore_archive_set( array( $zip_path ), $apply_elementor_compatibility );
 	}
 
 	/**
@@ -333,7 +365,7 @@ class DD_Maintenance_Restore {
 	 * @param string $temp_upload_dir Pasta temporária de upload (se houver).
 	 * @return array|WP_Error
 	 */
-	public function init_restore_session( array $zip_paths, string $temp_upload_dir = '' ) {
+	public function init_restore_session( array $zip_paths, string $temp_upload_dir = '', bool $apply_elementor_compatibility = false ) {
 		$this->set_time_and_memory_limits();
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'restore_zip_missing', __( 'A extensão PHP ZipArchive não está disponível no servidor.', 'dd-maintenance' ) );
@@ -343,17 +375,35 @@ class DD_Maintenance_Restore {
 		if ( is_wp_error( $zip_paths ) ) {
 			return $zip_paths;
 		}
+		foreach ( $zip_paths as $zip_path ) {
+			if ( is_link( $zip_path ) || ! is_file( $zip_path ) ) {
+				return new WP_Error( 'restore_zip_invalid', __( 'Volume de restauração inválido ou simbólico.', 'dd-maintenance' ) );
+			}
+		}
+		if ( '' !== $temp_upload_dir && ( is_link( $temp_upload_dir ) || ! is_dir( $temp_upload_dir ) ) ) {
+			return new WP_Error( 'restore_upload_dir_invalid', __( 'Diretório temporário de upload inválido.', 'dd-maintenance' ) );
+		}
 
-		$session_id   = 'rst_' . time() . '_' . wp_generate_password( 8, false );
+		$backup_dir  = DD_Maintenance::backup_dir();
+		$backup_real = realpath( $backup_dir );
+		if ( is_link( $backup_dir ) || false === $backup_real || wp_normalize_path( $backup_real ) !== wp_normalize_path( $backup_dir ) ) {
+			return new WP_Error( 'restore_path_unsafe', __( 'A pasta de restauração não é segura.', 'dd-maintenance' ) );
+		}
+		if ( '' !== $temp_upload_dir ) {
+			$temp_real = realpath( $temp_upload_dir );
+			if ( is_link( $temp_upload_dir ) || false === $temp_real || ! is_dir( $temp_real ) || 0 !== strpos( wp_normalize_path( $temp_real ), rtrim( wp_normalize_path( $backup_real ), '/' ) . '/' ) ) {
+				return new WP_Error( 'restore_upload_dir_invalid', __( 'Diretório temporário de upload fora da raiz autorizada.', 'dd-maintenance' ) );
+			}
+			$temp_upload_dir = wp_normalize_path( $temp_real );
+		}
+		$session_id    = 'rst_' . time() . '_' . wp_generate_password( 8, false );
 		$restore_token = wp_generate_password( 48, false, false );
-		$backup_dir   = DD_Maintenance::backup_dir();
-		$extract_dir  = $backup_dir . '/restore_exec_' . $session_id;
+		$extract_dir   = $backup_dir . '/restore_exec_' . $session_id;
 
-		if ( ! wp_mkdir_p( $extract_dir ) ) {
+		if ( is_link( $extract_dir ) || ! wp_mkdir_p( $extract_dir ) || is_link( $extract_dir ) || false === realpath( $extract_dir ) ) {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
 		}
 
-		self::create_mu_plugin_loader();
 		$scheme = ( is_ssl() || ( isset( $_SERVER['HTTPS'] ) && 'on' === $_SERVER['HTTPS'] ) || ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) ) ? 'https://' : 'http://';
 		$host   = $_SERVER['HTTP_HOST'] ?? '';
 		$detected_url = ! empty( $host ) ? untrailingslashit( $scheme . $host ) : '';
@@ -379,8 +429,12 @@ class DD_Maintenance_Restore {
 			'auth_expires_at'   => time() + 7200,
 			'log'               => array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) ),
 			'created_at'        => time(),
+			'apply_elementor_compatibility' => $apply_elementor_compatibility,
 		);
-		$this->save_restore_session_data( $extract_dir, $session );
+		if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+			$this->session_store->remove_directory( $extract_dir );
+			return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o estado inicial da sessão de restauração.', 'dd-maintenance' ) );
+		}
 		$session['restore_token'] = $restore_token;
 		return $session;
 	}
@@ -395,18 +449,12 @@ class DD_Maintenance_Restore {
 		$session_id  = sanitize_file_name( $session_id );
 		$backup_dir  = DD_Maintenance::backup_dir();
 		$extract_dir = $backup_dir . '/restore_exec_' . $session_id;
-		$state_file  = $extract_dir . '/state.json';
 
-		if ( ! file_exists( $state_file ) ) {
-			return new WP_Error( 'restore_session_missing', __( 'Sessão de restauração não encontrada ou expirada.', 'dd-maintenance' ) );
-		}
-
-		$data = json_decode( (string) file_get_contents( $state_file ), true );
-		if ( ! is_array( $data ) ) {
-			return new WP_Error( 'restore_session_corrupted', __( 'Dados da sessão de restauração corrompidos.', 'dd-maintenance' ) );
-		}
-
-		return $data;
+		return $this->session_store->load(
+			$extract_dir,
+			'restore_session_missing',
+			'restore_session_corrupted'
+		);
 	}
 
 	/**
@@ -435,7 +483,9 @@ class DD_Maintenance_Restore {
 		}
 
 		$session['auth_expires_at'] = time() + 7200;
-		$this->save_restore_session_data( $session['extract_dir'], $session );
+		if ( ! $this->save_restore_session_data( $session['extract_dir'], $session ) ) {
+			return false;
+		}
 		return true;
 	}
 
@@ -444,10 +494,10 @@ class DD_Maintenance_Restore {
 	 *
 	 * @param string $extract_dir Pasta da sessão.
 	 * @param array  $session     Dados da sessão.
-	 * @return void
+	 * @return bool
 	 */
-	public function save_restore_session_data( string $extract_dir, array $session ): void {
-		file_put_contents( $extract_dir . '/state.json', wp_json_encode( $session ) );
+	public function save_restore_session_data( string $extract_dir, array $session ): bool {
+		return $this->session_store->save( $extract_dir, $session );
 	}
 
 	/**
@@ -477,7 +527,9 @@ class DD_Maintenance_Restore {
 					return $rebuilt;
 				}
 				$session['large_rebuilt'] = true;
-				$this->save_restore_session_data( $extract_dir, $session );
+				if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+					return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o checkpoint da reconstrução de arquivos grandes.', 'dd-maintenance' ) );
+				}
 			}
 
 			return array(
@@ -496,7 +548,7 @@ class DD_Maintenance_Restore {
 		while ( $current_index < $total_volumes && $processed < $batch_limit && microtime( true ) < $deadline ) {
 			$zip_path = $zip_paths[ $current_index ];
 
-			if ( ! is_file( $zip_path ) || filesize( $zip_path ) <= 0 ) {
+			if ( is_link( $zip_path ) || ! is_file( $zip_path ) || filesize( $zip_path ) <= 0 ) {
 				return new WP_Error( 'restore_zip_invalid', sprintf( __( 'Arquivo de lote inválido: %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
 
@@ -505,25 +557,16 @@ class DD_Maintenance_Restore {
 				return new WP_Error( 'restore_zip_open_failed', sprintf( __( 'Falha ao abrir o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
 
-			for ( $idx = 0; $idx < $zip->numFiles; $idx++ ) {
-				$entry_name = wp_normalize_path( (string) $zip->getNameIndex( $idx ) );
-				if ( 0 === strpos( $entry_name, '/' ) || preg_match( '#(^|/)\.\.(/|$)#', $entry_name ) ) {
-					$zip->close();
-					return new WP_Error( 'restore_zip_slip_detected', __( 'Arquivo de backup rejeitado por conter caminhos inválidos (Zip Slip).', 'dd-maintenance' ) );
-				}
-			}
-
-			$extracted = $zip->extractTo( $extract_dir );
+			$extracted = DD_Maintenance_File_Security::extract_archive( $zip, $extract_dir );
 			$zip->close();
-
-			if ( ! $extracted ) {
-				return new WP_Error( 'restore_extract_failed', sprintf( __( 'Falha ao extrair o lote %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
+			if ( is_wp_error( $extracted ) ) {
+				return $extracted;
 			}
 
 			// Se o lote veio de um upload temporário, remove o .zip imediatamente após extrair para economizar espaço em disco
 			$temp_upload_dir = $session['temp_upload_dir'] ?? '';
 			if ( ! empty( $temp_upload_dir ) && 0 === strpos( wp_normalize_path( $zip_path ), wp_normalize_path( $temp_upload_dir ) ) ) {
-				@unlink( $zip_path );
+				unlink( $zip_path );
 			}
 			$current_index++;
 			$processed++;
@@ -545,7 +588,9 @@ class DD_Maintenance_Restore {
 			$log_lines[]              = __( '[OK] Arquivos grandes remontados com sucesso.', 'dd-maintenance' );
 		}
 
-		$this->save_restore_session_data( $extract_dir, $session );
+		if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+			return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o checkpoint da extração.', 'dd-maintenance' ) );
+		}
 
 		$percent = (int) round( ( $current_index / $total_volumes ) * 100 );
 
@@ -594,7 +639,9 @@ class DD_Maintenance_Restore {
 				$session['db_done']  = true;
 				$session['db_file']  = '';
 				$session['log'][]    = __( '[Aviso] Nenhum arquivo .sql encontrado no backup (banco de dados mantido).', 'dd-maintenance' );
-				$this->save_restore_session_data( $extract_dir, $session );
+				if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+					return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o estado do restore sem banco de dados.', 'dd-maintenance' ) );
+				}
 
 				return array(
 					'completed' => true,
@@ -618,7 +665,9 @@ class DD_Maintenance_Restore {
 			$session['db_query_buffer']    = '';
 			$session['db_in_string']       = false;
 			$session['db_string_char']     = '';
-			$this->save_restore_session_data( $extract_dir, $session );
+			if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+				return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o checkpoint inicial do banco de dados.', 'dd-maintenance' ) );
+			}
 		}
 
 		$sql_file  = $session['db_file'];
@@ -649,13 +698,22 @@ class DD_Maintenance_Restore {
 		$use_mysqli = ( $dbh instanceof mysqli );
 
 		if ( $use_mysqli ) {
-			@mysqli_query( $dbh, 'SET FOREIGN_KEY_CHECKS = 0;' );
-			@mysqli_query( $dbh, 'SET UNIQUE_CHECKS = 0;' );
-			@mysqli_query( $dbh, 'SET AUTOCOMMIT = 0;' );
-			@mysqli_query( $dbh, "SET sql_mode = '';" );
-			@mysqli_query( $dbh, 'START TRANSACTION;' );
-		} else {
-			$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0;' );
+			$setup_queries = array(
+				'SET FOREIGN_KEY_CHECKS = 0;',
+				'SET UNIQUE_CHECKS = 0;',
+				'SET AUTOCOMMIT = 0;',
+				"SET sql_mode = '';",
+				'START TRANSACTION;',
+			);
+			foreach ( $setup_queries as $setup_query ) {
+				if ( ! $this->run_mysqli_query( $dbh, $setup_query ) ) {
+					fclose( $handle );
+					return new WP_Error( 'restore_db_init_failed', __( 'Não foi possível preparar a conexão para restaurar o banco de dados.', 'dd-maintenance' ) );
+				}
+			}
+		} elseif ( false === $wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0;' ) ) {
+			fclose( $handle );
+			return new WP_Error( 'restore_db_init_failed', __( 'Não foi possível preparar o banco de dados para restauração.', 'dd-maintenance' ) );
 		}
 
 		$deadline       = microtime( true ) + $time_limit_seconds;
@@ -716,13 +774,9 @@ class DD_Maintenance_Restore {
 						}
 
 						if ( $use_mysqli ) {
-							$res = @mysqli_query( $dbh, $sql );
+							$res = $this->run_mysqli_query( $dbh, $sql );
 							if ( false === $res ) {
-								$errors++;
-								$err_msg = mysqli_error( $dbh );
-								if ( $err_msg && count( $error_samples ) < 3 && ! in_array( $err_msg, $error_samples, true ) ) {
-									$error_samples[] = $err_msg;
-								}
+								$this->record_mysqli_error( $dbh, $error_samples, $errors );
 							}
 						} else {
 							$res = $wpdb->query( $sql );
@@ -738,8 +792,12 @@ class DD_Maintenance_Restore {
 						$uncommited_cnt++;
 
 						if ( $use_mysqli && $uncommited_cnt >= 1000 ) {
-							@mysqli_query( $dbh, 'COMMIT;' );
-							@mysqli_query( $dbh, 'START TRANSACTION;' );
+							if ( ! $this->run_mysqli_query( $dbh, 'COMMIT;' ) ) {
+								$this->record_mysqli_error( $dbh, $error_samples, $errors );
+							}
+							if ( ! $this->run_mysqli_query( $dbh, 'START TRANSACTION;' ) ) {
+								$this->record_mysqli_error( $dbh, $error_samples, $errors );
+							}
 							$uncommited_cnt = 0;
 						}
 					}
@@ -757,8 +815,8 @@ class DD_Maintenance_Restore {
 			$eof_reached = true;
 		}
 		fclose( $handle );
-		if ( $use_mysqli ) {
-			@mysqli_query( $dbh, 'COMMIT;' );
+		if ( $use_mysqli && ! $this->run_mysqli_query( $dbh, 'COMMIT;' ) ) {
+			$this->record_mysqli_error( $dbh, $error_samples, $errors );
 		}
 		// Ao final de CADA lote, garante que todas as tabelas options existentes tenham active_plugins, siteurl e home apontando para o site atual
 		$opt_tables = $wpdb->get_col( "SHOW TABLES LIKE '%options'" );
@@ -801,12 +859,22 @@ class DD_Maintenance_Restore {
 		$session['db_query_buffer']  = $buffer;
 		if ( $eof_reached ) {
 			if ( $use_mysqli ) {
-				@mysqli_query( $dbh, 'COMMIT;' );
-				@mysqli_query( $dbh, 'SET AUTOCOMMIT = 1;' );
-				@mysqli_query( $dbh, 'SET FOREIGN_KEY_CHECKS = 1;' );
-				@mysqli_query( $dbh, 'SET UNIQUE_CHECKS = 1;' );
-			} else {
-				$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
+				$cleanup_queries = array(
+					'COMMIT;',
+					'SET AUTOCOMMIT = 1;',
+					'SET FOREIGN_KEY_CHECKS = 1;',
+					'SET UNIQUE_CHECKS = 1;',
+				);
+				foreach ( $cleanup_queries as $cleanup_query ) {
+					if ( ! $this->run_mysqli_query( $dbh, $cleanup_query ) ) {
+						$this->record_mysqli_error( $dbh, $error_samples, $errors );
+					}
+				}
+			} elseif ( false === $wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' ) ) {
+				$errors++;
+				if ( ! empty( $wpdb->last_error ) && count( $error_samples ) < 3 && ! in_array( $wpdb->last_error, $error_samples, true ) ) {
+					$error_samples[] = $wpdb->last_error;
+				}
 			}
 
 			// 1. Detecta o prefixo das tabelas restauradas no banco
@@ -874,7 +942,7 @@ class DD_Maintenance_Restore {
 			}
 
 			if ( function_exists( 'wp_cache_flush' ) ) {
-				@wp_cache_flush();
+				wp_cache_flush();
 			}
 
 			$session['db_done']  = true;
@@ -888,7 +956,9 @@ class DD_Maintenance_Restore {
 				$final_line .= ' (' . sprintf( __( '%d avisos SQL', 'dd-maintenance' ), $errors ) . ')';
 			}
 			$session['log'][]    = $final_line;
-			$this->save_restore_session_data( $extract_dir, $session );
+			if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+				return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o estado final do banco restaurado.', 'dd-maintenance' ) );
+			}
 
 			return array(
 				'completed' => true,
@@ -901,7 +971,9 @@ class DD_Maintenance_Restore {
 			);
 		}
 
-		$this->save_restore_session_data( $extract_dir, $session );
+		if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+			return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o checkpoint do banco de dados.', 'dd-maintenance' ) );
+		}
 
 		$progress_line = sprintf( __( '[Banco] Dump SQL: %1$d%% (%2$s comandos executados, %3$d tabelas)...', 'dd-maintenance' ), $percent, number_format_i18n( $queries ), $tables );
 
@@ -968,10 +1040,20 @@ class DD_Maintenance_Restore {
 			foreach ( $copy_tasks as $task ) {
 				$source_dir = wp_normalize_path( $task['source'] );
 				$dest_dir   = wp_normalize_path( $task['dest'] );
+				if ( is_link( $source_dir ) ) {
+					fclose( $q_handle );
+					return new WP_Error( 'restore_source_symlink', __( 'A restauração rejeitou uma pasta de origem simbólica.', 'dd-maintenance' ) );
+				}
 				if ( ! is_dir( $source_dir ) ) {
 					continue;
 				}
 
+				$real_dest_root = realpath( $dest_dir );
+				if ( false === $real_dest_root || ! is_dir( $real_dest_root ) ) {
+					fclose( $q_handle );
+					return new WP_Error( 'restore_target_root_invalid', __( 'Diretório raiz de destino inválido na restauração.', 'dd-maintenance' ) );
+				}
+				$real_dest_root = wp_normalize_path( rtrim( $real_dest_root, '/' ) );
 				$iterator = new RecursiveIteratorIterator(
 					new RecursiveDirectoryIterator( $source_dir, FilesystemIterator::SKIP_DOTS ),
 					RecursiveIteratorIterator::SELF_FIRST
@@ -980,13 +1062,26 @@ class DD_Maintenance_Restore {
 				foreach ( $iterator as $item ) {
 					$item_path      = wp_normalize_path( $item->getPathname() );
 					$filename_lower = strtolower( $item->getFilename() );
+					if ( is_link( $item_path ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_source_symlink', sprintf( __( 'A restauração rejeitou o link simbólico %s.', 'dd-maintenance' ), $item->getFilename() ) );
+					}
+					if ( ! $item->isFile() && ! $item->isDir() ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_source_type', sprintf( __( 'A restauração rejeitou o tipo de arquivo %s.', 'dd-maintenance' ), $item->getFilename() ) );
+					}
 
-					// NUNCA sobrescreve o wp-config.php, arquivos SQL soltos e o próprio plugin em execução
+					// NUNCA sobrescreve o wp-config.php, arquivos SQL soltos e o próprio plugin em execução.
 					if ( 'wp-config.php' === $filename_lower || 'database.sql' === $filename_lower || preg_match( '/\.sql$/i', $filename_lower ) ) {
 						continue;
 					}
 
-					$relative = ltrim( substr( $item_path, strlen( $source_dir ) ), '/' );
+					$relative = DD_Maintenance_File_Security::normalize_relative_path( ltrim( substr( $item_path, strlen( $source_dir ) ), '/' ) );
+					if ( is_wp_error( $relative ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_target_invalid', __( 'Caminho de destino inválido na restauração.', 'dd-maintenance' ) );
+					}
+					$target    = $real_dest_root . '/' . $relative;
 					$rel_lower = strtolower( $relative );
 					if ( 0 === strpos( $rel_lower, 'wp-content/plugins/dd-maintenance/' ) || 0 === strpos( $rel_lower, 'wp-content/plugins/backuper/' ) || 0 === strpos( $rel_lower, 'plugins/dd-maintenance/' ) || 0 === strpos( $rel_lower, 'plugins/backuper/' ) ) {
 						continue;
@@ -994,22 +1089,21 @@ class DD_Maintenance_Restore {
 
 					$skip = false;
 					foreach ( $backup_dirs as $ignore ) {
-						if ( 0 === strpos( $target, $ignore ) ) {
+						$ignore = rtrim( wp_normalize_path( $ignore ), '/' );
+						if ( $target === $ignore || 0 === strpos( $target, $ignore . '/' ) ) {
 							$skip = true;
 							break;
 						}
 					}
-					if ( $skip ) {
+					if ( $skip || ! $item->isFile() ) {
 						continue;
 					}
 
-					if ( $item->isFile() ) {
-						if ( false === fwrite( $q_handle, wp_json_encode( array( 'src' => $item_path, 'dst' => $target ) ) . "\n" ) ) {
-							fclose( $q_handle );
-							return new WP_Error( 'restore_queue_write_failed', __( 'Não foi possível registrar todos os arquivos para restauração.', 'dd-maintenance' ) );
-						}
-						$total_files++;
+					if ( false === fwrite( $q_handle, wp_json_encode( array( 'src' => $item_path, 'dst' => $target, 'root' => $real_dest_root, 'relative' => $relative ) ) . "\n" ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_queue_write_failed', __( 'Não foi possível registrar todos os arquivos para restauração.', 'dd-maintenance' ) );
 					}
+					$total_files++;
 				}
 			}
 			fclose( $q_handle );
@@ -1018,7 +1112,9 @@ class DD_Maintenance_Restore {
 			$session['files_total']         = $total_files;
 			$session['files_copied']        = 0;
 			$session['files_queue_offset']  = 0;
-			$this->save_restore_session_data( $extract_dir, $session );
+			if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+				return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o checkpoint inicial dos arquivos.', 'dd-maintenance' ) );
+			}
 		}
 
 		$total_files  = (int) ( $session['files_total'] ?? 0 );
@@ -1044,22 +1140,23 @@ class DD_Maintenance_Restore {
 				}
 				$task = json_decode( $line, true );
 				if ( is_array( $task ) && ! empty( $task['src'] ) && ! empty( $task['dst'] ) ) {
+					if ( is_link( $task['src'] ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_source_unsupported', sprintf( __( 'Arquivo de origem simbólico durante a restauração: %s.', 'dd-maintenance' ), basename( $task['src'] ) ) );
+					}
 					if ( ! is_file( $task['src'] ) ) {
 						fclose( $q_handle );
 						return new WP_Error( 'restore_source_missing', sprintf( __( 'Arquivo de origem ausente durante a restauração: %s.', 'dd-maintenance' ), basename( $task['src'] ) ) );
 					}
+					if ( empty( $task['root'] ) || empty( $task['relative'] ) ) {
+						fclose( $q_handle );
+						return new WP_Error( 'restore_target_invalid', __( 'Fila de restauração sem raiz ou caminho relativo seguro.', 'dd-maintenance' ) );
+					}
 
-					$parent = dirname( $task['dst'] );
-					if ( ! is_dir( $parent ) && ! wp_mkdir_p( $parent ) ) {
+					$copied_result = DD_Maintenance_File_Security::copy_to_root( $task['src'], $task['root'], $task['relative'] );
+					if ( is_wp_error( $copied_result ) ) {
 						fclose( $q_handle );
-						return new WP_Error( 'restore_target_mkdir_failed', sprintf( __( 'Não foi possível criar a pasta de destino para %s.', 'dd-maintenance' ), basename( $task['dst'] ) ) );
-					}
-					if ( ! @copy( $task['src'], $task['dst'] ) ) {
-						fclose( $q_handle );
-						return new WP_Error( 'restore_copy_failed', sprintf( __( 'Não foi possível restaurar o arquivo %s.', 'dd-maintenance' ), basename( $task['dst'] ) ) );
-					}
-					if ( preg_match( '#dynamic-tags/manager\.php$#i', $task['dst'] ) ) {
-						self::patch_elementor_php8_compatibility();
+						return $copied_result;
 					}
 					$copied++;
 				}
@@ -1083,10 +1180,11 @@ class DD_Maintenance_Restore {
 			$session['files_done'] = true;
 			$log_line              = sprintf( __( '[OK] Arquivos restaurados: %1$s arquivos copiados com sucesso.', 'dd-maintenance' ), number_format_i18n( $copied ) );
 			$session['log'][]      = $log_line;
-			self::patch_elementor_php8_compatibility();
-			self::install_permanent_elementor_shield();
+			if ( ! empty( $session['apply_elementor_compatibility'] ) ) {
+				$elementor_result = DD_Maintenance_Elementor_Compatibility::apply_restore_decision( true );
+				$session['log'][]  = sprintf( '[Elementor] compatibilidade explícita: %s.', (string) ( $elementor_result['status'] ?? 'unknown' ) );
+			}
 			self::clear_elementor_cache();
-			$this->save_restore_session_data( $extract_dir, $session );
 
 			return array(
 				'completed' => true,
@@ -1097,7 +1195,9 @@ class DD_Maintenance_Restore {
 			);
 		}
 
-		$this->save_restore_session_data( $extract_dir, $session );
+		if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+			return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível salvar o checkpoint dos arquivos.', 'dd-maintenance' ) );
+		}
 		$progress_line = sprintf( __( '[Arquivos] %1$s/%2$s arquivos copiados (%3$d%%)...', 'dd-maintenance' ), number_format_i18n( $copied ), number_format_i18n( $total_files ), $percent );
 
 		return array(
@@ -1122,8 +1222,6 @@ class DD_Maintenance_Restore {
 
 		$extract_dir     = $session['extract_dir'];
 		$temp_upload_dir = $session['temp_upload_dir'];
-		self::patch_elementor_php8_compatibility();
-		self::install_permanent_elementor_shield();
 		self::ensure_elementor_active_kit();
 		self::rebuild_elementor_theme_builder_conditions();
 		self::clear_elementor_cache();
@@ -1141,10 +1239,10 @@ class DD_Maintenance_Restore {
 		}
 
 		if ( function_exists( 'wp_cache_flush' ) ) {
-			@wp_cache_flush();
+			wp_cache_flush();
 		}
 		if ( function_exists( 'opcache_reset' ) ) {
-			@opcache_reset();
+			opcache_reset();
 		}
 
 		$session['log'][] = '[Fim da Restauração] ' . current_time( 'Y-m-d H:i:s' );
@@ -1183,8 +1281,8 @@ class DD_Maintenance_Restore {
 	 * @param array $zip_paths Caminhos dos volumes ZIP.
 	 * @return array|WP_Error
 	 */
-	private function restore_archive_set( array $zip_paths ) {
-		$session = $this->init_restore_session( $zip_paths );
+	private function restore_archive_set( array $zip_paths, bool $apply_elementor_compatibility = false ) {
+		$session = $this->init_restore_session( $zip_paths, '', $apply_elementor_compatibility );
 		if ( is_wp_error( $session ) ) {
 			return $session;
 		}
@@ -1224,8 +1322,11 @@ class DD_Maintenance_Restore {
 	 * @return true|WP_Error
 	 */
 	private function reassemble_large_files( string $extract_dir ) {
-		$chunk_dir    = $extract_dir . '/__dd_chunks__';
+		$chunk_dir     = $extract_dir . '/__dd_chunks__';
 		$manifest_file = $chunk_dir . '/manifest.json';
+		if ( is_link( $chunk_dir ) || is_link( $manifest_file ) ) {
+			return new WP_Error( 'restore_chunk_symlink', __( 'Manifesto de arquivos grandes simbólico não permitido.', 'dd-maintenance' ) );
+		}
 		if ( ! is_file( $manifest_file ) ) {
 			return true;
 		}
@@ -1235,45 +1336,70 @@ class DD_Maintenance_Restore {
 			return new WP_Error( 'restore_chunk_manifest', __( 'Manifesto de arquivos grandes inválido.', 'dd-maintenance' ) );
 		}
 
+		$plans = array();
 		foreach ( $manifest['files'] as $file ) {
 			if ( empty( $file['target'] ) || empty( $file['chunks'] ) || ! is_array( $file['chunks'] ) ) {
 				return new WP_Error( 'restore_chunk_entry', __( 'Entrada inválida no manifesto de arquivos grandes.', 'dd-maintenance' ) );
 			}
-
-			$target = wp_normalize_path( $file['target'] );
-			if ( 0 === strpos( $target, '/' ) || preg_match( '#(^|/)\.\.(/|$)#', $target ) ) {
+			$target = DD_Maintenance_File_Security::normalize_relative_path( $file['target'] );
+			if ( is_wp_error( $target ) ) {
 				return new WP_Error( 'restore_chunk_path', __( 'Caminho inválido no manifesto de arquivos grandes.', 'dd-maintenance' ) );
 			}
-
-			$destination = $extract_dir . '/' . $target;
-			if ( ! wp_mkdir_p( dirname( $destination ) ) ) {
-				return new WP_Error( 'restore_chunk_mkdir', sprintf( __( 'Não foi possível criar a pasta para %s.', 'dd-maintenance' ), $target ) );
-			}
-			$output = fopen( $destination, 'wb' );
-			if ( ! $output ) {
-				return new WP_Error( 'restore_chunk_output', sprintf( __( 'Não foi possível reconstruir %s.', 'dd-maintenance' ), $target ) );
+			$target_check = DD_Maintenance_File_Security::safe_child_path( $extract_dir, $target, false );
+			if ( is_wp_error( $target_check ) && 'dd_path_parent_missing' !== $target_check->get_error_code() ) {
+				return $target_check;
 			}
 
 			$chunks = $file['chunks'];
 			ksort( $chunks, SORT_NUMERIC );
+			$chunk_paths = array();
 			foreach ( $chunks as $chunk ) {
-				$chunk = wp_normalize_path( $chunk );
-				if ( 0 !== strpos( $chunk, '__dd_chunks__/' ) || preg_match( '#(^|/)\.\.(/|$)#', $chunk ) ) {
-					fclose( $output );
+				$chunk = DD_Maintenance_File_Security::normalize_relative_path( $chunk );
+				if ( is_wp_error( $chunk ) || 0 !== strpos( $chunk, '__dd_chunks__/' ) ) {
 					return new WP_Error( 'restore_chunk_path', __( 'Caminho de trecho inválido no manifesto.', 'dd-maintenance' ) );
 				}
-				$input = fopen( $extract_dir . '/' . $chunk, 'rb' );
-				if ( ! $input ) {
-					fclose( $output );
-					return new WP_Error( 'restore_chunk_missing', sprintf( __( 'Trecho ausente ao reconstruir %s.', 'dd-maintenance' ), $target ) );
+				$chunk_check = DD_Maintenance_File_Security::safe_child_path( $extract_dir, $chunk, false );
+				if ( is_wp_error( $chunk_check ) && 'dd_path_parent_missing' !== $chunk_check->get_error_code() ) {
+					return $chunk_check;
 				}
-				stream_copy_to_stream( $input, $output );
+				$chunk_path = $extract_dir . '/' . $chunk;
+				$source_ok  = DD_Maintenance_File_Security::assert_regular_source( $chunk_path );
+				if ( is_wp_error( $source_ok ) ) {
+					return new WP_Error( 'restore_chunk_missing', sprintf( __( 'Trecho ausente ou inseguro ao reconstruir %s.', 'dd-maintenance' ), $target ) );
+				}
+				$chunk_paths[] = $chunk_path;
+			}
+			$plans[] = array(
+				'target' => $target,
+				'chunks' => $chunk_paths,
+				'size'   => isset( $file['size'] ) ? (int) $file['size'] : null,
+			);
+		}
+
+		foreach ( $plans as $plan ) {
+			$destination = DD_Maintenance_File_Security::safe_child_path( $extract_dir, $plan['target'], true );
+			if ( is_wp_error( $destination ) ) {
+				return $destination;
+			}
+			$output = fopen( $destination, 'wb' );
+			if ( ! $output ) {
+				return new WP_Error( 'restore_chunk_output', sprintf( __( 'Não foi possível reconstruir %s.', 'dd-maintenance' ), $plan['target'] ) );
+			}
+			foreach ( $plan['chunks'] as $chunk_path ) {
+				$input = fopen( $chunk_path, 'rb' );
+				if ( ! $input || false === stream_copy_to_stream( $input, $output ) ) {
+					if ( $input ) {
+						fclose( $input );
+					}
+					fclose( $output );
+					return new WP_Error( 'restore_chunk_read', sprintf( __( 'Falha ao ler trecho de %s.', 'dd-maintenance' ), $plan['target'] ) );
+				}
 				fclose( $input );
 			}
 			fclose( $output );
 			clearstatcache( true, $destination );
-			if ( isset( $file['size'] ) && filesize( $destination ) !== (int) $file['size'] ) {
-				return new WP_Error( 'restore_chunk_size', sprintf( __( 'Tamanho reconstruído inválido para %s.', 'dd-maintenance' ), $target ) );
+			if ( null !== $plan['size'] && filesize( $destination ) !== $plan['size'] ) {
+				return new WP_Error( 'restore_chunk_size', sprintf( __( 'Tamanho reconstruído inválido para %s.', 'dd-maintenance' ), $plan['target'] ) );
 			}
 		}
 
@@ -1290,62 +1416,48 @@ class DD_Maintenance_Restore {
 	 * @return string|null Caminho completo do arquivo SQL ou null.
 	 */
 	private function find_sql_file( string $extract_dir, string $temp_upload_dir = '', array $zip_paths = array() ): ?string {
-		// 1. database.sql na raiz da extração
-		if ( file_exists( $extract_dir . '/database.sql' ) && filesize( $extract_dir . '/database.sql' ) > 0 ) {
-			return $extract_dir . '/database.sql';
+		$candidates = array( $extract_dir . '/database.sql' );
+		$root_files = glob( $extract_dir . '/*.sql' );
+		$sub_files  = glob( $extract_dir . '/*/*.sql' );
+		if ( is_array( $root_files ) ) {
+			$candidates = array_merge( $candidates, $root_files );
+		}
+		if ( is_array( $sub_files ) ) {
+			$candidates = array_merge( $candidates, $sub_files );
+		}
+		foreach ( $candidates as $candidate ) {
+			if ( is_link( $candidate ) || ! is_file( $candidate ) || filesize( $candidate ) <= 0 ) {
+				continue;
+			}
+			return $candidate;
 		}
 
-		// 2. Qualquer arquivo .sql na raiz da extração
-		$files = glob( $extract_dir . '/*.sql' );
-		if ( ! empty( $files ) ) {
-			foreach ( $files as $f ) {
-				if ( is_file( $f ) && filesize( $f ) > 0 ) {
-					return $f;
-				}
+		$copy_sources = array();
+		if ( ! empty( $temp_upload_dir ) && is_dir( $temp_upload_dir ) && ! is_link( $temp_upload_dir ) ) {
+			$copy_sources[] = $temp_upload_dir . '/database.sql';
+			$upload_sqls   = glob( $temp_upload_dir . '/*.sql' );
+			if ( is_array( $upload_sqls ) ) {
+				$copy_sources = array_merge( $copy_sources, $upload_sqls );
 			}
 		}
-
-		// 3. Subpastas da extração (ex: extract_dir/site/*.sql)
-		$sub_files = glob( $extract_dir . '/*/*.sql' );
-		if ( ! empty( $sub_files ) ) {
-			foreach ( $sub_files as $f ) {
-				if ( is_file( $f ) && filesize( $f ) > 0 ) {
-					return $f;
-				}
-			}
-		}
-
-		// 4. Pasta temporária de upload (se o .sql foi enviado no mesmo upload)
-		if ( ! empty( $temp_upload_dir ) && is_dir( $temp_upload_dir ) ) {
-			if ( file_exists( $temp_upload_dir . '/database.sql' ) && filesize( $temp_upload_dir . '/database.sql' ) > 0 ) {
-				@copy( $temp_upload_dir . '/database.sql', $extract_dir . '/database.sql' );
-				return $extract_dir . '/database.sql';
-			}
-			$upload_sqls = glob( $temp_upload_dir . '/*.sql' );
-			if ( ! empty( $upload_sqls ) ) {
-				foreach ( $upload_sqls as $f ) {
-					if ( is_file( $f ) && filesize( $f ) > 0 ) {
-						@copy( $f, $extract_dir . '/' . basename( $f ) );
-						return $extract_dir . '/' . basename( $f );
-					}
-				}
-			}
-		}
-
-		// 5. Pasta local de backups
 		$backup_dir = DD_Maintenance::backup_dir();
-		if ( ! empty( $zip_paths ) ) {
-			foreach ( $zip_paths as $zp ) {
-				$base      = preg_replace( '/\.part\d+\.zip$/i', '', basename( $zp ) );
-				$base      = preg_replace( '/\.zip$/i', '', $base );
-				$candidate = $backup_dir . '/' . $base . '.sql';
-				if ( file_exists( $candidate ) && is_file( $candidate ) && filesize( $candidate ) > 0 ) {
-					@copy( $candidate, $extract_dir . '/' . basename( $candidate ) );
-					return $extract_dir . '/' . basename( $candidate );
-				}
+		if ( ! empty( $zip_paths ) && is_dir( $backup_dir ) && ! is_link( $backup_dir ) ) {
+			foreach ( $zip_paths as $zip_path ) {
+				$base             = preg_replace( '/\.part\d+\.zip$/i', '', basename( $zip_path ) );
+				$base             = preg_replace( '/\.zip$/i', '', $base );
+				$copy_sources[]   = $backup_dir . '/' . $base . '.sql';
 			}
 		}
 
+		foreach ( $copy_sources as $source ) {
+			if ( is_link( $source ) || ! is_file( $source ) || filesize( $source ) <= 0 ) {
+				continue;
+			}
+			$copy_result = DD_Maintenance_File_Security::copy_to_root( $source, $extract_dir, basename( $source ) );
+			if ( ! is_wp_error( $copy_result ) ) {
+				return $extract_dir . '/' . basename( $source );
+			}
+		}
 		return null;
 	}
 
@@ -1509,18 +1621,22 @@ class DD_Maintenance_Restore {
 	 * @return int|WP_Error Quantidade de arquivos copiados ou erro.
 	 */
 	private function copy_directory( string $source_dir, string $dest_dir, array $ignore_paths = array() ) {
-		$copied = 0;
 		$source_dir = wp_normalize_path( $source_dir );
-		$dest_dir   = wp_normalize_path( $dest_dir );
-
-		if ( ! is_dir( $source_dir ) ) {
-			return 0;
+		$dest_root  = realpath( $dest_dir );
+		if ( is_link( $source_dir ) || ! is_dir( $source_dir ) ) {
+			return is_link( $source_dir ) ? new WP_Error( 'restore_source_symlink', __( 'Origem simbólica não permitida.', 'dd-maintenance' ) ) : 0;
 		}
-		if ( ! is_dir( $dest_dir ) && ! wp_mkdir_p( $dest_dir ) ) {
-			return new WP_Error( 'restore_target_mkdir_failed', __( 'Não foi possível criar a pasta de destino da restauração.', 'dd-maintenance' ) );
+		if ( false === $dest_root || ! is_dir( $dest_root ) ) {
+			return new WP_Error( 'restore_target_root_invalid', __( 'Diretório raiz de destino inválido.', 'dd-maintenance' ) );
 		}
-
-		$dest_canonical = wp_normalize_path( realpath( $dest_dir ) ? realpath( $dest_dir ) : $dest_dir );
+		$dest_root = wp_normalize_path( rtrim( $dest_root, '/' ) );
+		$ignore_paths = array_map(
+			static function ( $path ) {
+				return rtrim( wp_normalize_path( $path ), '/' );
+			},
+			$ignore_paths
+		);
+		$copied  = 0;
 		$iterator = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator( $source_dir, FilesystemIterator::SKIP_DOTS ),
 			RecursiveIteratorIterator::SELF_FIRST
@@ -1528,49 +1644,47 @@ class DD_Maintenance_Restore {
 
 		foreach ( $iterator as $item ) {
 			$item_path = wp_normalize_path( $item->getPathname() );
-
+			if ( is_link( $item_path ) ) {
+				return new WP_Error( 'restore_source_symlink', sprintf( __( 'A restauração rejeitou o link simbólico %s.', 'dd-maintenance' ), $item->getFilename() ) );
+			}
+			if ( ! $item->isFile() && ! $item->isDir() ) {
+				return new WP_Error( 'restore_source_type', sprintf( __( 'Tipo de arquivo não suportado: %s.', 'dd-maintenance' ), $item->getFilename() ) );
+			}
 			$filename_lower = strtolower( $item->getFilename() );
-
-			// NUNCA sobrescreve o wp-config.php e não copia arquivos SQL soltos durante a cópia de arquivos.
 			if ( 'wp-config.php' === $filename_lower || 'database.sql' === $filename_lower || preg_match( '/\.sql$/i', $filename_lower ) ) {
 				continue;
 			}
-
-			$relative = ltrim( substr( $item_path, strlen( $source_dir ) ), '/' );
-			$target   = $dest_dir . '/' . $relative;
-
-			$skip = false;
+			$relative = DD_Maintenance_File_Security::normalize_relative_path( ltrim( substr( $item_path, strlen( $source_dir ) ), '/' ) );
+			if ( is_wp_error( $relative ) ) {
+				return $relative;
+			}
+			$target = $dest_root . '/' . $relative;
+			$skip   = false;
 			foreach ( $ignore_paths as $ignore ) {
-				if ( 0 === strpos( $target, $ignore ) ) {
+				if ( $target === $ignore || 0 === strpos( $target, $ignore . '/' ) ) {
 					$skip = true;
 					break;
 				}
 			}
-
 			if ( $skip ) {
 				continue;
 			}
-			// Proteção de travessia de diretório: o destino precisa estar estritamente dentro da pasta de destino.
-			$target_normalized = wp_normalize_path( $target );
-			if ( 0 !== strpos( $target_normalized, $dest_canonical . '/' ) && $target_normalized !== $dest_canonical ) {
-				continue;
-			}
 			if ( $item->isDir() ) {
-				if ( ! is_dir( $target ) && ! wp_mkdir_p( $target ) ) {
+				$target_path = DD_Maintenance_File_Security::safe_child_path( $dest_root, $relative, true );
+				if ( is_wp_error( $target_path ) ) {
+					return $target_path;
+				}
+				if ( ! is_dir( $target_path ) && ! mkdir( $target_path, 0755 ) && ! is_dir( $target_path ) ) {
 					return new WP_Error( 'restore_target_mkdir_failed', sprintf( __( 'Não foi possível criar a pasta de destino %s.', 'dd-maintenance' ), basename( $target ) ) );
 				}
-			} elseif ( $item->isFile() ) {
-				$parent_dir = dirname( $target );
-				if ( ! is_dir( $parent_dir ) && ! wp_mkdir_p( $parent_dir ) ) {
-					return new WP_Error( 'restore_target_mkdir_failed', sprintf( __( 'Não foi possível criar a pasta de destino para %s.', 'dd-maintenance' ), basename( $target ) ) );
-				}
-				if ( ! @copy( $item_path, $target ) ) {
-					return new WP_Error( 'restore_copy_failed', sprintf( __( 'Não foi possível restaurar o arquivo %s.', 'dd-maintenance' ), basename( $target ) ) );
+			} else {
+				$copy_result = DD_Maintenance_File_Security::copy_to_root( $item_path, $dest_root, $relative );
+				if ( is_wp_error( $copy_result ) ) {
+					return $copy_result;
 				}
 				$copied++;
 			}
 		}
-
 		return $copied;
 	}
 
@@ -1701,6 +1815,7 @@ class DD_Maintenance_Restore {
 			}
 		}
 
+		$chunk_size_mb = ( new DD_Maintenance_Settings_Repository() )->get_split_size_mb();
 		$backups = array();
 		foreach ( $groups as $base => $data ) {
 			ksort( $data['parts'], SORT_NUMERIC );
@@ -1710,7 +1825,7 @@ class DD_Maintenance_Restore {
 
 			$backups[] = array(
 				'identifier'         => $base,
-				'display_name'       => $data['is_multipart'] ? sprintf( '%s (%d partes de 25MB)', $base, $count ) : $data['display_name'],
+				'display_name'       => $data['is_multipart'] ? sprintf( '%s (%d partes de até %d MB)', $base, $count, $chunk_size_mb ) : $data['display_name'],
 				'is_multipart'       => $data['is_multipart'],
 				'total_parts'        => $count,
 				'parts'              => $parts_list,
@@ -1750,29 +1865,23 @@ class DD_Maintenance_Restore {
 
 		$deleted = false;
 
-		// Exclui todas as partes se for multipart
 		$parts = glob( $backup_dir . '/' . $base_name . '.part*.zip' );
 		if ( ! empty( $parts ) ) {
-			foreach ( $parts as $p ) {
-				if ( is_file( $p ) ) {
-					@unlink( $p );
+			foreach ( $parts as $part ) {
+				if ( is_file( $part ) && unlink( $part ) ) {
 					$deleted = true;
 				}
 			}
 		}
 
-		// Exclui arquivo zip simples se existir
 		$single = $backup_dir . '/' . $base_name . '.zip';
-		if ( file_exists( $single ) && is_file( $single ) ) {
-			@unlink( $single );
+		if ( is_file( $single ) && unlink( $single ) ) {
 			$deleted = true;
 		}
 
 		$sql = $backup_dir . '/' . $base_name . '.sql';
-		if ( file_exists( $sql ) && is_file( $sql ) ) {
-			if ( @unlink( $sql ) ) {
-				$deleted = true;
-			}
+		if ( is_file( $sql ) && unlink( $sql ) ) {
+			$deleted = true;
 		}
 
 		return $deleted;
@@ -1782,28 +1891,10 @@ class DD_Maintenance_Restore {
 	 * Remove recursivamente uma pasta e seus arquivos.
 	 *
 	 * @param string $dir Caminho da pasta.
-	 * @return void
+	 * @return bool
 	 */
-	private function delete_directory( string $dir ): void {
-		$dir = wp_normalize_path( $dir );
-		if ( ! is_dir( $dir ) ) {
-			return;
-		}
-
-		$items = new RecursiveIteratorIterator(
-			new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ),
-			RecursiveIteratorIterator::CHILD_FIRST
-		);
-
-		foreach ( $items as $item ) {
-			if ( $item->isDir() ) {
-				@rmdir( $item->getPathname() );
-			} else {
-				@unlink( $item->getPathname() );
-			}
-		}
-
-		@rmdir( $dir );
+	private function delete_directory( string $dir ): bool {
+		return $this->session_store->remove_directory( wp_normalize_path( $dir ) );
 	}
 
 	/**
@@ -1811,10 +1902,40 @@ class DD_Maintenance_Restore {
 	 */
 	private function set_time_and_memory_limits() {
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
-			@set_time_limit( 0 );
+			set_time_limit( 0 );
 		}
 		if ( function_exists( 'ini_set' ) ) {
-			@ini_set( 'memory_limit', '512M' );
+			ini_set( 'memory_limit', '512M' );
+		}
+	}
+
+	/**
+	 * Executa uma consulta mysqli sem ocultar falhas do driver.
+	 *
+	 * @param mixed  $dbh Conexão mysqli.
+	 * @param string $sql SQL a executar.
+	 * @return bool
+	 */
+	private function run_mysqli_query( $dbh, string $sql ): bool {
+		if ( ! ( $dbh instanceof mysqli ) ) {
+			return false;
+		}
+
+		return false !== mysqli_query( $dbh, $sql );
+	}
+
+	/**
+	 * Registra uma falha do driver mysqli sem perder o progresso contabilizado.
+	 *
+	 * @param mixed  $dbh           Conexão mysqli.
+	 * @param array  $error_samples Amostras de erro.
+	 * @param int    $errors        Contador de erros.
+	 */
+	private function record_mysqli_error( $dbh, array &$error_samples, int &$errors ): void {
+		$errors++;
+		$err_msg = mysqli_error( $dbh );
+		if ( $err_msg && count( $error_samples ) < 3 && ! in_array( $err_msg, $error_samples, true ) ) {
+			$error_samples[] = $err_msg;
 		}
 	}
 	/**
@@ -1881,28 +2002,7 @@ class DD_Maintenance_Restore {
 	 * @return mixed
 	 */
 	public static function fix_elementor_dynamic_tags( $content ) {
-		if ( ! is_string( $content ) || false === strpos( $content, '[elementor-tag' ) ) {
-			return $content;
-		}
-
-		$trimmed = trim( $content );
-		if ( '' !== $trimmed && ( '{' === $trimmed[0] || '[' === $trimmed[0] ) ) {
-			$json = json_decode( $trimmed, true );
-			if ( null === $json && JSON_ERROR_NONE !== json_last_error() ) {
-				$unslashed = stripslashes( $trimmed );
-				$json      = json_decode( $unslashed, true );
-			}
-			if ( null !== $json && JSON_ERROR_NONE === json_last_error() ) {
-				array_walk_recursive( $json, static function( &$item ) {
-					if ( is_string( $item ) && false !== strpos( $item, '[elementor-tag' ) ) {
-						$item = self::fix_elementor_dynamic_tags_string( $item );
-					}
-				} );
-				return wp_json_encode( $json, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
-			}
-		}
-
-		return self::fix_elementor_dynamic_tags_string( $content );
+		return DD_Maintenance_Elementor_Compatibility::fix_elementor_dynamic_tags( $content );
 	}
 
 	/**
@@ -1912,28 +2012,7 @@ class DD_Maintenance_Restore {
 	 * @return string
 	 */
 	public static function fix_elementor_dynamic_tags_string( string $content ): string {
-		return preg_replace_callback(
-			'/\[elementor-tag\s+((?:\\\\"[^\\\\"]*\\\\"|[^\]])+)\]/i',
-			static function( $matches ) {
-				$attrs_str  = $matches[1];
-				$is_escaped = false !== strpos( $attrs_str, '\"' );
-				$q          = $is_escaped ? '\"' : '"';
-
-				if ( preg_match( '/\bsettings\s*=\s*(?:\\\\"([^\\\\"]*)\\\\"|"([^"]*)")/i', $attrs_str, $sm ) ) {
-					$val      = isset( $sm[2] ) && '' !== $sm[2] ? $sm[2] : ( $sm[1] ?? '' );
-					$val_trim = trim( $val );
-					if ( '' !== $val_trim && '%22%22' !== $val_trim && 'null' !== strtolower( $val_trim ) && '%7B%7D' !== $val_trim ) {
-						return $matches[0];
-					}
-				}
-
-				$cleaned = preg_replace( '/\bsettings\s*=\s*(?:\\\\"([^\\\\"]*)\\\\"|"[^"]*")/i', '', $attrs_str );
-				$cleaned = trim( preg_replace( '/\s+/', ' ', $cleaned ) );
-
-				return '[elementor-tag ' . $cleaned . ' settings=' . $q . '%7B%7D' . $q . ']';
-			},
-			$content
-		);
+		return DD_Maintenance_Elementor_Compatibility::fix_elementor_dynamic_tags_string( $content );
 	}
 
 	/**
@@ -1967,10 +2046,7 @@ class DD_Maintenance_Restore {
 
 				// 1. String PHP serializada
 				if ( ( 0 === strpos( $trimmed, 'a:' ) || 0 === strpos( $trimmed, 's:' ) || 0 === strpos( $trimmed, 'O:' ) ) && false === strpos( $trimmed, 'O:8:"DateTime":0:{}' ) ) {
-					$unserialized = @unserialize( $data, array( 'allowed_classes' => false ) );
-					if ( false === $unserialized && 'b:0;' !== $data ) {
-						$unserialized = @unserialize( $data );
-					}
+					$unserialized = unserialize( $data, array( 'allowed_classes' => false ) );
 					if ( false !== $unserialized || 'b:0;' === $data ) {
 						$replaced = self::recursive_search_replace( $map, '', $unserialized, true );
 						return serialize( $replaced );
@@ -2303,7 +2379,7 @@ class DD_Maintenance_Restore {
 		}
 
 		$current_opt = $wpdb->get_var( "SELECT `option_value` FROM `{$options_table}` WHERE `option_name` = 'elementor_pro_theme_builder_conditions' LIMIT 1" );
-		$current_val = is_string( $current_opt ) ? @unserialize( $current_opt ) : null;
+		$current_val = is_string( $current_opt ) ? unserialize( $current_opt, array( 'allowed_classes' => false ) ) : null;
 
 		if ( empty( $current_val ) || ! is_array( $current_val ) ) {
 			$condition_rows = $wpdb->get_results(
@@ -2317,7 +2393,7 @@ class DD_Maintenance_Restore {
 			if ( ! empty( $condition_rows ) && is_array( $condition_rows ) ) {
 				$rebuilt = array();
 				foreach ( $condition_rows as $crow ) {
-					$cond = @unserialize( $crow['conditions'] );
+					$cond = unserialize( $crow['conditions'], array( 'allowed_classes' => false ) );
 					if ( is_array( $cond ) && ! empty( $cond ) ) {
 						$type = ! empty( $crow['template_type'] ) ? $crow['template_type'] : 'single';
 						if ( ! isset( $rebuilt[ $type ] ) ) {
@@ -2377,7 +2453,7 @@ class DD_Maintenance_Restore {
 				if ( is_array( $files ) ) {
 					foreach ( $files as $f ) {
 						if ( is_file( $f ) ) {
-							@unlink( $f );
+							unlink( $f );
 						}
 					}
 				}
@@ -2401,7 +2477,7 @@ class DD_Maintenance_Restore {
 	public static function create_mu_plugin_loader(): void {
 		$mu_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
 		if ( ! is_dir( $mu_dir ) ) {
-			@wp_mkdir_p( $mu_dir );
+			wp_mkdir_p( $mu_dir );
 		}
 		if ( is_dir( $mu_dir ) ) {
 			$loader_code = "<?php\n"
@@ -2443,7 +2519,7 @@ class DD_Maintenance_Restore {
 				. "if ( class_exists( 'DD_Maintenance' ) ) {\n"
 				. "    DD_Maintenance::instance();\n"
 				. "}\n";
-			@file_put_contents( $mu_dir . '/dd-maintenance-loader.php', $loader_code );
+			file_put_contents( $mu_dir . '/dd-maintenance-loader.php', $loader_code );
 		}
 	}
 
@@ -2451,231 +2527,14 @@ class DD_Maintenance_Restore {
 	 * Instala um drop-in permanente em mu-plugins para blindar o Elementor no site restaurado contra erros de PHP 8.0+.
 	 */
 	public static function install_permanent_elementor_shield(): void {
-		$mu_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
-		if ( ! is_dir( $mu_dir ) ) {
-			@wp_mkdir_p( $mu_dir );
-		}
-		if ( is_dir( $mu_dir ) ) {
-			$shield_code = "<?php\n"
-				. "/**\n"
-				. " * Plugin Name: DD Maintenance - Elementor & Pro Elements PHP 8.2 Compatibility Shield\n"
-				. " * Description: Previne Fatal TypeError no Elementor / Pro Elements em PHP 8.0+ normalizando tags dinamicas sem settings.\n"
-				. " */\n\n"
-				. "defined( 'ABSPATH' ) || exit;\n\n"
-				. "// 1. Auto-patch em disco para compatibilidade com PHP 8.0+\n"
-				. "\$p_dir = defined( 'WP_PLUGIN_DIR' ) ? str_replace( '\\\\', '/', (string) WP_PLUGIN_DIR ) : '';\n"
-				. "\$c_dir = defined( 'WP_CONTENT_DIR' ) ? str_replace( '\\\\', '/', (string) WP_CONTENT_DIR ) : '';\n"
-				. "\$a_dir = defined( 'ABSPATH' ) ? str_replace( '\\\\', '/', (string) ABSPATH ) : '';\n"
-				. "\$el_candidates = array();\n"
-				. "if ( ! empty( \$p_dir ) ) {\n"
-				. "    \$el_candidates[] = \$p_dir . '/elementor/core/dynamic-tags/manager.php';\n"
-				. "    \$el_candidates[] = \$p_dir . '/pro-elements/core/dynamic-tags/manager.php';\n"
-				. "    if ( is_dir( \$p_dir ) ) {\n"
-				. "        \$g1 = glob( \$p_dir . '/*elementor*/core/dynamic-tags/manager.php' );\n"
-				. "        if ( is_array( \$g1 ) ) \$el_candidates = array_merge( \$el_candidates, \$g1 );\n"
-				. "        \$g2 = glob( \$p_dir . '/*pro-elements*/core/dynamic-tags/manager.php' );\n"
-				. "        if ( is_array( \$g2 ) ) \$el_candidates = array_merge( \$el_candidates, \$g2 );\n"
-				. "    }\n"
-				. "}\n"
-				. "if ( ! empty( \$c_dir ) ) {\n"
-				. "    \$el_candidates[] = \$c_dir . '/plugins/elementor/core/dynamic-tags/manager.php';\n"
-				. "    \$el_candidates[] = \$c_dir . '/plugins/pro-elements/core/dynamic-tags/manager.php';\n"
-				. "}\n"
-				. "if ( ! empty( \$a_dir ) ) {\n"
-				. "    \$el_candidates[] = \$a_dir . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php';\n"
-				. "    \$el_candidates[] = \$a_dir . 'wp-content/plugins/pro-elements/core/dynamic-tags/manager.php';\n"
-				. "}\n"
-				. "foreach ( \$el_candidates as \$el_f ) {\n"
-				. "    \$el_f = str_replace( '\\\\', '/', (string) \$el_f );\n"
-				. "    if ( ! empty( \$el_f ) && file_exists( \$el_f ) && is_file( \$el_f ) ) {\n"
-				. "        \$el_src = (string) @file_get_contents( \$el_f );\n"
-				. "        if ( ! empty( \$el_src ) ) {\n"
-				. "            \$el_patched = preg_replace(\n"
-				. "                '/function\\s+([a-zA-Z0-9_]+)\\s*\\(\\s*([^)]*?\\b)array\\s*(\\\$settings\\b)/i',\n"
-				. "                'function \$1( \$2\$3',\n"
-				. "                \$el_src\n"
-				. "            );\n"
-				. "            if ( false === strpos( \$el_patched, '\$settings = is_array( \$settings ) ? \$settings : [];' ) ) {\n"
-				. "                \$el_patched = preg_replace(\n"
-				. "                    '/(public\\s+function\\s+create_tag\\s*\\([^)]*\\)\\s*\\{)/i',\n"
-				. "                    \"\$1\\n\\t\\t\" . '\$settings = is_array( \$settings ) ? \$settings : [];',\n"
-				. "                    \$el_patched,\n"
-				. "                    1\n"
-				. "                );\n"
-				. "                \$el_patched = preg_replace(\n"
-				. "                    '/(public\\s+function\\s+get_tag_data_content\\s*\\([^)]*\\)\\s*\\{)/i',\n"
-				. "                    \"\$1\\n\\t\\t\" . '\$settings = is_array( \$settings ) ? \$settings : [];',\n"
-				. "                    \$el_patched,\n"
-				. "                    1\n"
-				. "                );\n"
-				. "            }\n"
-				. "            if ( is_string( \$el_patched ) && \$el_patched !== \$el_src ) {\n"
-				. "                @file_put_contents( \$el_f, \$el_patched );\n"
-				. "            }\n"
-				. "        }\n"
-				. "    }\n"
-				. "}\n\n"
-				. "if ( ! function_exists( 'dd_fix_elementor_dynamic_tags_shield' ) ) {\n"
-				. "    function dd_fix_elementor_dynamic_tags_shield( \$content ) {\n"
-				. "        if ( ! is_string( \$content ) || false === strpos( \$content, '[elementor-tag' ) ) {\n"
-				. "            return \$content;\n"
-				. "        }\n"
-				. "        if ( 0 === strpos( \$content, '{' ) || 0 === strpos( \$content, '[' ) ) {\n"
-				. "            \$json = json_decode( \$content, true );\n"
-				. "            if ( null !== \$json && JSON_ERROR_NONE === json_last_error() ) {\n"
-				. "                array_walk_recursive( \$json, static function( &\$item ) {\n"
-				. "                    if ( is_string( \$item ) && false !== strpos( \$item, '[elementor-tag' ) ) {\n"
-				. "                        \$item = dd_fix_elementor_dynamic_tags_string_shield( \$item );\n"
-				. "                    }\n"
-				. "                } );\n"
-				. "                return json_encode( \$json, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );\n"
-				. "            }\n"
-				. "        }\n"
-				. "        return dd_fix_elementor_dynamic_tags_string_shield( \$content );\n"
-				. "    }\n\n"
-				. "    function dd_fix_elementor_dynamic_tags_string_shield( \$content ) {\n"
-				. "        if ( ! is_string( \$content ) || false === strpos( \$content, '[elementor-tag' ) ) {\n"
-				. "            return \$content;\n"
-				. "        }\n"
-				. "        return preg_replace_callback(\n"
-				. "            '/\\[elementor-tag\\s+((?:\\\\\"[^\\\\\"]*\\\\\"|[^\\]])+)\\]/i',\n"
-				. "            static function( \$matches ) {\n"
-				. "                \$attrs_str  = \$matches[1];\n"
-				. "                \$is_escaped = false !== strpos( \$attrs_str, '\\\"' );\n"
-				. "                \$q          = \$is_escaped ? '\\\"' : '\"';\n"
-				. "                if ( preg_match( '/\\\\bsettings\\\\s*=\\\\s*(?:\\\\\"([^\\\\\"]*)\\\\\\\"|\"([^\"]*)\")/i', \$attrs_str, \$sm ) ) {\n"
-				. "                    \$val = isset( \$sm[2] ) && '' !== \$sm[2] ? \$sm[2] : ( \$sm[1] ?? '' );\n"
-				. "                    if ( '' !== trim( \$val ) && '%22%22' !== \$val && 'null' !== strtolower( trim( \$val ) ) ) {\n"
-				. "                        return \$matches[0];\n"
-				. "                    }\n"
-				. "                }\n"
-				. "                \$cleaned = preg_replace( '/\\\\bsettings\\\\s*=\\\\s*(?:\\\\\"([^\\\\\"]*)\\\\\\\"|\"[^\"]*\")/i', '', \$attrs_str );\n"
-				. "                \$cleaned = trim( preg_replace( '/\\\\s+/', ' ', \$cleaned ) );\n"
-				. "                return '[elementor-tag ' . \$cleaned . ' settings=' . \$q . '%7B%7D' . \$q . ']';\n"
-				. "            },\n"
-				. "            \$content\n"
-				. "        );\n"
-				. "    }\n\n"
-				. "    add_filter( 'the_content', 'dd_fix_elementor_dynamic_tags_shield', 1 );\n"
-				. "    add_filter( 'widget_text', 'dd_fix_elementor_dynamic_tags_shield', 1 );\n"
-				. "    add_filter( 'elementor/dynamic_tags/parse_tag_text', 'dd_fix_elementor_dynamic_tags_shield', 999 );\n"
-				. "    add_filter( 'get_post_metadata', static function( \$value, \$object_id, \$meta_key, \$single ) {\n"
-				. "        if ( ! in_array( \$meta_key, array( '_elementor_data', '_elementor_page_settings', '_elementor_controls_usage' ), true ) ) {\n"
-				. "            return \$value;\n"
-				. "        }\n"
-				. "        static \$in_filter = false;\n"
-				. "        if ( \$in_filter ) {\n"
-				. "            return \$value;\n"
-				. "        }\n"
-				. "        \$in_filter = true;\n"
-				. "        \$meta      = get_post_meta( \$object_id, \$meta_key, true );\n"
-				. "        \$in_filter = false;\n"
-				. "        if ( is_string( \$meta ) && false !== strpos( \$meta, '[elementor-tag' ) ) {\n"
-				. "            \$fixed = dd_fix_elementor_dynamic_tags_shield( \$meta );\n"
-				. "            return \$single ? \$fixed : array( \$fixed );\n"
-				. "        }\n"
-				. "        return \$value;\n"
-				. "    }, 10, 4 );\n"
-				. "}\n";
-			@file_put_contents( $mu_dir . '/dd-elementor-compat.php', $shield_code );
-		}
+		DD_Maintenance_Elementor_Compatibility::install_permanent_elementor_shield();
 	}
 
 	/**
 	 * Aplica correcao direta no arquivo do Elementor caso detecte a assinatura incompativel com PHP 8.2.
 	 */
 	public static function patch_elementor_php8_compatibility(): bool {
-		$plugin_dir  = defined( 'WP_PLUGIN_DIR' ) ? str_replace( '\\', '/', (string) WP_PLUGIN_DIR ) : '';
-		$content_dir = defined( 'WP_CONTENT_DIR' ) ? str_replace( '\\', '/', (string) WP_CONTENT_DIR ) : '';
-		$abs_path    = defined( 'ABSPATH' ) ? str_replace( '\\', '/', (string) ABSPATH ) : '';
-
-		$candidates = array();
-
-		if ( ! empty( $plugin_dir ) ) {
-			$candidates[] = $plugin_dir . '/elementor/core/dynamic-tags/manager.php';
-			$candidates[] = $plugin_dir . '/pro-elements/core/dynamic-tags/manager.php';
-			if ( is_dir( $plugin_dir ) ) {
-				$found = glob( $plugin_dir . '/*elementor*/core/dynamic-tags/manager.php' );
-				if ( is_array( $found ) ) {
-					$candidates = array_merge( $candidates, $found );
-				}
-				$found_pro = glob( $plugin_dir . '/*pro-elements*/core/dynamic-tags/manager.php' );
-				if ( is_array( $found_pro ) ) {
-					$candidates = array_merge( $candidates, $found_pro );
-				}
-			}
-		}
-
-		if ( ! empty( $content_dir ) ) {
-			$candidates[] = $content_dir . '/plugins/elementor/core/dynamic-tags/manager.php';
-			$candidates[] = $content_dir . '/plugins/pro-elements/core/dynamic-tags/manager.php';
-			if ( is_dir( $content_dir . '/plugins' ) ) {
-				$found = glob( $content_dir . '/plugins/*elementor*/core/dynamic-tags/manager.php' );
-				if ( is_array( $found ) ) {
-					$candidates = array_merge( $candidates, $found );
-				}
-			}
-		}
-
-		if ( ! empty( $abs_path ) ) {
-			$candidates[] = $abs_path . 'wp-content/plugins/elementor/core/dynamic-tags/manager.php';
-			$candidates[] = $abs_path . 'wp-content/plugins/pro-elements/core/dynamic-tags/manager.php';
-		}
-
-		$candidates[] = dirname( dirname( __DIR__ ) ) . '/elementor/core/dynamic-tags/manager.php';
-		$candidates[] = dirname( dirname( dirname( __DIR__ ) ) ) . '/plugins/elementor/core/dynamic-tags/manager.php';
-		$candidates[] = __DIR__ . '/../../elementor/core/dynamic-tags/manager.php';
-		$candidates[] = __DIR__ . '/../../../plugins/elementor/core/dynamic-tags/manager.php';
-
-		$patched_any = false;
-		$seen        = array();
-
-		foreach ( $candidates as $file ) {
-			if ( empty( $file ) ) {
-				continue;
-			}
-			$norm_file = str_replace( '\\', '/', (string) $file );
-			if ( isset( $seen[ $norm_file ] ) ) {
-				continue;
-			}
-			$seen[ $norm_file ] = true;
-
-			if ( file_exists( $norm_file ) && is_file( $norm_file ) ) {
-				$content = (string) @file_get_contents( $norm_file );
-				if ( empty( $content ) ) {
-					continue;
-				}
-
-				$patched = preg_replace(
-					'/function\s+([a-zA-Z0-9_]+)\s*\(\s*(\$tag_id\s*,\s*\$tag_name\s*,)\s*array\s*(\$settings\b)/i',
-					'function $1( $2 $3',
-					$content
-				);
-
-				if ( false === strpos( $patched, '$settings = is_array( $settings ) ? $settings : [];' ) ) {
-					$patched = preg_replace(
-						'/(public\s+function\s+create_tag\s*\([^)]*\)\s*\{)/i',
-						"$1\n\t\t" . '$settings = is_array( $settings ) ? $settings : [];',
-						$patched,
-						1
-					);
-					$patched = preg_replace(
-						'/(public\s+function\s+get_tag_data_content\s*\([^)]*\)\s*\{)/i',
-						"$1\n\t\t" . '$settings = is_array( $settings ) ? $settings : [];',
-						$patched,
-						1
-					);
-				}
-
-				if ( is_string( $patched ) && $patched !== $content ) {
-					if ( @file_put_contents( $norm_file, $patched ) ) {
-						$patched_any = true;
-					}
-				}
-			}
-		}
-
-		return $patched_any;
+		return DD_Maintenance_Elementor_Compatibility::patch_elementor_php8_compatibility();
 	}
 
 	/**
@@ -2685,7 +2544,7 @@ class DD_Maintenance_Restore {
 		$mu_dir      = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
 		$loader_file = $mu_dir . '/dd-maintenance-loader.php';
 		if ( file_exists( $loader_file ) ) {
-			@unlink( $loader_file );
+			unlink( $loader_file );
 		}
 	}
 }

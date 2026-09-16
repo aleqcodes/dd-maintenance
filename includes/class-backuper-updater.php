@@ -8,3 +8,5 @@
 defined( 'ABSPATH' ) || exit;
 
 require_once __DIR__ . '/class-dd-maintenance-updater.php';
+require_once __DIR__ . '/class-dd-maintenance-legacy-compatibility.php';
+DD_Maintenance_Legacy_Compatibility::register();

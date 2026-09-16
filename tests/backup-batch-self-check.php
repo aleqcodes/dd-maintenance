@@ -14,6 +14,10 @@ final class WP_Error {
 	public function get_error_message() {
 		return $this->message;
 	}
+
+	public function get_error_code() {
+		return $this->code;
+	}
 }
 
 function is_wp_error($value) { return $value instanceof WP_Error; }
@@ -36,6 +40,7 @@ function get_option($name, $default = array()) {
 			'include_wpconfig'  => 0,
 			'include_entire'    => 1,
 			'keep_local'        => 0,
+			'split_size_mb'     => 25,
 			'retention_local'   => 5,
 		);
 	}
@@ -66,13 +71,20 @@ function wp_schedule_single_event($time, $hook, $args = array()) {
 function wp_schedule_event() { return true; }
 function wp_json_encode($value) { return json_encode($value, JSON_UNESCAPED_SLASHES); }
 function sanitize_file_name($value) { return preg_replace('/[^A-Za-z0-9_.-]/', '', $value); }
+function get_date_from_gmt($date, $format) { return date($format, strtotime($date)); }
 function __($value) { return $value; }
 function size_format($bytes) { return $bytes . ' B'; }
 function home_url() { return 'https://example.test'; }
-function get_date_from_gmt($date, $format) { return date($format, strtotime($date)); }
+function is_ssl() { return false; }
+function maybe_unserialize($value) { return $value; }
+function number_format_i18n($number) { return (string) $number; }
+function untrailingslashit($value) { return rtrim($value, '/'); }
 
 class DD_Maintenance_Settings {}
-class DD_Maintenance_Config {}
+class DD_Maintenance_Config {
+	public static function update_table_prefix($prefix) { return true; }
+}
+
 class DD_Maintenance_Updater {
 	public function update_plugins() { return array('updated' => 0, 'logs' => array()); }
 	public function update_core() { return array('updated' => false, 'message' => 'Core já atualizado.'); }
@@ -89,7 +101,7 @@ class DD_Maintenance_S3 {
 
 final class FakeWpdb {
 	public $last_error = '';
-
+	public $prefix = 'wp_';
 	public function get_col($query) {
 		return array('wp_options', 'wp_posts');
 	}
@@ -109,6 +121,13 @@ final class FakeWpdb {
 			$rows[] = array('id' => $id, 'value' => 'row-' . $id);
 		}
 		return $rows;
+	}
+
+	public function get_var($query) {
+		return false;
+	}
+	public function prepare($query, ...$args) {
+		return $query;
 	}
 
 	public function _real_escape($value) {
@@ -167,6 +186,7 @@ try {
 	$backup  = new DD_Maintenance_Backup();
 	$session = $backup->init_session();
 	assert(!is_wp_error($session));
+	assert($backup->get_chunk_size($session) === 25 * 1048576, 'O limite efetivo deve seguir a configuração da sessão.');
 
 	do {
 		$db = $backup->dump_database_step($session['session_id']);
@@ -204,7 +224,7 @@ try {
 
 	$entry_names = array();
 	foreach ($result['parts'] as $part) {
-		assert($part['size'] <= DD_Maintenance_Backup::CHUNK_SIZE);
+		assert($part['size'] <= $backup->get_chunk_size($session));
 		$archive = new ZipArchive();
 		assert($archive->open($part['file']) === true, 'Cada lote deve ser um ZIP independente.');
 		for ($index = 0; $index < $archive->numFiles; $index++) {
@@ -226,7 +246,7 @@ try {
 	$restore = (new DD_Maintenance_Restore())->restore_from_local_file($result['base']);
 	assert(!is_wp_error($restore), is_wp_error($restore) ? $restore->get_error_message() : '');
 	assert($restore['success'] === true);
-	assert(hash_file('sha256', $large_file) === $large_hash, 'O arquivo maior que 25MB deve ser reconstruído sem alteração.');
+	assert(hash_file('sha256', $large_file) === $large_hash, 'O arquivo maior que o volume configurado deve ser reconstruído sem alteração.');
 	assert(file_get_contents(WP_CONTENT_DIR . '/many/file-1.txt') === 'x');
 
 	delete_option('dd_maintenance_background_job');
@@ -244,6 +264,14 @@ try {
 	$job = get_option('dd_maintenance_background_job');
 	assert($job['status'] === 'completed' && $job['phase'] === 'done');
 	assert(count(DD_Maintenance_S3::$uploads) === count($job['parts']), 'O WP-Cron deve enviar um volume independente por evento.');
+	$cron_logs = DD_Maintenance::get_saved_logs();
+	$cron_log_matches = array_filter(
+		$cron_logs,
+		static function ( $log_item ) use ( $job ) {
+			return false !== strpos( $log_item['filename'], sanitize_file_name( $job['base_name'] ) );
+		}
+	);
+	assert( ! empty( $cron_log_matches ), 'O log concluído do cron deve identificar o backup pelo base_name.' );
 
 	// Teste de simulação de falha e autolimpeza
 	$fail_session = $backup->init_session();

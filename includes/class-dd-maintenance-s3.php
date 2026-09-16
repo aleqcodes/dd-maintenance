@@ -6,6 +6,8 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
+
 
 class DD_Maintenance_S3 {
 
@@ -64,10 +66,7 @@ class DD_Maintenance_S3 {
 	 * Construtor.
 	 */
 	public function __construct() {
-		$saved_settings = get_option( 'dd_maintenance_settings', null );
-		if ( null === $saved_settings ) {
-			$saved_settings = get_option( 'backuper_settings', array() );
-		}
+		$saved_settings = ( new DD_Maintenance_Settings_Repository() )->get();
 
 		$this->settings   = is_array( $saved_settings ) ? $saved_settings : array();
 		$this->access_key = isset( $this->settings['s3_access_key'] ) ? trim( (string) $this->settings['s3_access_key'] ) : '';
@@ -76,7 +75,19 @@ class DD_Maintenance_S3 {
 		$this->region     = isset( $this->settings['s3_region'] ) && '' !== trim( (string) $this->settings['s3_region'] ) ? trim( (string) $this->settings['s3_region'] ) : 'nyc3';
 		$this->endpoint   = isset( $this->settings['s3_endpoint'] ) ? trim( (string) $this->settings['s3_endpoint'] ) : '';
 
-		// Suporte a credenciais blindadas definidas como constantes no wp-config.php.
+		// Variáveis de ambiente são preferidas à opção do WordPress.
+		if ( function_exists( 'getenv' ) ) {
+			$env_access_key = getenv( 'DD_MAINTENANCE_S3_KEY' );
+			$env_secret_key = getenv( 'DD_MAINTENANCE_S3_SECRET' );
+			if ( false !== $env_access_key && '' !== trim( (string) $env_access_key ) ) {
+				$this->access_key = trim( (string) $env_access_key );
+			}
+			if ( false !== $env_secret_key && '' !== trim( (string) $env_secret_key ) ) {
+				$this->secret_key = trim( (string) $env_secret_key );
+			}
+		}
+
+		// Constantes do wp-config.php têm a prioridade máxima.
 		if ( defined( 'DD_MAINTENANCE_S3_KEY' ) && '' !== trim( (string) DD_MAINTENANCE_S3_KEY ) ) {
 			$this->access_key = trim( (string) DD_MAINTENANCE_S3_KEY );
 		}
@@ -273,7 +284,7 @@ class DD_Maintenance_S3 {
 
 		$this->region                = $detected;
 		$this->settings['s3_region'] = $detected;
-		update_option( 'dd_maintenance_settings', $this->settings );
+		update_option( 'dd_maintenance_settings', $this->settings, false );
 
 		return true;
 	}
@@ -352,8 +363,14 @@ class DD_Maintenance_S3 {
 			return $region_ok;
 		}
 
-		$size         = (int) filesize( $file_path );
+		$size = filesize( $file_path );
+		if ( false === $size ) {
+			return new WP_Error( 'file_size', __( 'Não foi possível determinar o tamanho do arquivo para upload.', 'dd-maintenance' ) );
+		}
 		$payload_hash = hash_file( 'sha256', $file_path );
+		if ( false === $payload_hash ) {
+			return new WP_Error( 'file_hash', __( 'Não foi possível calcular a integridade do arquivo para upload.', 'dd-maintenance' ) );
+		}
 		$uri          = $this->encode_uri( $key );
 
 		$auth = $this->sign_request( 'PUT', $uri, '', $payload_hash );
@@ -370,6 +387,10 @@ class DD_Maintenance_S3 {
 		$endpoint_url = $this->get_endpoint() . $uri;
 
 		$result = $this->stream_put( $endpoint_url, $headers, $file_path, $size );
+		if ( is_wp_error( $result ) && $this->is_retryable_upload_error( $result ) ) {
+			// PUT no mesmo objeto é idempotente: uma tentativa repetida não cria outra parte.
+			$result = $this->stream_put( $endpoint_url, $headers, $file_path, $size );
+		}
 
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -814,15 +835,16 @@ class DD_Maintenance_S3 {
 	 * @return array|WP_Error
 	 */
 	private function stream_put( $url, $headers, $file, $size ) {
+		$size    = max( 0, (int) $size );
 		$timeout = max( 180, min( 900, (int) ceil( $size / ( 256 * 1024 ) ) + 60 ) );
 
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
-			@set_time_limit( $timeout + 60 );
+			set_time_limit( $timeout + 60 );
 		}
 		if ( function_exists( 'ini_set' ) ) {
-			@ini_set( 'max_execution_time', (string) ( $timeout + 60 ) );
+			ini_set( 'max_execution_time', (string) ( $timeout + 60 ) );
 		}
-		@ignore_user_abort( true );
+		ignore_user_abort( true );
 
 		if ( function_exists( 'curl_init' ) ) {
 			$handle = fopen( $file, 'rb' );
@@ -831,7 +853,12 @@ class DD_Maintenance_S3 {
 			}
 
 			$ch = curl_init( $url );
+			if ( false === $ch ) {
+				fclose( $handle );
+				return new WP_Error( 's3_transport_init', __( 'Não foi possível inicializar o transporte cURL para o upload.', 'dd-maintenance' ) );
+			}
 
+			$request_id = '';
 			$curl_headers = array(
 				'Expect:',
 				'Host: ' . $headers['Host'],
@@ -858,6 +885,12 @@ class DD_Maintenance_S3 {
 					CURLOPT_LOW_SPEED_TIME  => 60,
 					CURLOPT_SSL_VERIFYPEER  => true,
 					CURLOPT_SSL_VERIFYHOST  => 2,
+					CURLOPT_HEADERFUNCTION  => static function ( $curl, string $header_line ) use ( &$request_id ): int {
+						if ( preg_match( '/^x-amz-(request-id|id-2):\s*(.+)$/i', $header_line, $matches ) ) {
+							$request_id = trim( $matches[2] );
+						}
+						return strlen( $header_line );
+					},
 				)
 			);
 
@@ -871,17 +904,35 @@ class DD_Maintenance_S3 {
 				return array( 'etag' => '' );
 			}
 
-			return new WP_Error( 's3_upload', $this->friendly_error( $code, $body, $error ) );
+			$error_code = 0 === $code ? 's3_transport' : ( $this->is_retryable_http_code( $code ) ? 's3_upload_retryable' : 's3_upload' );
+			return new WP_Error( $error_code, $this->friendly_error( $code, (string) $body, $error, $request_id ) );
 		}
 
-		// Fallback para envio através da API HTTP do WordPress.
+		$body_limit = $this->get_safe_body_limit();
+		if ( $size > $body_limit ) {
+			return new WP_Error(
+				's3_curl_required',
+				sprintf(
+					/* translators: 1: File size, 2: Safe memory limit */
+					__( 'O upload de %1$s excede o limite seguro de %2$s sem cURL. Instale ou habilite a extensão cURL para enviar arquivos grandes.', 'dd-maintenance' ),
+					size_format( $size ),
+					size_format( $body_limit )
+				)
+			);
+		}
+
+		$body = file_get_contents( $file );
+		if ( false === $body ) {
+			return new WP_Error( 's3_file_read', __( 'Não foi possível ler o arquivo para o transporte HTTP.', 'dd-maintenance' ) );
+		}
+
 		$response = wp_remote_request(
 			$url,
 			array(
 				'method'  => 'PUT',
 				'timeout' => 75,
 				'headers' => $headers,
-				'body'    => file_get_contents( $file ),
+				'body'    => $body,
 			)
 		);
 
@@ -889,58 +940,157 @@ class DD_Maintenance_S3 {
 			return $response;
 		}
 
-		$code = (int) wp_remote_retrieve_response_code( $response );
+		$code       = (int) wp_remote_retrieve_response_code( $response );
+		$request_id = wp_remote_retrieve_header( $response, 'x-amz-request-id' );
 		if ( $code >= 200 && $code < 300 ) {
 			return array( 'etag' => wp_remote_retrieve_header( $response, 'etag' ) );
 		}
 
-		return new WP_Error( 's3_upload', $this->friendly_error( $code, wp_remote_retrieve_body( $response ), '' ) );
+		$error_code = $this->is_retryable_http_code( $code ) ? 's3_upload_retryable' : 's3_upload';
+		return new WP_Error( $error_code, $this->friendly_error( $code, wp_remote_retrieve_body( $response ), '', $request_id ) );
+	}
+
+	/**
+	 * Identifica respostas HTTP que podem ser repetidas com segurança.
+	 *
+	 * @param int $code Código HTTP.
+	 * @return bool
+	 */
+	private function is_retryable_http_code( $code ): bool {
+		return 408 === (int) $code || 429 === (int) $code || ( (int) $code >= 500 && (int) $code <= 599 );
+	}
+
+	/**
+	 * Identifica falhas transitórias de transporte do upload.
+	 *
+	 * @param WP_Error $error Erro retornado pelo transporte.
+	 * @return bool
+	 */
+	private function is_retryable_upload_error( $error ): bool {
+		if ( ! is_wp_error( $error ) || ! method_exists( $error, 'get_error_code' ) ) {
+			return false;
+		}
+
+		return in_array(
+			(string) $error->get_error_code(),
+			array( 'http_request_failed', 's3_transport', 's3_upload_retryable' ),
+			true
+		);
+	}
+
+	/**
+	 * Calcula o limite de corpo que pode ser materializado sem cURL.
+	 *
+	 * @return int
+	 */
+	private function get_safe_body_limit(): int {
+		$memory_limit = $this->parse_size( function_exists( 'ini_get' ) ? ini_get( 'memory_limit' ) : '' );
+		if ( $memory_limit <= 0 ) {
+			return 32 * 1024 * 1024;
+		}
+
+		$reserved  = max( 16 * 1024 * 1024, (int) floor( $memory_limit / 4 ) );
+		$available = $memory_limit - memory_get_usage( true ) - $reserved;
+		return max( 0, $available );
+	}
+
+	/**
+	 * Converte um valor de memória do PHP para bytes.
+	 *
+	 * @param string $value Valor como 128M, 1G ou -1.
+	 * @return int
+	 */
+	private function parse_size( $value ): int {
+		$value = trim( (string) $value );
+		if ( '' === $value || '-1' === $value ) {
+			return 0;
+		}
+
+		$unit   = strtolower( substr( $value, -1 ) );
+		$number = (float) $value;
+		switch ( $unit ) {
+			case 'g':
+				$number *= 1024;
+				// fall through
+			case 'm':
+				$number *= 1024;
+				// fall through
+			case 'k':
+				$number *= 1024;
+				break;
+		}
+
+		return max( 0, (int) $number );
 	}
 
 	/**
 	 * Transforma erros HTTP do S3 em mensagens úteis e amigáveis.
 	 *
-	 * @param int    $code  Código HTTP.
-	 * @param string $body  Corpo da resposta.
-	 * @param string $error Erro do curl (se houver).
+	 * @param int    $code       Código HTTP.
+	 * @param string $body       Corpo da resposta.
+	 * @param string $error      Erro do curl (se houver).
+	 * @param string $request_id Identificador retornado pelo S3.
 	 * @return string
 	 */
-	private function friendly_error( $code, $body, $error = '' ) {
+	private function friendly_error( $code, $body, $error = '', $request_id = '' ) {
 		if ( $error ) {
-			return $error;
+			$message = $error;
+		} else {
+			$err_code = $this->extract_error_code( $body );
+			$err_msg  = $this->extract_error_message( $body );
+
+			switch ( $err_code ) {
+				case 'InvalidAccessKeyId':
+					$message = __( 'A Access Key informada não existe no servidor S3/DigitalOcean. Confira se colou a chave correta e não trocou com a Secret Key.', 'dd-maintenance' );
+					break;
+
+				case 'SignatureDoesNotMatch':
+					$message = __( 'A assinatura não confere (SignatureDoesNotMatch). Verifique a Secret Key, o nome do bucket e a região configurada.', 'dd-maintenance' );
+					break;
+
+				case 'InvalidArgument':
+					$message = sprintf(
+						/* translators: %s: Mensagem de erro do servidor */
+						__( 'Erro de argumento inválido no S3/Spaces: %s', 'dd-maintenance' ),
+						$err_msg ? $err_msg : $body
+					);
+					break;
+
+				case 'AccessDenied':
+					$message = __( 'Acesso negado (AccessDenied): a chave não tem permissão de escrita neste bucket ou foi criada restrita a outro Space.', 'dd-maintenance' );
+					break;
+
+				case 'NoSuchBucket':
+					$message = __( 'Bucket não encontrado (NoSuchBucket). Confira o nome do bucket e use o botão "Detectar região automaticamente".', 'dd-maintenance' );
+					break;
+
+				default:
+					$message = sprintf(
+						/* translators: 1: HTTP code, 2: Body text */
+						__( 'Erro no upload (HTTP %1$s): %2$s', 'dd-maintenance' ),
+						$code,
+						$err_msg ? $err_msg : ( $body ? $body : __( 'Resposta vazia do servidor.', 'dd-maintenance' ) )
+					);
+					break;
+			}
+		}
+		if ( (int) $code > 0 && false === strpos( $message, 'HTTP ' . (int) $code ) ) {
+			$message .= sprintf(
+				/* translators: %d: HTTP status code */
+				__( ' (HTTP %d)', 'dd-maintenance' ),
+				(int) $code
+			);
 		}
 
-		$err_code = $this->extract_error_code( $body );
-		$err_msg  = $this->extract_error_message( $body );
-
-		switch ( $err_code ) {
-			case 'InvalidAccessKeyId':
-				return __( 'A Access Key informada não existe no servidor S3/DigitalOcean. Confira se colou a chave correta e não trocou com a Secret Key.', 'dd-maintenance' );
-
-			case 'SignatureDoesNotMatch':
-				return __( 'A assinatura não confere (SignatureDoesNotMatch). Verifique a Secret Key, o nome do bucket e a região configurada.', 'dd-maintenance' );
-
-			case 'InvalidArgument':
-				return sprintf(
-					/* translators: %s: Mensagem de erro do servidor */
-					__( 'Erro de argumento inválido no S3/Spaces: %s', 'dd-maintenance' ),
-					$err_msg ? $err_msg : $body
-				);
-
-			case 'AccessDenied':
-				return __( 'Acesso negado (AccessDenied): a chave não tem permissão de escrita neste bucket ou foi criada restrita a outro Space.', 'dd-maintenance' );
-
-			case 'NoSuchBucket':
-				return __( 'Bucket não encontrado (NoSuchBucket). Confira o nome do bucket e use o botão "Detectar região automaticamente".', 'dd-maintenance' );
-
-			default:
-				return sprintf(
-					/* translators: 1: HTTP code, 2: Body text */
-					__( 'Erro no upload (HTTP %1$s): %2$s', 'dd-maintenance' ),
-					$code,
-					$err_msg ? $err_msg : $body
-				);
+		if ( '' !== trim( (string) $request_id ) ) {
+			$message .= sprintf(
+				/* translators: %s: S3 request ID */
+				__( ' (Request ID: %s)', 'dd-maintenance' ),
+				$request_id
+			);
 		}
+
+		return $message;
 	}
 
 	/**

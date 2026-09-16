@@ -36,6 +36,12 @@ function wp_mkdir_p( $path ) {
 function sanitize_file_name( $name ) {
 	return preg_replace( '/[^A-Za-z0-9_.-]/', '', (string) $name );
 }
+function sanitize_title( $title ) {
+	return sanitize_file_name( $title );
+}
+function get_bloginfo( $field ) {
+	return 'DD Maintenance';
+}
 function sanitize_key( $key ) {
 	return preg_replace( '/[^a-z0-9_-]/', '', strtolower( (string) $key ) );
 }
@@ -125,7 +131,21 @@ function wp_json_encode( $val ) {
 function wp_parse_args( $args, $defaults = array() ) {
 	return array_merge( $defaults, (array) $args );
 }
-function get_option( $key, $default = array() ) { return $default; }
+function get_option( $key, $default = array() ) {
+	if ( 'dd_maintenance_settings' === $key ) {
+		return array_merge(
+			(array) $default,
+			array(
+				's3_access_key' => 'DO00TESTKEY',
+				's3_secret_key' => 'SECRET_MUST_NOT_RENDER',
+				's3_bucket'     => '',
+				's3_region'     => 'nyc3',
+				'split_size_mb' => 50,
+			)
+		);
+	}
+	return $default;
+}
 function get_transient( $key ) { return false; }
 function wp_next_scheduled( $hook ) { return false; }
 function add_action() {}
@@ -151,6 +171,13 @@ foreach ( $tabs as $tab ) {
 
 	assert( ! empty( $output ), "A aba '{$tab}' deve renderizar conteúdo HTML." );
 	assert( strpos( $output, 'DD Maintenance' ) !== false, "A aba '{$tab}' deve conter o título principal." );
+	if ( 's3' === $tab ) {
+		assert( strpos( $output, 'SECRET_MUST_NOT_RENDER' ) === false, 'A Secret Key nunca deve aparecer no HTML da aba S3.' );
+	}
+	if ( 'cron' === $tab ) {
+		assert( strpos( $output, 'name="s3_secret_key"' ) === false, 'O formulário de cron não deve transportar a Secret Key.' );
+		assert( strpos( $output, 'volumes de até 50 MB' ) !== false, 'A descrição do cron deve usar o limite configurado.' );
+	}
 	if ( 'restore' === $tab || 'backups' === $tab ) {
 		assert( strpos( $output, 'Backups Locais Armazenados no Servidor' ) !== false, "A aba restore deve renderizar a área de backups locais." );
 		assert( strpos( $output, 'restore_token' ) !== false, 'O cliente AJAX deve enviar o token efêmero nas etapas de restauração.' );

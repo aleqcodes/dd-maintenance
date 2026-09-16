@@ -157,6 +157,18 @@ function remove_tree( $path ) {
 
 try {
 	$backup = new DD_Maintenance_Backup();
+	$session_store = new DD_Maintenance_Session_Store();
+	$store_dir     = DD_Maintenance::backup_dir() . '/session-store';
+	wp_mkdir_p( $store_dir );
+	assert( $session_store->save( $store_dir, array( 'session_id' => 'store-test', 'step' => 1 ) ) === true, 'O armazenamento deve persistir o estado da sessão.' );
+	$stored_state = $session_store->load( $store_dir, 'missing', 'corrupted' );
+	assert( ! is_wp_error( $stored_state ) && 1 === $stored_state['step'], 'O estado persistido deve ser lido após validação.' );
+	$stored_json = json_decode( file_get_contents( $store_dir . '/state.json' ), true );
+	$stored_json['step'] = 2;
+	file_put_contents( $store_dir . '/state.json', json_encode( $stored_json ) );
+	$tampered_state = $session_store->load( $store_dir, 'missing', 'corrupted' );
+	assert( is_wp_error( $tampered_state ) && 'corrupted' === $tampered_state->get_error_code(), 'Uma sessão alterada deve ser rejeitada pelo checksum.' );
+	$session_store->remove_directory( $store_dir );
 	$first  = $backup->init_session();
 	$second = $backup->init_session();
 	assert( ! is_wp_error( $first ) && ! is_wp_error( $second ) );
@@ -247,7 +259,7 @@ try {
 		)
 	);
 	assert( $finalize_with_imported_password->success === true, 'A finalizacao autorizada via token nao deve falhar por senha importada.' );
-	assert( file_exists( WP_CONTENT_DIR . '/mu-plugins/dd-elementor-compat.php' ), 'O drop-in do Elementor deve ser instalado ao finalizar.' );
+	assert( ! file_exists( WP_CONTENT_DIR . '/mu-plugins/dd-elementor-compat.php' ), 'O drop-in do Elementor não deve ser instalado sem decisão explícita.' );
 
 	$failure_dir = DD_Maintenance::backup_dir() . '/restore_exec_rst_copy_failure';
 	wp_mkdir_p( $failure_dir );
@@ -259,6 +271,39 @@ try {
 	file_put_contents( $failure_dir . '/state.json', json_encode( $failure_state ) );
 	$copy_result = $restore->restore_files_step( 'rst_copy_failure' );
 	assert( is_wp_error( $copy_result ) && 'restore_source_missing' === $copy_result->get_error_code(), 'Uma cópia incompleta deve falhar explicitamente.' );
+	$corrupted_state_dir = DD_Maintenance::backup_dir() . '/restore_exec_rst_corrupted';
+	wp_mkdir_p( $corrupted_state_dir );
+	file_put_contents( $corrupted_state_dir . '/state.json', '{invalid json' );
+	file_put_contents( $corrupted_state_dir . '/sentinel.txt', 'must remain untouched' );
+	$corrupted_result = $restore->get_restore_session_data( 'rst_corrupted' );
+	assert( is_wp_error( $corrupted_result ) && 'restore_session_corrupted' === $corrupted_result->get_error_code(), 'Uma sessão de restauração corrompida deve ser rejeitada.' );
+	assert( 'must remain untouched' === file_get_contents( $corrupted_state_dir . '/sentinel.txt' ), 'A rejeição de uma sessão corrompida não deve sobrescrever arquivos.' );
+
+	$existing_state_dir = DD_Maintenance::backup_dir() . '/restore_exec_rst_existing_file';
+	$existing_file_dir  = $existing_state_dir . '/site/wp-content/data';
+	wp_mkdir_p( $existing_file_dir );
+	$existing_source = $existing_file_dir . '/fixture.txt';
+	file_put_contents( $existing_source, 'restore fixture' );
+	$existing_state     = array(
+		'session_id'          => 'rst_existing_file',
+		'extract_dir'         => $existing_state_dir,
+		'temp_upload_dir'     => '',
+		'files_done'          => false,
+		'files_queue_created' => false,
+		'files_total'         => 0,
+		'files_copied'        => 0,
+		'files_queue_offset'  => 0,
+		'log'                 => array(),
+	);
+	file_put_contents( $existing_state_dir . '/state.json', json_encode( $existing_state ) );
+	$existing_result = $restore->restore_files_step( 'rst_existing_file' );
+	$restored_file   = ABSPATH . 'wp-content/data/fixture.txt';
+	assert( ! is_wp_error( $existing_result ) && true === $existing_result['completed'], 'Um arquivo existente deve concluir a restauração progressiva.' );
+	assert( file_exists( $restored_file ) && 'restore fixture' === file_get_contents( $restored_file ), 'Um arquivo existente deve ser copiado para o destino calculado.' );
+
+	$existing_repeat = $restore->restore_files_step( 'rst_existing_file' );
+	assert( ! is_wp_error( $existing_repeat ) && 1 === $existing_repeat['copied'], 'A retomada do lote de arquivos deve ser idempotente.' );
+
 
 	$sql_only = DD_Maintenance::backup_dir() . '/sql-only.sql';
 	file_put_contents( $sql_only, 'SELECT 1;' );

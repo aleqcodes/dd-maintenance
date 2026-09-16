@@ -301,7 +301,9 @@ class DD_Maintenance_Config {
 		$result = file_put_contents( $config_path, $updated_contents, LOCK_EX );
 
 		if ( false === $result ) {
-			@copy( $backup_path, $config_path );
+			if ( ! copy( $backup_path, $config_path ) ) {
+				return new WP_Error( 'dd_config_restore_failed', __( 'Não foi possível gravar no wp-config.php nem restaurar o backup original.', 'dd-maintenance' ) );
+			}
 			return new WP_Error( 'dd_config_write_failed', __( 'Não foi possível gravar no wp-config.php. O backup original foi restaurado.', 'dd-maintenance' ) );
 		}
 
@@ -499,11 +501,15 @@ class DD_Maintenance_Config {
 		}
 
 		$backup_path = $config_path . '.dd-backup-prefix-' . gmdate( 'Ymd-His' );
-		@copy( $config_path, $backup_path );
+		if ( ! copy( $config_path, $backup_path ) ) {
+			return new WP_Error( 'dd_config_backup_failed', __( 'Falha ao criar o backup do wp-config.php antes de alterar o prefixo.', 'dd-maintenance' ) );
+		}
 
 		$result = file_put_contents( $config_path, $updated, LOCK_EX );
 		if ( false === $result ) {
-			@copy( $backup_path, $config_path );
+			if ( ! copy( $backup_path, $config_path ) ) {
+				return new WP_Error( 'dd_config_restore_failed', __( 'Falha ao salvar o prefixo e restaurar o wp-config.php original.', 'dd-maintenance' ) );
+			}
 			return new WP_Error( 'dd_config_write_failed', __( 'Falha ao salvar prefixo no wp-config.php.', 'dd-maintenance' ) );
 		}
 

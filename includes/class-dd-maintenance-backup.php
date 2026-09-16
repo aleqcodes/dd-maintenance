@@ -1,20 +1,30 @@
 <?php
 /**
- * Responsável pela criação do backup (banco de dados + arquivos) com divisão em partes de 25MB e motor de lotes assíncronos de alta performance.
+ * Responsável pela criação do backup (banco de dados + arquivos) e pelo processamento assíncrono em lotes.
  *
  * @package DD_Maintenance
  */
 
 defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
+require_once __DIR__ . '/class-dd-maintenance-session-store.php';
+require_once __DIR__ . '/class-dd-maintenance-file-security.php';
 
 class DD_Maintenance_Backup {
 
 	/**
-	 * Tamanho máximo de cada parte do backup (25 MB = 25 * 1024 * 1024 bytes).
+	 * Armazenamento centralizado do estado das sessões.
 	 *
-	 * @var int
+	 * @var DD_Maintenance_Session_Store
 	 */
-	const CHUNK_SIZE = 26214400;
+	private $session_store;
+
+	/**
+	 * Construtor.
+	 */
+	public function __construct() {
+		$this->session_store = new DD_Maintenance_Session_Store();
+	}
 
 	/**
 	 * Limites por requisição e por volume. Os arquivos são armazenados sem
@@ -23,7 +33,6 @@ class DD_Maintenance_Backup {
 	const BATCH_FILE_COUNT    = 1000;
 	const DB_BATCH_SIZE       = 1000;
 	const STEP_TIME_LIMIT     = 8;
-	const VOLUME_PAYLOAD_SIZE = 25165824;
 	/**
 	 * Inicializa uma sessão de backup em lotes (cria pasta e metadados da sessão).
 	 *
@@ -32,13 +41,17 @@ class DD_Maintenance_Backup {
 	public function init_session() {
 		$this->set_time_and_memory_limits();
 
-		self::purge_orphaned_sessions();
 
 		$backup_dir = DD_Maintenance::backup_dir();
+		$backup_real = realpath( $backup_dir );
+		if ( is_link( $backup_dir ) || false === $backup_real || wp_normalize_path( $backup_real ) !== wp_normalize_path( $backup_dir ) ) {
+			return new WP_Error( 'session_path_unsafe', __( 'A pasta de sessão de backup não é segura.', 'dd-maintenance' ) );
+		}
+		self::purge_orphaned_sessions();
 		$session_id = 'bk_' . time() . '_' . wp_generate_password( 8, false );
 		$session_dir = $backup_dir . '/session_' . $session_id;
 
-		if ( ! wp_mkdir_p( $session_dir ) ) {
+		if ( is_link( $session_dir ) || ! wp_mkdir_p( $session_dir ) || is_link( $session_dir ) ) {
 			return new WP_Error( 'session_mkdir_failed', __( 'Não foi possível criar a pasta temporária da sessão de backup.', 'dd-maintenance' ) );
 		}
 
@@ -46,17 +59,7 @@ class DD_Maintenance_Backup {
 		$slug = $slug ? $slug : 'site';
 		$base = $slug . '-' . current_time( 'Y-m-d-His' ) . '-' . strtolower( wp_generate_password( 6, false, false ) );
 
-		$settings = wp_parse_args(
-			get_option( 'dd_maintenance_settings', array() ),
-			array(
-				'include_db'        => 1,
-				'include_wpcontent' => 1,
-				'include_wpconfig'  => 1,
-				'include_entire'    => 1,
-				'keep_local'        => 1,
-				'split_size_mb'     => 200,
-			)
-		);
+		$settings = ( new DD_Maintenance_Settings_Repository() )->get();
 		$session_data = array(
 			'session_id'         => $session_id,
 			'session_dir'        => $session_dir,
@@ -93,7 +96,10 @@ class DD_Maintenance_Backup {
 			'created_at'           => time(),
 		);
 
-		$this->save_session_data( $session_dir, $session_data );
+		if ( ! $this->save_session_data( $session_dir, $session_data ) ) {
+			$this->session_store->remove_directory( $session_dir );
+			return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o estado inicial da sessão de backup.', 'dd-maintenance' ) );
+		}
 
 		return $session_data;
 	}
@@ -106,15 +112,7 @@ class DD_Maintenance_Backup {
 	 * @return bool
 	 */
 	private function save_session_data( string $session_dir, array $data ): bool {
-		$state_file = $session_dir . '/state.json';
-		$temp_file  = $state_file . '.tmp';
-		$json       = wp_json_encode( $data );
-
-		if ( false === $json || false === file_put_contents( $temp_file, $json, LOCK_EX ) ) {
-			return false;
-		}
-
-		return rename( $temp_file, $state_file );
+		return $this->session_store->save( $session_dir, $data );
 	}
 
 	/**
@@ -127,18 +125,12 @@ class DD_Maintenance_Backup {
 		$session_id  = sanitize_file_name( $session_id );
 		$backup_dir  = DD_Maintenance::backup_dir();
 		$session_dir = $backup_dir . '/session_' . $session_id;
-		$state_file  = $session_dir . '/state.json';
 
-		if ( ! file_exists( $state_file ) ) {
-			return new WP_Error( 'session_not_found', __( 'Sessão de backup não encontrada ou expirada.', 'dd-maintenance' ) );
-		}
-
-		$data = json_decode( (string) file_get_contents( $state_file ), true );
-		if ( ! is_array( $data ) ) {
-			return new WP_Error( 'session_corrupted', __( 'Dados da sessão corrompidos.', 'dd-maintenance' ) );
-		}
-
-		return $data;
+		return $this->session_store->load(
+			$session_dir,
+			'session_not_found',
+			'session_corrupted'
+		);
 	}
 
 	/**
@@ -198,7 +190,10 @@ class DD_Maintenance_Backup {
 			$session['db_row_offset']     = 0;
 			$session['db_schema_written'] = false;
 			$session['db_position']       = ftell( $handle );
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				fclose( $handle );
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint do dump do banco.', 'dd-maintenance' ) );
+			}
 		} else {
 			$position = isset( $session['db_position'] ) ? (int) $session['db_position'] : 0;
 			ftruncate( $handle, $position );
@@ -221,7 +216,10 @@ class DD_Maintenance_Backup {
 				fflush( $handle );
 				$session['db_schema_written'] = true;
 				$session['db_position']       = ftell( $handle );
-				$this->save_session_data( $session['session_dir'], $session );
+				if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+					fclose( $handle );
+					return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint do schema do banco.', 'dd-maintenance' ) );
+				}
 			} else {
 				$create = $wpdb->get_row( "SHOW CREATE TABLE `{$quoted_name}`", ARRAY_N );
 			}
@@ -280,7 +278,10 @@ class DD_Maintenance_Backup {
 			}
 
 			$session['db_position'] = ftell( $handle );
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				fclose( $handle );
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint do dump do banco.', 'dd-maintenance' ) );
+			}
 		}
 
 		$completed = $session['db_table_index'] >= $total;
@@ -289,7 +290,10 @@ class DD_Maintenance_Backup {
 			fflush( $handle );
 			$session['db_completed'] = true;
 			$session['db_position']  = ftell( $handle );
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				fclose( $handle );
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o estado final do dump do banco.', 'dd-maintenance' ) );
+			}
 		}
 		fclose( $handle );
 
@@ -324,7 +328,7 @@ class DD_Maintenance_Backup {
 			return array(
 				'completed'   => true,
 				'total_files' => (int) $session['total_files'],
-				'log'         => sprintf( __( '[OK] %d arquivos catalogados para os lotes de 25MB.', 'dd-maintenance' ), $session['total_files'] ),
+				'log'         => sprintf( __( '[OK] %d arquivos catalogados para volumes de %d MB.', 'dd-maintenance' ), $session['total_files'], (int) round( $this->get_chunk_size( $session ) / 1048576 ) ),
 			);
 		}
 
@@ -363,20 +367,36 @@ class DD_Maintenance_Backup {
 				$path         = rtrim( wp_normalize_path( $path ), '/' );
 				$archive_name = trim( $archive_name, '/' );
 				$entry        = array( 'path' => $path, 'target' => $archive_name );
+				if ( is_link( $path ) ) {
+					fclose( $manifest );
+					fclose( $queue );
+					return new WP_Error( 'index_symlink', __( 'Backup rejeitado: a origem contém um link simbólico.', 'dd-maintenance' ) );
+				}
 				if ( is_file( $path ) ) {
+					$source_ok = DD_Maintenance_File_Security::assert_regular_source( $path );
+					if ( is_wp_error( $source_ok ) ) {
+						fclose( $manifest );
+						fclose( $queue );
+						return $source_ok;
+					}
 					fwrite( $manifest, wp_json_encode( $entry ) . "\n" );
 					$session['total_files']++;
 				} elseif ( is_dir( $path ) ) {
 					fwrite( $queue, wp_json_encode( $entry ) . "\n" );
+				} elseif ( file_exists( $path ) ) {
+					fclose( $manifest );
+					fclose( $queue );
+					return new WP_Error( 'index_type', __( 'Backup rejeitado: tipo de origem não suportado.', 'dd-maintenance' ) );
 				}
 			}
-
 			fclose( $manifest );
 			fclose( $queue );
 			$session['index_initialized'] = true;
 			$session['manifest_size']     = (int) filesize( $session['manifest_file'] );
 			$session['index_queue_size']  = (int) filesize( $session['index_queue_file'] );
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint inicial da indexação.', 'dd-maintenance' ) );
+			}
 		} else {
 			if ( ! $this->truncate_file( $session['manifest_file'], (int) $session['manifest_size'] )
 				|| ! $this->truncate_file( $session['index_queue_file'], (int) $session['index_queue_size'] ) ) {
@@ -408,7 +428,10 @@ class DD_Maintenance_Backup {
 				continue;
 			}
 
-			$children = @scandir( $directory['path'] );
+			$children = scandir( $directory['path'] );
+			if ( false === $children ) {
+				return new WP_Error( 'index_scan_failed', sprintf( __( 'Não foi possível ler a pasta %s durante a indexação.', 'dd-maintenance' ), $directory['path'] ) );
+			}
 			$manifest = fopen( $session['manifest_file'], 'ab' );
 			$queue    = fopen( $session['index_queue_file'], 'ab' );
 			if ( ! $manifest || ! $queue ) {
@@ -435,8 +458,13 @@ class DD_Maintenance_Backup {
 							break;
 						}
 					}
-					if ( $ignored || is_link( $item_path ) ) {
+					if ( $ignored ) {
 						continue;
+					}
+					if ( is_link( $item_path ) ) {
+						fclose( $manifest );
+						fclose( $queue );
+						return new WP_Error( 'index_symlink', sprintf( __( 'Backup rejeitado: link simbólico %s.', 'dd-maintenance' ), $filename ) );
 					}
 
 					$entry = array(
@@ -444,10 +472,20 @@ class DD_Maintenance_Backup {
 						'target' => trim( $directory['target'], '/' ) . '/' . $filename,
 					);
 					if ( is_file( $item_path ) ) {
+						$source_ok = DD_Maintenance_File_Security::assert_regular_source( $item_path );
+						if ( is_wp_error( $source_ok ) ) {
+							fclose( $manifest );
+							fclose( $queue );
+							return $source_ok;
+						}
 						fwrite( $manifest, wp_json_encode( $entry ) . "\n" );
 						$session['total_files']++;
 					} elseif ( is_dir( $item_path ) ) {
 						fwrite( $queue, wp_json_encode( $entry ) . "\n" );
+					} elseif ( file_exists( $item_path ) ) {
+						fclose( $manifest );
+						fclose( $queue );
+						return new WP_Error( 'index_type', sprintf( __( 'Backup rejeitado: tipo de arquivo não suportado %s.', 'dd-maintenance' ), $filename ) );
 					}
 				}
 			}
@@ -460,7 +498,9 @@ class DD_Maintenance_Backup {
 			$session['index_queue_size']   = (int) filesize( $session['index_queue_file'] );
 			$session['manifest_size']      = (int) filesize( $session['manifest_file'] );
 			$session['indexed_dirs']++;
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint da indexação.', 'dd-maintenance' ) );
+			}
 		}
 
 		if ( $completed ) {
@@ -473,7 +513,9 @@ class DD_Maintenance_Backup {
 				$session['db_manifested'] = true;
 			}
 			$session['index_completed'] = true;
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o estado final da indexação.', 'dd-maintenance' ) );
+			}
 		}
 
 		return array(
@@ -481,26 +523,24 @@ class DD_Maintenance_Backup {
 			'total_files'  => (int) $session['total_files'],
 			'indexed_dirs' => (int) $session['indexed_dirs'],
 			'log'          => $completed
-				? sprintf( __( '[OK] %d arquivos catalogados para os lotes de 25MB.', 'dd-maintenance' ), $session['total_files'] )
+				? sprintf( __( '[OK] %d arquivos catalogados para volumes de %d MB.', 'dd-maintenance' ), $session['total_files'], (int) round( $this->get_chunk_size( $session ) / 1048576 ) )
 				: sprintf( __( '[Indexando] %1$d arquivos encontrados em %2$d pastas...', 'dd-maintenance' ), $session['total_files'], $session['indexed_dirs'] ),
 		);
 	}
 
 	/**
-	 * Etapa 3: Distribui arquivos em volumes ZIP de até 25MB usando somente CM_STORE.
+	 * Etapa 3: Distribui arquivos em volumes ZIP usando somente CM_STORE.
 	 *
 	 * @param string $session_id ID da sessão.
-	 * @param int    $offset     Índice do arquivo inicial do lote.
 	 * @return array|WP_Error
 	 */
-	public function zip_batch_step( string $session_id, int $offset = 0 ) {
+	public function zip_batch_step( string $session_id ) {
 		$this->set_time_and_memory_limits();
-
 		$session = $this->get_session_data( $session_id );
 		if ( is_wp_error( $session ) ) {
 			return $session;
 		}
-		if ( ! file_exists( $session['manifest_file'] ) ) {
+		if ( is_link( $session['manifest_file'] ) || ! is_file( $session['manifest_file'] ) ) {
 			return new WP_Error( 'manifest_missing', __( 'Manifesto de arquivos não encontrado.', 'dd-maintenance' ) );
 		}
 		if ( ! class_exists( 'ZipArchive' ) ) {
@@ -534,12 +574,20 @@ class DD_Maintenance_Backup {
 
 			$next_offset = ftell( $manifest );
 			$item        = json_decode( $line, true );
-			if ( ! is_array( $item ) || empty( $item['path'] ) || empty( $item['target'] ) || ! is_file( $item['path'] ) ) {
-				$manifest_offset = $next_offset;
-				$session['processed']++;
-				$batch_count++;
-				continue;
+			if ( ! is_array( $item ) || empty( $item['path'] ) || empty( $item['target'] ) ) {
+				fclose( $manifest );
+				return new WP_Error( 'manifest_entry_invalid', __( 'Manifesto contém uma entrada inválida.', 'dd-maintenance' ) );
 			}
+			if ( is_link( $item['path'] ) || ! is_file( $item['path'] ) ) {
+				fclose( $manifest );
+				return new WP_Error( 'manifest_source_unsupported', sprintf( __( 'Manifesto contém origem não suportada: %s.', 'dd-maintenance' ), basename( $item['path'] ) ) );
+			}
+			$target = DD_Maintenance_File_Security::normalize_relative_path( $item['target'] );
+			if ( is_wp_error( $target ) ) {
+				fclose( $manifest );
+				return new WP_Error( 'manifest_target_invalid', __( 'Manifesto contém caminho de destino inválido.', 'dd-maintenance' ) );
+			}
+			$item['target'] = $target;
 
 			$payload_limit = $this->get_payload_size( $session );
 			$file_size     = (int) filesize( $item['path'] );
@@ -563,7 +611,10 @@ class DD_Maintenance_Backup {
 				$session         = $large_result['session'];
 				$manifest_offset = (int) $session['zip_manifest_offset'];
 				$batch_count    += ! empty( $large_result['file_completed'] ) ? 1 : 0;
-				$this->save_session_data( $session['session_dir'], $session );
+				if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+					fclose( $manifest );
+					return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint do lote ZIP.', 'dd-maintenance' ) );
+				}
 				break;
 			}
 
@@ -621,7 +672,9 @@ class DD_Maintenance_Backup {
 
 		$session['zip_manifest_offset'] = $manifest_offset;
 		$session['processed']           = min( (int) $session['total_files'], (int) $session['processed'] );
-		$this->save_session_data( $session['session_dir'], $session );
+		if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+			return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o checkpoint do lote ZIP.', 'dd-maintenance' ) );
+		}
 
 		$completed = $manifest_offset >= $manifest_size;
 		$percent   = $manifest_size > 0 ? min( 100, (int) floor( ( $manifest_offset / $manifest_size ) * 100 ) ) : 100;
@@ -682,7 +735,9 @@ class DD_Maintenance_Backup {
 
 			$session['metadata_added'] = true;
 			$session['volume_count']   = count( $this->session_volume_files( $session ) );
-			$this->save_session_data( $session['session_dir'], $session );
+			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+				return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o estado dos volumes do backup.', 'dd-maintenance' ) );
+			}
 		}
 
 		$backup_dir  = DD_Maintenance::backup_dir();
@@ -697,10 +752,13 @@ class DD_Maintenance_Backup {
 				: sprintf( '%s.part%03d.zip', $session['base_name'], $index );
 			$target = $backup_dir . '/' . $name;
 
+			if ( is_link( $source ) || is_link( $target ) || ( file_exists( $target ) && ! is_file( $target ) ) ) {
+				return new WP_Error( 'volume_path_unsafe', sprintf( __( 'Destino inseguro para o lote %s.', 'dd-maintenance' ), $name ) );
+			}
 			if ( file_exists( $source ) && ! rename( $source, $target ) ) {
 				return new WP_Error( 'volume_move_failed', sprintf( __( 'Não foi possível finalizar o lote %s.', 'dd-maintenance' ), $name ) );
 			}
-			if ( ! is_file( $target ) ) {
+			if ( is_link( $target ) || ! is_file( $target ) ) {
 				return new WP_Error( 'volume_missing', sprintf( __( 'O lote %s não foi encontrado.', 'dd-maintenance' ), $name ) );
 			}
 
@@ -709,74 +767,42 @@ class DD_Maintenance_Backup {
 			if ( $size > $chunk_limit ) {
 				return new WP_Error( 'volume_oversize', sprintf( __( 'O lote %1$s excedeu o limite configurado (%2$s).', 'dd-maintenance' ), $name, size_format( $size ) ) );
 			}
+			$total_size += $size;
 			$parts[] = array(
 				'file' => $target,
 				'name' => $name,
 				'size' => $size,
 				'part' => $index,
 			);
-			$total_size += $size;
 		}
-
-		if ( ! empty( $session['settings']['keep_local'] ) && is_file( $session['db_file'] ) ) {
-			copy( $session['db_file'], $backup_dir . '/' . $session['base_name'] . '.sql' );
+		if ( ! empty( $session['settings']['keep_local'] ) && ! is_link( $session['db_file'] ) && is_file( $session['db_file'] ) ) {
+			$sql_copy = DD_Maintenance_File_Security::copy_to_root( $session['db_file'], $backup_dir, $session['base_name'] . '.sql' );
+			if ( is_wp_error( $sql_copy ) ) {
+				return $sql_copy;
+			}
 		}
 
 		$session['parts']             = $parts;
 		$session['total_size']        = $total_size;
 		$session['volumes_completed'] = true;
-		$this->save_session_data( $session['session_dir'], $session );
+		if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
+			return new WP_Error( 'session_save_failed', __( 'Não foi possível salvar o estado final do backup.', 'dd-maintenance' ) );
+		}
 
 		return $this->format_final_result( $session );
 	}
 
 	/**
-	 * Executa o backup completo em uma única chamada (utilizado pelo WP-Cron e CLI).
-	 * Utiliza a mesma compressão ultrarrápida com CM_STORE para arquivos de mídia.
+	 * Mantém a API legada delegando a execução ao workflow central.
 	 *
 	 * @return array|WP_Error
 	 */
 	public function run() {
-		$session = $this->init_session();
-		if ( is_wp_error( $session ) ) {
-			return $session;
+		if ( ! class_exists( 'DD_Maintenance_Backup_Workflow' ) ) {
+			require_once __DIR__ . '/class-dd-maintenance-backup-workflow.php';
 		}
-
-		$session_id = $session['session_id'];
-		do {
-			$result = $this->dump_database_step( $session_id );
-			if ( is_wp_error( $result ) ) {
-				$this->clean_session_directory( $session['session_dir'] );
-				return $result;
-			}
-		} while ( empty( $result['completed'] ) );
-
-		do {
-			$result = $this->index_files_step( $session_id );
-			if ( is_wp_error( $result ) ) {
-				$this->clean_session_directory( $session['session_dir'] );
-				return $result;
-			}
-		} while ( empty( $result['completed'] ) );
-
-		do {
-			$result = $this->zip_batch_step( $session_id );
-			if ( is_wp_error( $result ) ) {
-				$this->clean_session_directory( $session['session_dir'] );
-				return $result;
-			}
-		} while ( empty( $result['completed'] ) );
-
-		do {
-			$result = $this->finalize_and_split_step( $session_id );
-			if ( is_wp_error( $result ) ) {
-				$this->clean_session_directory( $session['session_dir'] );
-				return $result;
-			}
-		} while ( empty( $result['completed'] ) );
-
-		$this->clean_session_directory( $session['session_dir'] );
-		return $result;
+		$result = ( new DD_Maintenance_Backup_Workflow( $this ) )->create();
+		return is_wp_error( $result ) ? $result : $result->to_array();
 	}
 
 	/**
@@ -809,11 +835,12 @@ class DD_Maintenance_Backup {
 		$base_name   = ! is_wp_error( $session ) && ! empty( $session['base_name'] ) ? $session['base_name'] : '';
 		$session_dir = ! is_wp_error( $session ) && ! empty( $session['session_dir'] ) ? $session['session_dir'] : '';
 
+		$cleanup_failed = false;
 		if ( ! empty( $session_dir ) && is_dir( $session_dir ) ) {
-			$this->clean_session_directory( $session_dir );
+			$cleanup_failed = ! $this->clean_session_directory( $session_dir );
 		} elseif ( ! empty( $session_id ) ) {
-			$backup_dir = DD_Maintenance::backup_dir();
-			$this->clean_session_directory( $backup_dir . '/session_' . $session_id );
+			$backup_dir     = DD_Maintenance::backup_dir();
+			$cleanup_failed = ! $this->clean_session_directory( $backup_dir . '/session_' . $session_id );
 		}
 
 		if ( ! empty( $base_name ) ) {
@@ -821,8 +848,8 @@ class DD_Maintenance_Backup {
 			$leftovers  = glob( $backup_dir . '/' . $base_name . '.volume*.zip' );
 			if ( is_array( $leftovers ) ) {
 				foreach ( $leftovers as $file ) {
-					if ( is_file( $file ) ) {
-						@unlink( $file );
+					if ( is_file( $file ) && ! unlink( $file ) ) {
+						$cleanup_failed = true;
 					}
 				}
 			}
@@ -832,8 +859,11 @@ class DD_Maintenance_Backup {
 		if ( ! empty( $error_message ) ) {
 			$log[] = '[ERRO] Falha no backup: ' . $error_message;
 		}
-		$log[] = '[AUTOLIMPEZA] Arquivos temporários residuais removidos da pasta de uploads com sucesso.';
+		$log[] = $cleanup_failed
+			? '[AVISO] A autolimpeza terminou com arquivos residuais que exigem revisão manual.'
+			: '[AUTOLIMPEZA] Arquivos temporários residuais removidos da pasta de uploads com sucesso.';
 		$log[] = '[Fim com Erro] ' . current_time( 'Y-m-d H:i:s' );
+
 
 		DD_Maintenance::save_log( $log, 'failure', $base_name );
 
@@ -873,8 +903,9 @@ class DD_Maintenance_Backup {
 				if ( is_file( $file ) ) {
 					$mtime = filemtime( $file );
 					if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds ) {
-						@unlink( $file );
-						$cleaned++;
+						if ( unlink( $file ) ) {
+							$cleaned++;
+						}
 					}
 				}
 			}
@@ -885,8 +916,7 @@ class DD_Maintenance_Backup {
 			foreach ( $sub_temp_files as $file ) {
 				if ( is_file( $file ) ) {
 					$mtime = filemtime( $file );
-					if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds ) {
-						@unlink( $file );
+					if ( false !== $mtime && ( $now - $mtime ) >= $max_age_seconds && unlink( $file ) ) {
 						$cleaned++;
 					}
 				}
@@ -906,6 +936,7 @@ class DD_Maintenance_Backup {
 	 * @return array
 	 */
 	private function format_batch_result( array $session, bool $completed, int $batch_count, int $percent ): array {
+		$chunk_size_mb = (int) round( $this->get_chunk_size( $session ) / 1048576 );
 		return array(
 			'completed'   => $completed,
 			'processed'   => (int) $session['processed'],
@@ -914,7 +945,7 @@ class DD_Maintenance_Backup {
 			'next_offset' => (int) $session['processed'],
 			'percent'     => $percent,
 			'log'         => $completed
-				? __( '[OK] Todos os arquivos foram distribuídos nos lotes de 25MB.', 'dd-maintenance' )
+				? sprintf( __( '[OK] Todos os arquivos foram distribuídos em volumes de até %d MB.', 'dd-maintenance' ), $chunk_size_mb )
 				: sprintf(
 					__( '[Lotes] %1$d/%2$d arquivos processados; volume atual: %3$d (%4$d%%)...', 'dd-maintenance' ),
 					$session['processed'],
@@ -943,13 +974,14 @@ class DD_Maintenance_Backup {
 		unset( $p );
 
 		$result = array(
-			'completed'   => true,
-			'base'        => $session['base_name'],
-			'parts'       => $parts,
-			'total_size'  => $total_size,
-			'total_parts' => count( $parts ),
-			'percent'     => 100,
-			'log'         => sprintf(
+			'completed'    => true,
+			'base'         => $session['base_name'],
+			'parts'        => $parts,
+			'total_size'   => $total_size,
+			'total_parts'  => count( $parts ),
+			'chunk_size_mb'=> (int) round( $this->get_chunk_size( $session ) / 1048576 ),
+			'percent'      => 100,
+			'log'          => sprintf(
 				__( '[OK] Backup finalizado: %1$d lote(s) ZIP sem compressão (Total: %2$s)', 'dd-maintenance' ),
 				count( $parts ),
 				size_format( $total_size )
@@ -958,22 +990,15 @@ class DD_Maintenance_Backup {
 
 		$backup_dir = DD_Maintenance::backup_dir();
 		$sql_file   = $backup_dir . '/' . $session['base_name'] . '.sql';
-		if ( file_exists( $sql_file ) && is_file( $sql_file ) ) {
+		if ( ! is_link( $sql_file ) && is_file( $sql_file ) ) {
 			$sql_size                    = (int) filesize( $sql_file );
 			$result['has_sql']           = true;
 			$result['sql_filename']      = $session['base_name'] . '.sql';
 			$result['sql_size']          = $sql_size;
 			$result['sql_size_formatted'] = size_format( $sql_size );
 		}
-
-		if ( ! empty( $parts ) ) {
-			$result['file'] = $parts[0]['file'];
-			$result['name'] = $parts[0]['name'];
-			$result['size'] = $total_size;
-		}
 		return $result;
 	}
-
 	/**
 	 * Caminho temporário de um volume.
 	 *
@@ -992,10 +1017,15 @@ class DD_Maintenance_Backup {
 	 * @return ZipArchive|WP_Error
 	 */
 	private function open_volume( string $path ) {
+		$parent      = dirname( $path );
+		$parent_real = realpath( $parent );
+		if ( is_link( $path ) || is_link( $parent ) || false === $parent_real || wp_normalize_path( $parent_real ) !== wp_normalize_path( $parent ) ) {
+			return new WP_Error( 'volume_path_unsafe', __( 'Caminho temporário do volume não é seguro.', 'dd-maintenance' ) );
+		}
 		$zip   = new ZipArchive();
 		$flags = file_exists( $path ) ? 0 : ( ZipArchive::CREATE | ZipArchive::OVERWRITE );
 		if ( true !== $zip->open( $path, $flags ) ) {
-			return new WP_Error( 'volume_open_failed', __( 'Não foi possível abrir um lote ZIP de 25MB.', 'dd-maintenance' ) );
+			return new WP_Error( 'volume_open_failed', __( 'Não foi possível abrir um volume ZIP de backup.', 'dd-maintenance' ) );
 		}
 		return $zip;
 	}
@@ -1142,28 +1172,10 @@ class DD_Maintenance_Backup {
 	 * Remove recursivamente uma pasta temporária de sessão.
 	 *
 	 * @param string $dir Caminho da pasta.
-	 * @return void
+	 * @return bool
 	 */
-	private function clean_session_directory( string $dir ): void {
-		$dir = wp_normalize_path( $dir );
-		if ( ! is_dir( $dir ) ) {
-			return;
-		}
-
-		$items = new RecursiveIteratorIterator(
-			new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ),
-			RecursiveIteratorIterator::CHILD_FIRST
-		);
-
-		foreach ( $items as $item ) {
-			if ( $item->isDir() ) {
-				@rmdir( $item->getPathname() );
-			} else {
-				@unlink( $item->getPathname() );
-			}
-		}
-
-		@rmdir( $dir );
+	private function clean_session_directory( string $dir ): bool {
+		return $this->session_store->remove_directory( wp_normalize_path( $dir ) );
 	}
 
 	/**
@@ -1171,13 +1183,13 @@ class DD_Maintenance_Backup {
 	 */
 	private function set_time_and_memory_limits() {
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
-			@set_time_limit( 30 );
+			set_time_limit( 30 );
 		}
 		if ( function_exists( 'ini_set' ) ) {
-			@ini_set( 'memory_limit', '512M' );
-			@ini_set( 'max_execution_time', '30' );
+			ini_set( 'memory_limit', '512M' );
+			ini_set( 'max_execution_time', '30' );
 		}
-		@ignore_user_abort( true );
+		ignore_user_abort( true );
 	}
 
 	/**
@@ -1187,13 +1199,9 @@ class DD_Maintenance_Backup {
 	 * @return int
 	 */
 	public function get_chunk_size( array $session = array() ): int {
-		$split_mb = isset( $session['settings']['split_size_mb'] ) ? (int) $session['settings']['split_size_mb'] : 0;
-		if ( $split_mb < 25 ) {
-			$settings = get_option( 'dd_maintenance_settings', array() );
-			$split_mb = isset( $settings['split_size_mb'] ) ? (int) $settings['split_size_mb'] : 200;
-		}
-		$split_mb = max( 25, min( 1000, $split_mb ) );
-		return $split_mb * 1048576;
+		$repository = new DD_Maintenance_Settings_Repository();
+		$settings   = isset( $session['settings'] ) && is_array( $session['settings'] ) ? $session['settings'] : $repository->get();
+		return $repository->get_split_size_mb( $settings ) * 1048576;
 	}
 
 	/**

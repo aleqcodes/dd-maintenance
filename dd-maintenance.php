@@ -49,38 +49,30 @@ if ( ! defined( 'BACKUPER_DIR' ) ) {
 }
 
 // Carregamento dos módulos do DD Maintenance.
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-settings-repository.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-cron-job-store.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-backup-result.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-restore-result.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-progress.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-storage-upload-result.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-admin-page-renderer.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-admin-action-controller.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-backup-action-controller.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-restore-action-controller.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-file-security.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-elementor-compatibility.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-config.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-backup.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-s3.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-backup-workflow.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-restore-workflow.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-cron-workflow.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-restore.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-updater.php';
+require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-legacy-compatibility.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance-settings.php';
 require_once DD_MAINTENANCE_DIR . 'includes/class-dd-maintenance.php';
-
-// Blindagem imediata do Elementor contra Fatal TypeError no PHP 8.0+
-if ( class_exists( 'DD_Maintenance_Restore' ) ) {
-	DD_Maintenance_Restore::patch_elementor_php8_compatibility();
-	DD_Maintenance_Restore::install_permanent_elementor_shield();
-}
-// Classes legadas como aliases para compatibilidade retroativa.
-if ( ! class_exists( 'Backuper' ) ) {
-	class Backuper extends DD_Maintenance {}
-}
-if ( ! class_exists( 'Backuper_Backup' ) ) {
-	class Backuper_Backup extends DD_Maintenance_Backup {}
-}
-if ( ! class_exists( 'Backuper_S3' ) ) {
-	class Backuper_S3 extends DD_Maintenance_S3 {}
-}
-if ( ! class_exists( 'Backuper_Updater' ) ) {
-	class Backuper_Updater extends DD_Maintenance_Updater {}
-}
-if ( ! class_exists( 'Backuper_Settings' ) ) {
-	class Backuper_Settings extends DD_Maintenance_Settings {}
-}
-if ( ! class_exists( 'DD_Gerenciador_Updates' ) ) {
-	class DD_Gerenciador_Updates extends DD_Maintenance_Config {}
-}
+DD_Maintenance_Legacy_Compatibility::register();
 
 register_activation_hook( __FILE__, array( 'DD_Maintenance', 'activate' ) );
 register_deactivation_hook( __FILE__, array( 'DD_Maintenance', 'deactivate' ) );
