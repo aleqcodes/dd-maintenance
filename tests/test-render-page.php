@@ -13,6 +13,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! defined( 'WP_CONTENT_DIR' ) ) {
 	define( 'WP_CONTENT_DIR', ABSPATH . 'wp-content' );
 }
+if ( ! defined( 'DAY_IN_SECONDS' ) ) {
+	define( 'DAY_IN_SECONDS', 86400 );
+}
 if ( ! class_exists( 'WP_Error' ) ) {
 	class WP_Error {
 		private $code;
@@ -146,7 +149,9 @@ function get_option( $key, $default = array() ) {
 	}
 	return $default;
 }
-function get_transient( $key ) { return false; }
+function get_transient( $key ) { return $GLOBALS['render_transients'][ $key ] ?? false; }
+function set_transient( $key, $value, $expiration = 0 ) { $GLOBALS['render_transients'][ $key ] = $value; return true; }
+function delete_transient( $key ) { unset( $GLOBALS['render_transients'][ $key ] ); return true; }
 function wp_next_scheduled( $hook ) { return false; }
 function add_action() {}
 function add_options_page() {}
@@ -158,6 +163,8 @@ require_once __DIR__ . '/../includes/class-dd-maintenance-s3.php';
 require_once __DIR__ . '/../includes/class-dd-maintenance-restore.php';
 require_once __DIR__ . '/../includes/class-dd-maintenance-settings.php';
 require_once __DIR__ . '/../includes/class-dd-maintenance-backup.php';
+$warning_log = DD_Maintenance::save_log( array( '[Aviso] S3 compatível indisponível durante o canário.' ), 'success', 'render-warning' );
+assert( '' !== $warning_log, 'O log de aviso deve ser salvo para a renderização do histórico.' );
 
 $settings_obj = new DD_Maintenance_Settings();
 
@@ -182,6 +189,10 @@ foreach ( $tabs as $tab ) {
 		assert( strpos( $output, 'Backups Locais Armazenados no Servidor' ) !== false, "A aba restore deve renderizar a área de backups locais." );
 		assert( strpos( $output, 'restore_token' ) !== false, 'O cliente AJAX deve enviar o token efêmero nas etapas de restauração.' );
 	}
+	if ( 'logs' === $tab ) {
+		assert( strpos( $output, 'Sucesso com avisos' ) !== false, 'O histórico deve distinguir sucesso com avisos.' );
+	}
 }
+DD_Maintenance::clear_all_saved_logs();
 
 echo "Teste de renderização de todas as abas concluído com 100% de sucesso!\n";

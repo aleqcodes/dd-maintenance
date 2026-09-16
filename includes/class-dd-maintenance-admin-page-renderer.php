@@ -810,6 +810,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 	 */
 	public function render_tab_logs( $last_log ) {
 		$saved_logs = DD_Maintenance::get_saved_logs();
+		$last_event = DD_Maintenance::get_last_event();
 		?>
 		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;margin-bottom:24px;">
 			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
@@ -818,7 +819,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 					<?php esc_html_e( 'Log da Última Execução', 'dd-maintenance' ); ?>
 				</h2>
 
-				<?php if ( ! empty( $last_log ) || ! empty( $saved_logs ) ) : ?>
+				<?php if ( ! empty( $last_log ) || ! empty( $saved_logs ) || ! empty( $last_event ) ) : ?>
 					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 						<input type="hidden" name="action" value="dd_maintenance_clear_log">
 						<?php wp_nonce_field( 'dd_maintenance_clear_log' ); ?>
@@ -826,6 +827,15 @@ class DD_Maintenance_Admin_Page_Renderer {
 					</form>
 				<?php endif; ?>
 			</div>
+
+			<?php if ( ! empty( $last_event ) ) : ?>
+				<p style="margin:0 0 12px;color:#50575e;">
+					<strong><?php esc_html_e( 'Último evento:', 'dd-maintenance' ); ?></strong>
+					<span class="dd-maint-badge <?php echo esc_attr( 'success' === ( $last_event['status'] ?? '' ) ? 'success' : ( 'warning' === ( $last_event['status'] ?? '' ) ? 'warning' : ( 'failure' === ( $last_event['status'] ?? '' ) ? 'error' : '' ) ) ); ?>">
+						<?php echo esc_html( DD_Maintenance_Observability::format( $last_event ) ); ?>
+					</span>
+				</p>
+			<?php endif; ?>
 
 			<?php if ( ! empty( $last_log ) && is_array( $last_log ) ) : ?>
 				<pre style="background:#1d2327;color:#f0f0f1;padding:16px;border-radius:4px;overflow:auto;max-height:350px;font-family:monospace;font-size:13px;line-height:1.6;"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
@@ -861,6 +871,8 @@ class DD_Maintenance_Admin_Page_Renderer {
 								<td>
 									<?php if ( 'success' === $log_item['status'] ) : ?>
 										<span class="dd-maint-badge success"><?php esc_html_e( 'Sucesso', 'dd-maintenance' ); ?></span>
+									<?php elseif ( 'warning' === $log_item['status'] ) : ?>
+										<span class="dd-maint-badge warning"><?php esc_html_e( 'Sucesso com avisos', 'dd-maintenance' ); ?></span>
 									<?php elseif ( 'failure' === $log_item['status'] ) : ?>
 										<span class="dd-maint-badge error"><?php esc_html_e( 'Falha / Erro', 'dd-maintenance' ); ?></span>
 									<?php else : ?>

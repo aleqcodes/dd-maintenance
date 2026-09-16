@@ -6,6 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/class-dd-maintenance-observability.php';
 require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
 require_once __DIR__ . '/class-dd-maintenance-cron-job-store.php';
 require_once __DIR__ . '/class-dd-maintenance-elementor-compatibility.php';
@@ -254,12 +255,45 @@ class DD_Maintenance {
 
 		return $dir;
 	}
+	/**
+	 * Registra um evento operacional estruturado e sem dados sensíveis.
+	 *
+	 * @param string $operation Operação principal.
+	 * @param string $event     Nome do evento.
+	 * @param array  $context   Metadados operacionais.
+	 * @return array
+	 */
+	public static function record_event( string $operation, string $event, array $context = array() ): array {
+		$payload = DD_Maintenance_Observability::make_event( $operation, $event, $context );
+		$line    = DD_Maintenance_Observability::encode( $payload ) . "\n";
+		$path    = self::logs_dir() . '/events-' . gmdate( 'Y-m-d' ) . '.jsonl';
+		file_put_contents( $path, $line, FILE_APPEND | LOCK_EX );
+
+		if ( function_exists( 'set_transient' ) ) {
+			set_transient( 'dd_maintenance_last_event', $payload, DAY_IN_SECONDS );
+		}
+		return $payload;
+	}
+
+	/**
+	 * Retorna o último evento estruturado disponível.
+	 *
+	 * @return array
+	 */
+	public static function get_last_event(): array {
+		if ( ! function_exists( 'get_transient' ) ) {
+			return array();
+		}
+		$event = get_transient( 'dd_maintenance_last_event' );
+		return is_array( $event ) ? $event : array();
+	}
+
 
 	/**
 	 * Salva um log tanto no transient quanto em arquivo físico na pasta de uploads.
 	 *
 	 * @param array|string $log       Linhas do log ou texto.
-	 * @param string       $status    'success' | 'failure' | 'info'.
+	 * @param string       $status    'success' | 'warning' | 'failure' | 'info'.
 	 * @param string       $base_name Identificador do backup (ex: site-2026-08-21-1430).
 	 * @return string Caminho criado ou string vazia se a gravação falhar.
 	 */
@@ -271,9 +305,17 @@ class DD_Maintenance {
 		set_transient( 'backuper_last_log', $lines, DAY_IN_SECONDS );
 
 		$logs_dir = self::logs_dir();
-		$status   = in_array( $status, array( 'success', 'failure', 'error', 'info' ), true ) ? $status : 'info';
-		if ( 'error' === $status ) {
+		$status   = in_array( $status, array( 'success', 'warning', 'failure', 'error', 'info' ), true ) ? $status : 'info';
+		$has_error = false;
+		$has_warning = false;
+		foreach ( $lines as $line ) {
+			$has_error   = $has_error || 0 === strpos( $line, '[ERRO]' );
+			$has_warning = $has_warning || 0 === strpos( $line, '[Aviso]' );
+		}
+		if ( 'error' === $status || ( 'success' === $status && $has_error ) ) {
 			$status = 'failure';
+		} elseif ( 'success' === $status && $has_warning ) {
+			$status = 'warning';
 		}
 
 		$date_stamp = current_time( 'Y-m-d-His' );
@@ -281,14 +323,24 @@ class DD_Maintenance {
 			$clean_base = sanitize_file_name( $base_name );
 			$filename   = sprintf( 'backup-%s-%s-%s.log', $clean_base, $status, $date_stamp );
 		} else {
-			$filename   = sprintf( 'backup-%s-%s.log', $status, $date_stamp );
+			$filename = sprintf( 'backup-%s-%s.log', $status, $date_stamp );
 		}
 
 		$filepath = $logs_dir . '/' . $filename;
 		$content  = implode( "\n", $lines ) . "\n";
-
-		$written = file_put_contents( $filepath, $content );
+		$written  = file_put_contents( $filepath, $content );
 		self::purge_old_log_files( 30 );
+		self::record_event(
+			'backup',
+			'log_saved',
+			array(
+				'step'          => 'finalize',
+				'status'        => false === $written ? 'failure' : $status,
+				'error_count'   => count( array_filter( $lines, static function ( $line ) { return 0 === strpos( $line, '[ERRO]' ); } ) ),
+				'failure_code'  => false === $written ? 'log_write_failed' : '',
+				'base_name'     => $base_name,
+			)
+		);
 
 		return false === $written ? '' : $filepath;
 	}
@@ -344,6 +396,8 @@ class DD_Maintenance {
 
 			if ( strpos( $name, '-success-' ) !== false ) {
 				$status = 'success';
+			} elseif ( strpos( $name, '-warning-' ) !== false ) {
+				$status = 'warning';
 			} elseif ( strpos( $name, '-failure-' ) !== false || strpos( $name, '-error-' ) !== false ) {
 				$status = 'failure';
 			}
@@ -415,9 +469,7 @@ class DD_Maintenance {
 	public static function clear_all_saved_logs(): int {
 		$dir   = self::logs_dir();
 		$files = glob( $dir . '/backup-*.log' );
-		if ( ! is_array( $files ) ) {
-			return 0;
-		}
+		$files = is_array( $files ) ? $files : array();
 
 		$count = 0;
 		foreach ( $files as $file ) {
@@ -428,6 +480,13 @@ class DD_Maintenance {
 
 		delete_transient( 'dd_maintenance_last_log' );
 		delete_transient( 'backuper_last_log' );
+		$event_files = glob( $dir . '/events-*.jsonl' );
+		foreach ( is_array( $event_files ) ? $event_files : array() as $event_file ) {
+			if ( is_file( $event_file ) ) {
+				unlink( $event_file );
+			}
+		}
+		delete_transient( 'dd_maintenance_last_event' );
 
 		return $count;
 	}

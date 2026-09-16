@@ -19,19 +19,45 @@ function sanitize_key( $key ) { return preg_replace( '/[^a-z0-9_-]/', '', strtol
 function wp_generate_password( $len = 12, $special = false ) { return substr( md5( (string) microtime() ), 0, $len ); }
 function size_format( $bytes ) { return $bytes . ' B'; }
 function __( $t ) { return $t; }
-
-if ( ! class_exists( 'WP_Error' ) ) {
-	class WP_Error {
-		private $msg;
-		public function __construct( $c = '', $m = '' ) { $this->msg = $m; }
-		public function get_error_message() { return $this->msg; }
+function wp_unslash( $value ) { return $value; }
+function is_user_logged_in() { return true; }
+function current_user_can( $capability ) { return 'manage_options' === $capability; }
+function check_ajax_referer( $action, $query_arg, $stop = true ) { return true; }
+function wp_send_json_success( $data = null ) { throw new DD_Maintenance_Test_Response( true, $data ); }
+function wp_send_json_error( $data = null ) { throw new DD_Maintenance_Test_Response( false, $data ); }
+if ( ! class_exists( 'DD_Maintenance_Test_Response' ) ) {
+	class DD_Maintenance_Test_Response extends RuntimeException {
+		public $success;
+		public $data;
+		public function __construct( $success, $data ) {
+			$this->success = $success;
+			$this->data    = $data;
+			parent::__construct( $success ? 'success' : 'error' );
+		}
 	}
 }
-function is_wp_error( $val ) { return $val instanceof WP_Error; }
+if ( ! class_exists( 'DD_Maintenance_Config' ) ) {
+	class DD_Maintenance_Config {
+		public static function has_password() { return false; }
+	}
+}
 
 require_once __DIR__ . '/../includes/class-dd-maintenance.php';
+require_once __DIR__ . '/../includes/class-dd-maintenance-settings.php';
 require_once __DIR__ . '/../includes/class-dd-maintenance-restore.php';
-
+$production_settings = ( new ReflectionClass( 'DD_Maintenance_Settings' ) )->newInstanceWithoutConstructor();
+$_POST               = array( 'mode' => 'upload_init' );
+try {
+	$production_settings->ajax_handle_restore();
+	assert( false, 'O handler de produção deveria responder por JSON.' );
+} catch ( DD_Maintenance_Test_Response $response ) {
+	assert( true === $response->success, 'O handler de produção deve iniciar a sessão de upload.' );
+	assert( is_array( $response->data ) && isset( $response->data['upload_session_id'] ), 'O handler deve devolver o identificador da sessão.' );
+	$production_session_dir = DD_Maintenance::backup_dir() . '/' . $response->data['upload_session_id'];
+	assert( is_dir( $production_session_dir ), 'O handler deve criar o diretório da sessão.' );
+	rmdir( $production_session_dir );
+}
+$_POST      = array();
 $backup_dir = DD_Maintenance::backup_dir();
 $upload_session_id = 'upload_restore_' . time() . '_' . wp_generate_password( 10, false );
 $temp_dir = $backup_dir . '/' . $upload_session_id;

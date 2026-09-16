@@ -474,6 +474,17 @@ Ferramentas de qualidade não devem bloquear hotfixes de produção, mas o CI de
 7. Monitorar falhas durante uma janela definida pela operação.
 8. Só então remover adapters e caminhos legacy.
 
+## Runbook de staging e rollout
+
+Antes de habilitar a versão em produção, registrar uma execução independente para cada cenário:
+
+1. **Matriz de staging:** site pequeno; banco grande; arquivo maior que um chunk; Elementor ativo; S3 real ou compatível; interrupção entre lotes; disco insuficiente; falha de rede.
+2. **Evidências obrigatórias:** `correlation_id`, `session_id`, etapa, `failure_code`, arquivo `logs/events-YYYY-MM-DD.jsonl`, log textual, checksums dos volumes, contagem de arquivos, banco restaurado, URLs esperadas e configurações esperadas.
+3. **Retomada:** interromper cada fluxo em uma etapa diferente, repetir a mesma requisição e confirmar que a sessão retoma o checkpoint ou termina com erro determinístico; uma sessão corrompida deve ser descartada e nunca reutilizada.
+4. **Canário:** habilitar primeiro em uma única instalação não crítica, mantendo a versão anterior disponível e anotando horário inicial, volume de operações, erros e avisos. Não ampliar o rollout se houver falha de integridade, perda de correlação ou erro não classificado.
+5. **Monitoramento:** acompanhar por 24 horas após o canário; revisar eventos `status=failure` e `status=warning`, falhas de rede/S3, sessões sem evento final e divergências de checksum a cada hora. Encerrar o canário somente sem falhas críticas e após um restore verificado.
+6. **Rollback ensaiado em staging:** definir `DD_MAINTENANCE_DISABLE_OPERATIONS` como `true` no `wp-config.php` para desabilitar uploads, backups e restores novos (AJAX e handlers administrativos), preservar sessões e logs, reverter o plugin para a versão anterior, restaurar Elementor somente de backup verificado, rotacionar credenciais se houver suspeita de exposição e marcar sessões corrompidas como não reutilizáveis. Registrar o resultado e o horário de cada passo.
+
 ## Critérios de aceite
 
 - É possível diagnosticar uma falha usando apenas sessão, etapa e código de erro.

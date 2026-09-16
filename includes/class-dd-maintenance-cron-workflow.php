@@ -42,12 +42,27 @@ class DD_Maintenance_Cron_Workflow {
 	public function start(): void {
 		$active = $this->job_store->get();
 		$now    = time();
+		$correlation_id = isset( $active['correlation_id'] ) ? (string) $active['correlation_id'] : '';
+		$start_event = DD_Maintenance::record_event(
+			'backup',
+			'cron_started',
+			array(
+				'step'           => 'cron_start',
+				'status'         => 'running',
+				'session_id'     => $active['session_id'] ?? '',
+				'correlation_id' => $correlation_id,
+			)
+		);
+		$correlation_id = $start_event['correlation_id'];
 		if ( isset( $active['status'], $active['session_id'], $active['started_at'] ) && 'running' === $active['status'] ) {
 			if ( ( $now - (int) $active['started_at'] ) < 3600 ) {
-				$this->schedule_continuation( $active['session_id'] );
+				$active['correlation_id'] = $correlation_id;
+				$this->job_store->save( $active );
+				DD_Maintenance::record_event( 'backup', 'cron_resumed', array( 'step' => $active['phase'] ?? 'unknown', 'status' => 'running', 'session_id' => $active['session_id'], 'correlation_id' => $correlation_id ) );
 				return;
 			}
 			$this->backup_workflow->cleanup_failed( $active['session_id'], __( 'Job agendado expirado por tempo limite.', 'dd-maintenance' ) );
+			DD_Maintenance::record_event( 'backup', 'cron_expired', array( 'step' => $active['phase'] ?? 'unknown', 'status' => 'failure', 'session_id' => $active['session_id'], 'failure_code' => 'cron_timeout', 'error_count' => 1, 'correlation_id' => $correlation_id ) );
 		}
 
 		$session = $this->backup_workflow->step( 'init', '' );
@@ -55,6 +70,7 @@ class DD_Maintenance_Cron_Workflow {
 			$log = array( '[ERRO] Backup: ' . $session->get_error_message() );
 			set_transient( 'dd_maintenance_last_log', $log, DAY_IN_SECONDS );
 			set_transient( 'backuper_last_log', $log, DAY_IN_SECONDS );
+			DD_Maintenance::record_event( 'backup', 'cron_failed', array( 'step' => 'init', 'status' => 'failure', 'failure_code' => $session->get_error_code(), 'error_count' => 1, 'correlation_id' => $correlation_id ) );
 			return;
 		}
 
@@ -70,9 +86,11 @@ class DD_Maintenance_Cron_Workflow {
 			'upload_index' => 0,
 			'total_size'   => 0,
 			'started_at'   => time(),
+			'correlation_id'=> $correlation_id,
 			'log'          => array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) ),
 		);
 		$this->job_store->save( $job );
+		DD_Maintenance::record_event( 'backup', 'cron_session_created', array( 'step' => 'database', 'status' => 'running', 'session_id' => $session['session_id'], 'correlation_id' => $correlation_id ) );
 		$this->schedule_continuation( $session['session_id'] );
 	}
 
@@ -87,6 +105,19 @@ class DD_Maintenance_Cron_Workflow {
 		if ( 'running' !== ( $job['status'] ?? '' ) || $session_id !== ( $job['session_id'] ?? '' ) ) {
 			return;
 		}
+		$phase          = (string) ( $job['phase'] ?? 'unknown' );
+		$started_at     = microtime( true );
+		$correlation_id = (string) ( $job['correlation_id'] ?? '' );
+		DD_Maintenance::record_event(
+			'backup',
+			'cron_step_started',
+			array(
+				'step'           => $phase,
+				'status'         => 'running',
+				'session_id'     => $session_id,
+				'correlation_id' => $correlation_id,
+			)
+		);
 
 		$result = true;
 		switch ( $job['phase'] ) {
@@ -124,7 +155,7 @@ class DD_Maintenance_Cron_Workflow {
 				$index = (int) $job['upload_index'];
 				if ( $index < count( $job['parts'] ) ) {
 					$part   = $job['parts'][ $index ];
-					$result = $this->backup_workflow->upload_parts( array( $part ), $job['folder'], (int) $part['size'] );
+					$result = $this->backup_workflow->upload_parts( array( $part ), $job['folder'], (int) $part['size'], $correlation_id );
 					if ( $result->success ) {
 						$job['upload_index']++;
 						$job['log'] = array_merge( $job['log'], $result->logs );
@@ -160,6 +191,21 @@ class DD_Maintenance_Cron_Workflow {
 				$result = true;
 				break;
 		}
+		$event_status = is_wp_error( $result ) ? 'failure' : ( 'completed' === $job['status'] ? 'success' : 'running' );
+		DD_Maintenance::record_event(
+			'backup',
+			'cron_step_finished',
+			array(
+				'step'            => $phase,
+				'status'          => $event_status,
+				'session_id'      => $session_id,
+				'correlation_id'  => $correlation_id,
+				'error_count'     => is_wp_error( $result ) ? 1 : 0,
+				'failure_code'    => is_wp_error( $result ) ? $result->get_error_code() : '',
+				'bytes_processed' => (int) ( $job['total_size'] ?? 0 ),
+				'duration_ms'      => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+			)
+		);
 
 		if ( is_wp_error( $result ) ) {
 			$job['status']      = 'error';

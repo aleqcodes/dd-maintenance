@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<ruleset name="DD Maintenance">
+    <description>WordPress Coding Standards para código próprio.</description>
+    <file>dd-maintenance.php</file>
+    <file>backuper.php</file>
+    <file>includes</file>
+    <exclude-pattern>*/updraftplus/*</exclude-pattern>
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <rule ref="WordPress">
+        <exclude name="WordPress.Files.FileName" />
+        <exclude name="Generic.Files.LineLength" />
+        <exclude name="Squiz.Commenting.FileComment.Missing" />
+    </rule>
+</ruleset>

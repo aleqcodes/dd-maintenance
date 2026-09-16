@@ -1,0 +1,18 @@
+parameters:
+    level: 1
+    paths:
+        - dd-maintenance.php
+        - backuper.php
+        - includes
+    stubFiles:
+        - vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
+    bootstrapFiles:
+        - tests/bootstrap.php
+    ignoreErrors:
+        -
+            message: '#^Function .+ not found\.$#'
+        -
+            message: '#^Function __ invoked with \d+ parameters, \d+ required\.$#'
+    excludePaths:
+        - %currentWorkingDirectory%/updraftplus/*
+    reportUnmatchedIgnoredErrors: false

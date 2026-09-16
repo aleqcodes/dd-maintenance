@@ -46,27 +46,69 @@ class DD_Maintenance_Backup_Workflow {
 	/**
 	 * Executa criação incremental usando a mesma sequência do AJAX e do cron.
 	 *
+	 * @param string $correlation_id Correlação da operação chamadora.
 	 * @return DD_Maintenance_Backup_Result|WP_Error
 	 */
-	public function create() {
-		$session = $this->step( 'init', '' );
+	public function create( string $correlation_id = '' ) {
+		$started_at  = microtime( true );
+		$start_event = DD_Maintenance::record_event( 'backup', 'operation_started', array( 'step' => 'init', 'status' => 'running', 'correlation_id' => $correlation_id ) );
+		$correlation_id = $start_event['correlation_id'];
+		$session        = $this->step( 'init', '' );
 		if ( is_wp_error( $session ) ) {
+			DD_Maintenance::record_event(
+				'backup',
+				'operation_failed',
+				array(
+					'step'          => 'init',
+					'status'        => 'failure',
+					'failure_code'  => $session->get_error_code(),
+					'error_count'   => 1,
+					'duration_ms'   => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+					'correlation_id' => $correlation_id,
+				)
+			);
 			return $session;
 		}
 
 		$session_id = $session['session_id'];
 		$result     = array();
+		DD_Maintenance::record_event( 'backup', 'session_created', array( 'step' => 'init', 'session_id' => $session_id, 'status' => 'running', 'correlation_id' => $correlation_id ) );
 		foreach ( array( 'database', 'index', 'zip', 'finalize' ) as $step ) {
 			do {
 				$result = $this->step( $step, $session_id );
 				if ( is_wp_error( $result ) ) {
 					$this->cleanup_failed( $session_id, $result->get_error_message() );
+					DD_Maintenance::record_event(
+						'backup',
+						'operation_failed',
+						array(
+							'step'           => $step,
+							'session_id'     => $session_id,
+							'status'         => 'failure',
+							'failure_code'   => $result->get_error_code(),
+							'error_count'    => 1,
+							'duration_ms'    => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+							'correlation_id' => $correlation_id,
+						)
+					);
 					return $result;
 				}
 			} while ( ! $this->is_completed( $result ) );
 		}
 
 		$this->cleanup( $session_id );
+		DD_Maintenance::record_event(
+			'backup',
+			'operation_finished',
+			array(
+				'step'           => 'finalize',
+				'session_id'     => $session_id,
+				'status'         => 'success',
+				'progress'       => 100,
+				'duration_ms'    => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+				'correlation_id' => $correlation_id,
+			)
+		);
 		return DD_Maintenance_Backup_Result::from_array( $result );
 	}
 
@@ -116,22 +158,49 @@ class DD_Maintenance_Backup_Workflow {
 	/**
 	 * Envia partes usando o mesmo caso de uso para execução manual, AJAX e cron.
 	 *
-	 * @param array  $parts       Partes com file, name e size.
-	 * @param string $folder      Pasta remota.
-	 * @param int    $total_size  Tamanho total.
+	 * @param array  $parts          Partes com file, name e size.
+	 * @param string $folder         Pasta remota.
+	 * @param int    $total_size     Tamanho total.
+	 * @param string $correlation_id Correlação da operação chamadora.
 	 * @return DD_Maintenance_Storage_Upload_Result
 	 */
-	public function upload_parts( array $parts, string $folder, int $total_size = 0 ): DD_Maintenance_Storage_Upload_Result {
-		$result            = new DD_Maintenance_Storage_Upload_Result();
-		$result->total     = count( $parts );
-		$result->success   = false;
+	public function upload_parts( array $parts, string $folder, int $total_size = 0, string $correlation_id = '' ): DD_Maintenance_Storage_Upload_Result {
+		$started_at  = microtime( true );
+		$start_event = DD_Maintenance::record_event(
+			'backup',
+			'upload_started',
+			array(
+				'step'           => 'upload',
+				'status'         => 'running',
+				'bytes_processed' => 0,
+				'correlation_id' => $correlation_id,
+				'context'        => array( 'parts_total' => count( $parts ) ),
+			)
+		);
+		$correlation_id = $start_event['correlation_id'];
+		$result         = new DD_Maintenance_Storage_Upload_Result();
+		$result->total  = count( $parts );
+		$result->success = false;
 		$result->total_size = $total_size;
 
 		if ( ! $this->s3->is_configured() ) {
 			$result->errors[] = __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' );
+			DD_Maintenance::record_event(
+				'backup',
+				'upload_failed',
+				array(
+					'step'           => 'upload',
+					'status'         => 'failure',
+					'failure_code'   => 's3_not_configured',
+					'error_count'    => 1,
+					'duration_ms'    => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+					'correlation_id' => $correlation_id,
+				)
+			);
 			return $result;
 		}
 
+		$processed_bytes = 0;
 		foreach ( $parts as $index => $part ) {
 			$key    = $folder . '/' . $part['name'];
 			$upload = $this->s3->put_object( $key, $part['file'] );
@@ -144,10 +213,25 @@ class DD_Maintenance_Backup_Workflow {
 					$part['name'],
 					$upload->get_error_message()
 				);
+				DD_Maintenance::record_event(
+					'backup',
+					'upload_failed',
+					array(
+						'step'           => 'upload',
+						'status'         => 'failure',
+						'failure_code'   => $upload->get_error_code(),
+						'error_count'    => 1,
+						'bytes_processed'=> $processed_bytes,
+						'duration_ms'    => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+						'correlation_id' => $correlation_id,
+						'part_index'     => $index + 1,
+					)
+				);
 				return $result;
 			}
 
 			$result->uploaded++;
+			$processed_bytes += isset( $part['size'] ) ? (int) $part['size'] : 0;
 			$result->logs[] = sprintf(
 				/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome */
 				__( '[OK] Parte %1$d/%2$d enviada: %3$s', 'dd-maintenance' ),
@@ -155,9 +239,33 @@ class DD_Maintenance_Backup_Workflow {
 				$result->total,
 				$part['name']
 			);
+			DD_Maintenance::record_event(
+				'backup',
+				'upload_part_finished',
+				array(
+					'step'            => 'upload',
+					'status'          => 'running',
+					'bytes_processed' => $processed_bytes,
+					'progress'        => $result->total > 0 ? (int) floor( $result->uploaded / $result->total * 100 ) : 100,
+					'correlation_id'  => $correlation_id,
+					'part_index'      => $index + 1,
+				)
+			);
 		}
 
 		$result->success = true;
+		DD_Maintenance::record_event(
+			'backup',
+			'upload_finished',
+			array(
+				'step'            => 'upload',
+				'status'          => 'success',
+				'progress'        => 100,
+				'bytes_processed' => $processed_bytes,
+				'duration_ms'     => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+				'correlation_id'  => $correlation_id,
+			)
+		);
 		return $result;
 	}
 
@@ -168,6 +276,9 @@ class DD_Maintenance_Backup_Workflow {
 	 * @return array Log de execução.
 	 */
 	public function run_full( $retention_callback = null ): array {
+		$started_at     = microtime( true );
+		$start_event    = DD_Maintenance::record_event( 'backup', 'full_operation_started', array( 'step' => 'init', 'status' => 'running' ) );
+		$correlation_id = $start_event['correlation_id'];
 		$log = array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) );
 
 		$config_status = DD_Maintenance_Config::get_wp_config_status();
@@ -176,10 +287,22 @@ class DD_Maintenance_Backup_Workflow {
 			$log[] = '[Aviso] DISALLOW_FILE_MODS está ATIVO no wp-config.php. Se as atualizações falharem, desative-o na aba "Travas wp-config.php".';
 		}
 
-		$backup_result = $this->create();
+		$backup_result = $this->create( $correlation_id );
 		if ( is_wp_error( $backup_result ) ) {
 			$log[] = '[ERRO] Backup: ' . $backup_result->get_error_message();
 			$log[] = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
+			DD_Maintenance::record_event(
+				'backup',
+				'full_operation_failed',
+				array(
+					'step'           => 'backup',
+					'status'         => 'failure',
+					'failure_code'   => $backup_result->get_error_code(),
+					'error_count'    => 1,
+					'duration_ms'    => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+					'correlation_id' => $correlation_id,
+				)
+			);
 			return $log;
 		}
 
@@ -199,11 +322,24 @@ class DD_Maintenance_Backup_Workflow {
 		$folder    = ( $site_slug ? $site_slug : 'site' ) . '/' . current_time( 'Y-m-d' );
 		$log[]     = '[OK] Pasta de destino no S3: ' . $folder;
 
-		$upload_result = $this->upload_parts( $parts, $folder, (int) $total_size );
+		$upload_result = $this->upload_parts( $parts, $folder, (int) $total_size, $correlation_id );
 		$log          = array_merge( $log, $upload_result->logs );
 		if ( ! $upload_result->success ) {
 			$log = array_merge( $log, array_map( static function ( $error ) { return '[ERRO] ' . $error; }, $upload_result->errors ) );
 			$log[] = '[Fim com Erro no S3] ' . current_time( 'Y-m-d H:i:s' );
+			DD_Maintenance::record_event(
+				'backup',
+				'full_operation_failed',
+				array(
+					'step'            => 'upload',
+					'status'          => 'failure',
+					'failure_code'    => 's3_upload_failed',
+					'error_count'     => count( $upload_result->errors ),
+					'bytes_processed' => (int) $total_size,
+					'duration_ms'     => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+					'correlation_id'  => $correlation_id,
+				)
+			);
 			return $log;
 		}
 
@@ -247,6 +383,21 @@ class DD_Maintenance_Backup_Workflow {
 		}
 
 		$log[] = '[Fim] ' . current_time( 'Y-m-d H:i:s' );
+		$error_count = count( array_filter( $log, static function ( $line ) { return 0 === strpos( $line, '[ERRO]' ); } ) );
+		$status = $error_count > 0 ? 'failure' : ( count( array_filter( $log, static function ( $line ) { return 0 === strpos( $line, '[Aviso]' ); } ) ) > 0 ? 'warning' : 'success' );
+		DD_Maintenance::record_event(
+			'backup',
+			'full_operation_finished',
+			array(
+				'step'            => 'core',
+				'status'          => $status,
+				'progress'        => 100,
+				'bytes_processed' => (int) $total_size,
+				'error_count'     => $error_count,
+				'duration_ms'     => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+				'correlation_id'  => $correlation_id,
+			)
+		);
 		return $log;
 	}
 
