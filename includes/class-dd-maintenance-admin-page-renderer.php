@@ -40,19 +40,13 @@ class DD_Maintenance_Admin_Page_Renderer {
 	/**
 	 * Aba 1: Visão Geral & Ações Rápidas.
 	 */
-	public function render_tab_general( $s3_configured, $s3, $config_status, $settings, $last_log ) {
-		$file_mods     = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_MODS' );
-		$file_edit     = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_EDIT' );
-		$local_backups = DD_Maintenance_Restore::get_local_backups();
-		$backup_count  = count( $local_backups );
-		$total_bytes   = 0;
+	public function render_tab_general( $s3_configured, $s3, $config_status, $settings, $last_log, array $local_backups = array(), $next_cron = 0 ) {
+		$file_mods    = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_MODS' );
+		$file_edit    = DD_Maintenance_Config::get_status_value( $config_status, 'DISALLOW_FILE_EDIT' );
+		$backup_count = count( $local_backups );
+		$total_bytes  = 0;
 		foreach ( $local_backups as $b ) {
 			$total_bytes += $b['size'];
-		}
-
-		$next_cron = wp_next_scheduled( 'dd_maintenance_daily_maintenance' );
-		if ( ! $next_cron ) {
-			$next_cron = wp_next_scheduled( 'backuper_daily_maintenance' );
 		}
 		?>
 		<div class="dd-maint-style-display-grid-grid-template-columns-repeat-auto-f-e40afb">
@@ -459,7 +453,8 @@ class DD_Maintenance_Admin_Page_Renderer {
 	/**
 	 * Aba 3: S3 / DigitalOcean Spaces & Opções de Backup.
 	 */
-	public function render_tab_s3( $settings, $s3_configured, $s3 ) {
+	public function render_tab_s3( $settings, $s3_configured, $s3, $split_size_mb = 0, $remote_backups = array() ) {
+		$has_s3_error = is_wp_error( $remote_backups );
 		?>
 		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-1cf229">
 			<h2 class="dd-maint-style-margin-top-0-display-flex-align-items-center-gap-8981e5">
@@ -558,13 +553,12 @@ class DD_Maintenance_Admin_Page_Renderer {
 					<tr>
 						<th scope="row"><label for="split_size_mb"><?php esc_html_e( 'Divisão de Volumes (Tamanho por Parte)', 'dd-maintenance' ); ?></label></th>
 						<td>
-							<?php $curr_split = ( new DD_Maintenance_Settings_Repository() )->get_split_size_mb( $settings ); ?>
+							<?php $curr_split = (int) $split_size_mb; ?>
 							<select id="split_size_mb" name="split_size_mb">
 								<option value="25" <?php selected( $curr_split, 25 ); ?>><?php esc_html_e( '25 MB (Ultra leve / servidores restritivos)', 'dd-maintenance' ); ?></option>
 								<option value="50" <?php selected( $curr_split, 50 ); ?>><?php esc_html_e( '50 MB', 'dd-maintenance' ); ?></option>
 								<option value="100" <?php selected( $curr_split, 100 ); ?>><?php esc_html_e( '100 MB (Ideal para Cloudflare Free)', 'dd-maintenance' ); ?></option>
 								<option value="200" <?php selected( $curr_split, 200 ); ?>><?php esc_html_e( '200 MB (Recomendado - Rápido)', 'dd-maintenance' ); ?></option>
-								<option value="400" <?php selected( $curr_split, 400 ); ?>><?php esc_html_e( '400 MB (Padrão UpdraftPlus - Ultra Rápido)', 'dd-maintenance' ); ?></option>
 								<option value="500" <?php selected( $curr_split, 500 ); ?>><?php esc_html_e( '500 MB (Arquivos grandes)', 'dd-maintenance' ); ?></option>
 							</select>
 							<p class="description">
@@ -579,18 +573,6 @@ class DD_Maintenance_Admin_Page_Renderer {
 			<?php if ( $s3_configured ) : ?>
 				<hr class="dd-maint-style-margin-24px-0-95e61b">
 
-				<?php
-				$site_slug      = sanitize_title( get_bloginfo( 'name' ) );
-				$site_slug      = $site_slug ? $site_slug : 'site';
-				$remote_backups = $s3->get_remote_backups( $site_slug );
-				$has_s3_error   = is_wp_error( $remote_backups );
-				?>
-
-				<div class="dd-maint-style-display-flex-justify-content-space-between-align-801166">
-					<h3 class="dd-maint-style-margin-0-display-flex-align-items-center-gap-8px-b271d5">
-						<span class="dashicons dashicons-cloud dd-maint-style-color-2271b1-5dadfa"></span>
-						<?php esc_html_e( 'Backups Armazenados no Bucket S3 / Spaces', 'dd-maintenance' ); ?>
-					</h3>
 					<a href="<?php echo esc_url( $this->page_url( 's3' ) ); ?>" class="button button-small">
 						<span class="dashicons dashicons-update dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 						<?php esc_html_e( 'Atualizar Lista do S3', 'dd-maintenance' ); ?>
@@ -687,16 +669,10 @@ class DD_Maintenance_Admin_Page_Renderer {
 	/**
 	 * Aba 4: Agendamento & Automação (WP-Cron).
 	 */
-	public function render_tab_cron( $settings ) {
-		$next_cron = wp_next_scheduled( 'dd_maintenance_daily_maintenance' );
-		if ( ! $next_cron ) {
-			$next_cron = wp_next_scheduled( 'backuper_daily_maintenance' );
-		}
-
+	public function render_tab_cron( $settings, $next_cron = 0, $chunk_size_mb = 0 ) {
 		$current_freq      = isset( $settings['schedule_frequency'] ) ? $settings['schedule_frequency'] : 'daily';
 		$current_time_val  = isset( $settings['schedule_time'] ) ? $settings['schedule_time'] : '03:00';
 		$current_retention = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
-		$chunk_size_mb     = ( new DD_Maintenance_Settings_Repository() )->get_split_size_mb( $settings );
 		?>
 		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-1cf229">
 			<h2 class="dd-maint-style-margin-top-0-display-flex-align-items-center-gap-8981e5">
@@ -808,9 +784,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 	/**
 	 * Aba 5: Logs & Histórico.
 	 */
-	public function render_tab_logs( $last_log ) {
-		$saved_logs = DD_Maintenance::get_saved_logs();
-		$last_event = DD_Maintenance::get_last_event();
+	public function render_tab_logs( $last_log, array $saved_logs = array(), $last_event = array(), array $event_summary = array() ) {
 		?>
 		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-5658c0">
 			<div class="dd-maint-style-display-flex-justify-content-space-between-align-bcbb84">
@@ -828,12 +802,21 @@ class DD_Maintenance_Admin_Page_Renderer {
 				<?php endif; ?>
 			</div>
 
-			<?php if ( ! empty( $last_event ) ) : ?>
+			<?php if ( ! empty( $event_summary ) ) : ?>
+				<?php
+				$summary_status = (string) ( $event_summary['status'] ?? 'info' );
+				$summary_class  = 'success' === $summary_status ? 'success' : ( 'warning' === $summary_status ? 'warning' : ( in_array( $summary_status, array( 'failure', 'persistence_failure' ), true ) ? 'error' : '' ) );
+				$summary_label  = 'success' === $summary_status ? __( 'Sucesso', 'dd-maintenance' ) : ( 'warning' === $summary_status ? __( 'Sucesso com avisos', 'dd-maintenance' ) : ( 'persistence_failure' === $summary_status ? __( 'Falha de persistência', 'dd-maintenance' ) : ( 'failure' === $summary_status ? __( 'Falha', 'dd-maintenance' ) : __( 'Informação', 'dd-maintenance' ) ) ) );
+				?>
+				<p class="dd-maint-style-margin-0-0-12px-color-50575e-ad976f">
+					<strong><?php esc_html_e( 'Resumo operacional:', 'dd-maintenance' ); ?></strong>
+					<span class="dd-maint-badge <?php echo esc_attr( $summary_class ); ?>"><?php echo esc_html( $summary_label ); ?></span>
+					<code><?php echo esc_html( $event_summary['text'] ?? '' ); ?></code>
+				</p>
+			<?php elseif ( ! empty( $last_event ) ) : ?>
 				<p class="dd-maint-style-margin-0-0-12px-color-50575e-ad976f">
 					<strong><?php esc_html_e( 'Último evento:', 'dd-maintenance' ); ?></strong>
-					<span class="dd-maint-badge <?php echo esc_attr( 'success' === ( $last_event['status'] ?? '' ) ? 'success' : ( 'warning' === ( $last_event['status'] ?? '' ) ? 'warning' : ( 'failure' === ( $last_event['status'] ?? '' ) ? 'error' : '' ) ) ); ?>">
-						<?php echo esc_html( DD_Maintenance_Observability::format( $last_event ) ); ?>
-					</span>
+					<code><?php echo esc_html( DD_Maintenance_Observability::format( $last_event ) ); ?></code>
 				</p>
 			<?php endif; ?>
 
@@ -941,15 +924,11 @@ class DD_Maintenance_Admin_Page_Renderer {
 	/**
 	 * Aba: Backups Locais & Restauração.
 	 */
-	public function render_tab_restore( $has_password ) {
-		$local_backups = DD_Maintenance_Restore::get_local_backups();
-		$max_upload    = size_format( wp_max_upload_size() );
-		$total_bytes   = 0;
+	public function render_tab_restore( $has_password, array $local_backups = array(), $max_upload = '', $s3 = null, $s3_configured = false ) {
+		$total_bytes = 0;
 		foreach ( $local_backups as $b ) {
 			$total_bytes += $b['size'];
 		}
-		$s3            = new DD_Maintenance_S3();
-		$s3_configured = $s3->is_configured();
 		?>
 		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-830b2a">
 			<div class="dd-maint-style-display-flex-justify-content-space-between-align-c674fa">

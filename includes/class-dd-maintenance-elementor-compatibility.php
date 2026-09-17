@@ -21,7 +21,9 @@ class DD_Maintenance_Elementor_Compatibility {
 	 */
 	public static function apply_restore_decision( bool $enabled ): array {
 		if ( ! $enabled ) {
-			return array( 'status' => 'skipped', 'version' => self::PATCH_VERSION );
+			$result = array( 'status' => 'skipped', 'version' => self::PATCH_VERSION );
+			self::record( $result );
+			return $result;
 		}
 
 		$result = self::apply();
@@ -97,6 +99,11 @@ class DD_Maintenance_Elementor_Compatibility {
 			if ( ! self::is_allowed_file( $entry['file'] ?? '' ) || is_link( $entry['file'] ) ) {
 				continue;
 			}
+			if ( is_file( $entry['file'] ) && ! empty( $entry['checksum_after'] ) && hash_file( 'sha256', $entry['file'] ) !== $entry['checksum_after'] ) {
+				$result = array( 'status' => 'undo_conflict', 'file' => $entry['file'], 'version' => $entry['version'] ?? self::PATCH_VERSION );
+				self::record( $result );
+				return $result;
+			}
 			if ( ! self::atomic_copy( $backup, $entry['file'] ) ) {
 				$result = array( 'status' => 'undo_failed', 'file' => $entry['file'] );
 				self::record( $result );
@@ -127,21 +134,44 @@ class DD_Maintenance_Elementor_Compatibility {
 			return false;
 		}
 		$file = rtrim( wp_normalize_path( $directory ), '/' ) . '/dd-elementor-compat.php';
-		$source = "<?php\n/** Plugin Name: DD Maintenance - Elementor Compatibility Shield */\n";
-		$source .= "defined( 'ABSPATH' ) || exit;\n";
-		$source .= "if ( ! function_exists( 'dd_maintenance_elementor_shield' ) ) {\n";
-		$source .= "function dd_maintenance_elementor_shield( \$content ) {\n";
-		$source .= "if ( ! is_string( \$content ) || false === strpos( \$content, '[elementor-tag' ) ) return \$content;\n";
-		$source .= "return preg_replace_callback( '/\\[elementor-tag\\s+([^\\]]+)\\]/i', static function( \$m ) {\n";
-		$source .= "if ( preg_match( '/\\bsettings\\s*=\\s*[\\\"\\\\\']([^\\\"\\\\\']*)[\\\"\\\\\']/i', \$m[1], \$s ) && '' !== trim( \$s[1] ) && 'null' !== strtolower( trim( \$s[1] ) ) ) return \$m[0];\n";
-		$source .= "\$attrs = preg_replace( '/\\s+settings\\s*=\\s*[\\\"\\\\\'][^\\\"\\\\\']*[\\\"\\\\\']/i', '', \$m[1] );\n";
-		$source .= "return '[elementor-tag ' . trim( \$attrs ) . ' settings=\"%7B%7D\"]'; }, \$content );\n";
-		$source .= "}\nadd_filter( 'the_content', 'dd_maintenance_elementor_shield', 1 );\nadd_filter( 'widget_text', 'dd_maintenance_elementor_shield', 1 );\n}\n";
-		$source .= "/* DD_MAINTENANCE_ELEMENTOR_SHIELD_VERSION:" . self::PATCH_VERSION . " */\n";
+		$source = self::shield_template();
 		if ( is_file( $file ) && hash_file( 'sha256', $file ) === hash( 'sha256', $source ) ) {
 			return true;
 		}
 		return self::atomic_write( $file, $source );
+	}
+
+	private static function shield_template(): string {
+		return str_replace(
+			'{{VERSION}}',
+			self::PATCH_VERSION,
+			<<<'PHP'
+<?php
+/** Plugin Name: DD Maintenance - Elementor Compatibility Shield */
+defined( 'ABSPATH' ) || exit;
+if ( ! function_exists( 'dd_maintenance_elementor_shield' ) ) {
+	function dd_maintenance_elementor_shield( $content ) {
+		if ( ! is_string( $content ) || false === strpos( $content, '[elementor-tag' ) ) {
+			return $content;
+		}
+		return preg_replace_callback(
+			'/\[elementor-tag\s+([^\]]+)\]/i',
+			static function ( $matches ) {
+				if ( preg_match( '/\bsettings\s*=\s*["\']([^"\']*)["\']/i', $matches[1], $settings ) && '' !== trim( $settings[1] ) && 'null' !== strtolower( trim( $settings[1] ) ) ) {
+					return $matches[0];
+				}
+				$attrs = preg_replace( '/\s+settings\s*=\s*["\'][^"\']*["\']/i', '', $matches[1] );
+				return '[elementor-tag ' . trim( $attrs ) . ' settings="%7B%7D"]';
+			},
+			$content
+		);
+	}
+	add_filter( 'the_content', 'dd_maintenance_elementor_shield', 1 );
+	add_filter( 'widget_text', 'dd_maintenance_elementor_shield', 1 );
+}
+/* DD_MAINTENANCE_ELEMENTOR_SHIELD_VERSION:{{VERSION}} */
+PHP
+		);
 	}
 
 	/**
@@ -355,10 +385,22 @@ class DD_Maintenance_Elementor_Compatibility {
 			return false;
 		}
 		$roots = array();
-		if ( defined( 'WP_PLUGIN_DIR' ) ) $roots[] = realpath( WP_PLUGIN_DIR );
-		if ( defined( 'WP_CONTENT_DIR' ) ) $roots[] = realpath( WP_CONTENT_DIR . '/plugins' );
+		if ( defined( 'WP_PLUGIN_DIR' ) ) {
+			$roots[] = realpath( WP_PLUGIN_DIR );
+		}
+		if ( defined( 'WP_CONTENT_DIR' ) ) {
+			$roots[] = realpath( WP_CONTENT_DIR . '/plugins' );
+		}
 		foreach ( $roots as $root ) {
-			if ( $root && ( $real === $root || 0 === strpos( wp_normalize_path( $real ), rtrim( wp_normalize_path( $root ), '/' ) . '/' ) ) ) return true;
+			if ( false === $root ) {
+				continue;
+			}
+			foreach ( array( 'elementor', 'pro-elements' ) as $slug ) {
+				$allowed = wp_normalize_path( rtrim( $root, '/' ) . '/' . $slug . '/core/dynamic-tags/manager.php' );
+				if ( wp_normalize_path( $real ) === $allowed && $normalized === $allowed ) {
+					return true;
+				}
+			}
 		}
 		return false;
 	}
@@ -411,6 +453,23 @@ class DD_Maintenance_Elementor_Compatibility {
 			$log = is_array( $log ) ? $log : array();
 			$log[] = $result;
 			update_option( self::LOG_OPTION, array_slice( $log, -50 ), false );
+		}
+		if ( class_exists( 'DD_Maintenance' ) && method_exists( 'DD_Maintenance', 'record_event' ) ) {
+			$status = (string) ( $result['status'] ?? 'unknown' );
+			$event_status = in_array( $status, array( 'patched', 'already_patched', 'undone', 'skipped' ), true )
+				? 'success'
+				: ( in_array( $status, array( 'not_found', 'rejected', 'rejected_path', 'rejected_checksum', 'undo_conflict' ), true ) ? 'warning' : 'failure' );
+			DD_Maintenance::record_event(
+				'elementor',
+				'compatibility_' . $status,
+				array(
+					'step'         => 'elementor_compatibility',
+					'status'       => $event_status,
+					'failure_code' => 'failure' === $event_status ? $status : '',
+					'warning_count' => 'warning' === $event_status ? 1 : 0,
+					'error_count'  => 'failure' === $event_status ? 1 : 0,
+				)
+			);
 		}
 	}
 }

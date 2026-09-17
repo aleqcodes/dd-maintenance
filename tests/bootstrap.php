@@ -59,6 +59,21 @@ if ( ! function_exists( '__' ) ) {
 		return $text;
 	}
 }
+if ( ! function_exists( 'wp_json_encode' ) ) {
+	function wp_json_encode( $value, int $flags = 0, int $depth = 512 ) {
+		return json_encode( $value, $flags, $depth );
+	}
+}
+if ( ! function_exists( 'is_ssl' ) ) {
+	function is_ssl(): bool {
+		return false;
+	}
+}
+if ( ! function_exists( 'current_time' ) ) {
+	function current_time( string $format ): string {
+		return gmdate( $format );
+	}
+}
 if ( ! function_exists( 'get_option' ) ) {
 	function get_option( string $name, $default = false ) {
 		return $GLOBALS['dd_phpunit_options'][ $name ] ?? $default;
@@ -100,6 +115,11 @@ if ( ! function_exists( 'wp_unslash' ) ) {
 		return is_string( $value ) ? stripslashes( $value ) : $value;
 	}
 }
+if ( ! function_exists( 'sanitize_text_field' ) ) {
+	function sanitize_text_field( $text ): string {
+		return trim( strip_tags( (string) $text ) );
+	}
+}
 if ( ! function_exists( 'sanitize_key' ) ) {
 	function sanitize_key( $key ): string {
 		return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $key ) );
@@ -123,6 +143,32 @@ if ( ! function_exists( 'current_user_can' ) ) {
 if ( ! function_exists( 'check_ajax_referer' ) ) {
 	function check_ajax_referer( string $action, string $query_arg, bool $stop = true ): bool {
 		return $GLOBALS['dd_phpunit_valid_nonce'] ?? true;
+	}
+}
+if ( ! function_exists( 'check_admin_referer' ) ) {
+	function check_admin_referer( string $action, string $query_arg = '_wpnonce' ): bool {
+		if ( ! ( $GLOBALS['dd_phpunit_valid_nonce'] ?? true ) ) {
+			wp_die( 'Nonce inválido.' );
+		}
+		$GLOBALS['dd_phpunit_last_nonce_action'] = $action;
+		return true;
+	}
+}
+if ( ! function_exists( 'esc_html__' ) ) {
+	function esc_html__( string $text, string $domain = 'default' ): string {
+		return $text;
+	}
+}
+if ( ! class_exists( 'DD_Maintenance_Test_Wp_Die' ) ) {
+	class DD_Maintenance_Test_Wp_Die extends RuntimeException {
+		public function __construct( $message = '' ) {
+			parent::__construct( (string) $message );
+		}
+	}
+}
+if ( ! function_exists( 'wp_die' ) ) {
+	function wp_die( $message = '', $title = '', $args = array() ): void {
+		throw new DD_Maintenance_Test_Wp_Die( $message );
 	}
 }
 if ( ! function_exists( 'wp_generate_password' ) ) {

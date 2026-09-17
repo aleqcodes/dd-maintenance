@@ -9,6 +9,11 @@ defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
 require_once __DIR__ . '/class-dd-maintenance-session-store.php';
 require_once __DIR__ . '/class-dd-maintenance-file-security.php';
+require_once __DIR__ . '/class-dd-maintenance-backup-database-dumper.php';
+require_once __DIR__ . '/class-dd-maintenance-backup-file-indexer.php';
+require_once __DIR__ . '/class-dd-maintenance-backup-archive-writer.php';
+require_once __DIR__ . '/class-dd-maintenance-backup-finalizer.php';
+require_once __DIR__ . '/class-dd-maintenance-backup-cleanup-service.php';
 
 class DD_Maintenance_Backup {
 
@@ -18,12 +23,22 @@ class DD_Maintenance_Backup {
 	 * @var DD_Maintenance_Session_Store
 	 */
 	private $session_store;
+	private $settings_repository;
+	private $database_dumper;
+	private $file_indexer;
+	private $archive_writer;
+	private $finalizer;
+	private $cleanup_service;
 
-	/**
-	 * Construtor.
-	 */
-	public function __construct() {
-		$this->session_store = new DD_Maintenance_Session_Store();
+	/** @param DD_Maintenance_Session_Store|null $session_store Session store. @param DD_Maintenance_Settings_Repository|null $settings_repository Repository. */
+	public function __construct( $session_store = null, $settings_repository = null ) {
+		$this->session_store = $session_store instanceof DD_Maintenance_Session_Store ? $session_store : new DD_Maintenance_Session_Store();
+		$this->settings_repository = $settings_repository instanceof DD_Maintenance_Settings_Repository ? $settings_repository : new DD_Maintenance_Settings_Repository();
+		$this->database_dumper = new DD_Maintenance_Backup_Database_Dumper( $this );
+		$this->file_indexer = new DD_Maintenance_Backup_File_Indexer( $this );
+		$this->archive_writer = new DD_Maintenance_Backup_Archive_Writer( $this );
+		$this->finalizer = new DD_Maintenance_Backup_Finalizer( $this );
+		$this->cleanup_service = new DD_Maintenance_Backup_Cleanup_Service( $this );
 	}
 
 	/**
@@ -63,7 +78,7 @@ class DD_Maintenance_Backup {
 		$slug = $slug ? $slug : 'site';
 		$base = $slug . '-' . current_time( 'Y-m-d-His' ) . '-' . strtolower( wp_generate_password( 6, false, false ) );
 
-		$settings = ( new DD_Maintenance_Settings_Repository() )->get();
+		$settings = $this->settings_repository->get();
 		$session_data = array(
 			'session_id'         => $session_id,
 			'session_dir'        => $session_dir,
@@ -94,10 +109,12 @@ class DD_Maintenance_Backup {
 			'large_files'          => array(),
 			'metadata_added'       => false,
 			'volume_count'         => 0,
-			'volumes_completed'    => false,
-			'total_size'          => 0,
-			'parts'               => array(),
 			'correlation_id'      => $correlation_id,
+			'status'              => DD_Maintenance_Session_Policy::STATUS_CREATED,
+			'started_at'          => time(),
+			'updated_at'          => time(),
+			'finished_at'         => null,
+			'last_step'           => 'init',
 			'created_at'          => time(),
 		);
 
@@ -117,7 +134,7 @@ class DD_Maintenance_Backup {
 	 * @return bool
 	 */
 	private function save_session_data( string $session_dir, array $data ): bool {
-		$saved = $this->session_store->save( $session_dir, $data );
+		$saved = $this->session_store->save( $session_dir, $data, 'backup' );
 		if ( ! $saved && class_exists( 'DD_Maintenance' ) && method_exists( 'DD_Maintenance', 'record_event' ) ) {
 			DD_Maintenance::record_event(
 				'backup',
@@ -149,9 +166,22 @@ class DD_Maintenance_Backup {
 		return $this->session_store->load(
 			$session_dir,
 			'session_not_found',
-			'session_corrupted'
+			'session_corrupted',
+			'backup'
 		);
 	}
+	/** @return array|WP_Error */
+	public function dump_database_step( string $session_id ) { return $this->database_dumper->run( $session_id ); }
+	/** @return array|WP_Error */
+	public function index_files_step( string $session_id ) { return $this->file_indexer->run( $session_id ); }
+	/** @return array|WP_Error */
+	public function zip_batch_step( string $session_id ) { return $this->archive_writer->run( $session_id ); }
+	/** @return array|WP_Error */
+	public function finalize_and_split_step( string $session_id ) { return $this->finalizer->run( $session_id ); }
+	/** @return true|WP_Error */
+	public function cleanup_session_step( string $session_id ) { return $this->cleanup_service->completed( $session_id ); }
+	/** @return array */
+	public function cleanup_failed_session( string $session_id, string $error_message = '', array $accumulated_log = array() ): array { return $this->cleanup_service->failed( $session_id, $error_message, $accumulated_log ); }
 
 	/**
 	 * Etapa 1: Dump do banco de dados em SQL.
@@ -159,7 +189,7 @@ class DD_Maintenance_Backup {
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
 	 */
-	public function dump_database_step( string $session_id ) {
+	public function legacy_dump_database_step( string $session_id ) {
 		global $wpdb;
 
 		$session = $this->get_session_data( $session_id );
@@ -355,7 +385,7 @@ class DD_Maintenance_Backup {
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
 	 */
-	public function index_files_step( string $session_id ) {
+	public function legacy_index_files_step( string $session_id ) {
 		$session = $this->get_session_data( $session_id );
 		if ( is_wp_error( $session ) ) {
 			return $session;
@@ -600,7 +630,7 @@ class DD_Maintenance_Backup {
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
 	 */
-	public function zip_batch_step( string $session_id ) {
+	public function legacy_zip_batch_step( string $session_id ) {
 		$this->set_time_and_memory_limits();
 		$session = $this->get_session_data( $session_id );
 		if ( is_wp_error( $session ) ) {
@@ -753,7 +783,7 @@ class DD_Maintenance_Backup {
 	 * @param string $session_id ID da sessão.
 	 * @return array|WP_Error
 	 */
-	public function finalize_and_split_step( string $session_id ) {
+	public function legacy_finalize_and_split_step( string $session_id ) {
 		$this->set_time_and_memory_limits();
 
 		$session = $this->get_session_data( $session_id );
@@ -883,7 +913,7 @@ class DD_Maintenance_Backup {
 	 * @param string $session_id ID da sessão.
 	 * @return true|WP_Error
 	 */
-	public function cleanup_session_step( string $session_id ) {
+	public function legacy_cleanup_session_step( string $session_id ) {
 		$session = $this->get_session_data( $session_id );
 		if ( is_wp_error( $session ) ) {
 			return $session;
@@ -916,7 +946,7 @@ class DD_Maintenance_Backup {
 	 * @param array  $accumulated_log Linhas de log acumuladas até a falha.
 	 * @return array
 	 */
-	public function cleanup_failed_session( string $session_id, string $error_message = '', array $accumulated_log = array() ): array {
+	public function legacy_cleanup_failed_session( string $session_id, string $error_message = '', array $accumulated_log = array() ): array {
 		$session_id    = sanitize_file_name( $session_id );
 		$session       = $this->get_session_data( $session_id );
 		$base_name     = ! is_wp_error( $session ) && ! empty( $session['base_name'] ) ? $session['base_name'] : '';
@@ -1398,9 +1428,8 @@ class DD_Maintenance_Backup {
 	 * @return int
 	 */
 	public function get_chunk_size( array $session = array() ): int {
-		$repository = new DD_Maintenance_Settings_Repository();
-		$settings   = isset( $session['settings'] ) && is_array( $session['settings'] ) ? $session['settings'] : $repository->get();
-		return $repository->get_split_size_mb( $settings ) * 1048576;
+		$settings   = isset( $session['settings'] ) && is_array( $session['settings'] ) ? $session['settings'] : $this->settings_repository->get();
+		return $this->settings_repository->get_split_size_mb( $settings ) * 1048576;
 	}
 
 	/**

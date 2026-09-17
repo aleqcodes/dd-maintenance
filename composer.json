@@ -23,7 +23,8 @@
         "test:integration": "phpunit --configuration phpunit.xml --testsuite integration",
         "test:smoke": "phpunit --configuration phpunit.xml --testsuite smoke",
         "phpstan": "phpstan analyse --configuration=phpstan.neon",
-        "phpcs": "phpcs --standard=phpcs.xml"
+        "phpstan:level5": "phpstan analyse --configuration=phpstan-level5.neon",
+        "phpcs": "phpcs --standard=phpcs.xml && phpcs --standard=phpcs-legacy.xml"
     },
     "config": {
         "allow-plugins": {

@@ -39,6 +39,48 @@ class DD_Maintenance_Legacy_Compatibility {
 			'DD_Gerenciador_Updates' => 'DD_Maintenance_Config',
 		);
 	}
+	/**
+	 * Retorna a tabela de migração dos contratos legados conhecidos.
+	 *
+	 * A tabela é estática e não inclui dados de operadores ou instalações.
+	 *
+	 * @return array<string, array<int|string, mixed>>
+	 */
+	public static function migration_table(): array {
+		return array(
+			'classes'    => self::aliases(),
+			'hooks'      => array(
+				'admin_post_backuper_save_settings'         => 'admin_post_dd_maintenance_save_settings',
+				'admin_post_backuper_update_plugins'        => 'admin_post_dd_maintenance_update_plugins',
+				'admin_post_backuper_update_core'           => 'admin_post_dd_maintenance_update_core',
+				'admin_post_backuper_run_full'              => 'admin_post_dd_maintenance_run_full',
+				'admin_post_backuper_run_backup'            => 'admin_post_dd_maintenance_run_backup',
+				'admin_post_backuper_download_backup'       => 'admin_post_dd_maintenance_download_backup',
+				'backuper_daily_maintenance'               => 'dd_maintenance_daily_maintenance',
+			),
+			'options'    => array(
+				'backuper_settings'                    => 'dd_maintenance_settings',
+				'dd_gerenciador_updates_password_hash' => 'dd_maintenance_password_hash',
+			),
+			'transients' => array(
+				'backuper_last_log' => 'dd_maintenance_last_log',
+				'backuper_notice'   => 'dd_maintenance_notice',
+			),
+			'wrappers'   => array(
+				'backuper.php'               => 'dd-maintenance.php',
+				'class-backuper.php'         => 'dd-maintenance.php',
+				'class-backuper-backup.php'  => 'dd-maintenance.php',
+				'class-backuper-s3.php'      => 'dd-maintenance.php',
+				'class-backuper-settings.php' => 'dd-maintenance.php',
+				'class-backuper-updater.php' => 'dd-maintenance.php',
+			),
+			'removal'    => array(
+				'target_version' => self::REMOVAL_TARGET,
+				'usage_option'   => self::USAGE_OPTION,
+			),
+		);
+	}
+
 
 	/**
 	 * Registra os nomes públicos mantidos por compatibilidade.
@@ -50,7 +92,6 @@ class DD_Maintenance_Legacy_Compatibility {
 			}
 		}
 
-		self::register_deprecation_notice();
 	}
 
 	/**
@@ -125,6 +166,7 @@ class DD_Maintenance_Legacy_Compatibility {
 			),
 			false
 		);
+		self::register_deprecation_notice();
 	}
 
 	/**

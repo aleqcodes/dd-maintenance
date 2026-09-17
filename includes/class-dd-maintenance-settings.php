@@ -17,7 +17,6 @@ require_once __DIR__ . '/class-dd-maintenance-admin-restore-handler.php';
 require_once __DIR__ . '/class-dd-maintenance-admin-log-handler.php';
 require_once __DIR__ . '/class-dd-maintenance-admin-s3-handler.php';
 require_once __DIR__ . '/class-dd-maintenance-admin-config-handler.php';
-require_once __DIR__ . '/class-dd-maintenance-admin-handler.php';
 require_once __DIR__ . '/class-dd-maintenance-admin-page-service.php';
 
 class DD_Maintenance_Settings {
@@ -44,7 +43,7 @@ class DD_Maintenance_Settings {
 
 	/** @param DD_Maintenance_Settings_Implementation|null $implementation Implementação administrativa. */
 	public function __construct( $implementation = null ) {
-		$this->implementation  = $implementation instanceof DD_Maintenance_Settings_Implementation ? $implementation : new DD_Maintenance_Settings_Implementation( false );
+		$this->implementation  = $implementation instanceof DD_Maintenance_Settings_Implementation ? $implementation : new DD_Maintenance_Settings_Implementation();
 		$this->page_service    = new DD_Maintenance_Admin_Page_Service( $this->implementation );
 		$this->settings_handler = new DD_Maintenance_Settings_Handler( $this->implementation );
 		$this->general_handler   = new DD_Maintenance_Admin_General_Handler( $this->implementation );
@@ -55,16 +54,7 @@ class DD_Maintenance_Settings {
 		$this->config_handler    = new DD_Maintenance_Admin_Config_Handler( $this->implementation );
 		$this->restore_handler   = new DD_Maintenance_Admin_Restore_Handler( $this->implementation, $this->download_handler );
 
-		$admin_handler = new DD_Maintenance_Admin_Handler(
-			$this->settings_handler,
-			$this->general_handler,
-			$this->backup_handler,
-			$this->config_handler,
-			$this->log_handler,
-			$this->s3_handler,
-			$this->download_handler
-		);
-		( new DD_Maintenance_Admin_Action_Controller( $admin_handler ) )->register();
+		( new DD_Maintenance_Admin_Action_Controller( $this ) )->register();
 		( new DD_Maintenance_Backup_Action_Controller( $this->backup_handler ) )->register();
 		( new DD_Maintenance_Restore_Action_Controller( $this->restore_handler ) )->register();
 		add_action( 'admin_menu', array( $this, 'register_menu' ) );

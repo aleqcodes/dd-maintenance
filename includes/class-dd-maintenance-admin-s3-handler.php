@@ -10,14 +10,14 @@ class DD_Maintenance_Admin_S3_Handler {
 	/** @var DD_Maintenance_Settings_Implementation */
 	private $settings;
 	public function __construct( $settings = null ) {
-		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation( false );
+		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation();
 	}
 	public function handle_delete_s3_object() {
 		DD_Maintenance_Admin_Request::authorize( 'dd_maintenance_delete_s3_object' );
-		return $this->settings->handle_delete_s3_object();
+		return $this->settings->handle_delete_s3_object( DD_Maintenance_Artifact_Request::from_globals() );
 	}
 	public function handle_delete_s3_backup() {
 		DD_Maintenance_Admin_Request::authorize( 'dd_maintenance_delete_s3_backup' );
-		return $this->settings->handle_delete_s3_backup();
+		return $this->settings->handle_delete_s3_backup( DD_Maintenance_Artifact_Request::from_globals() );
 	}
 }

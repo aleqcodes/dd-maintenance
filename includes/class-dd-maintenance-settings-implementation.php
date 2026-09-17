@@ -11,12 +11,16 @@ require_once __DIR__ . '/class-dd-maintenance-file-security.php';
 require_once __DIR__ . '/class-dd-maintenance-backup-workflow.php';
 require_once __DIR__ . '/class-dd-maintenance-restore-workflow.php';
 require_once __DIR__ . '/class-dd-maintenance-admin-page-renderer.php';
+require_once __DIR__ . '/class-dd-maintenance-admin-page-data.php';
 require_once __DIR__ . '/class-dd-maintenance-admin-action-controller.php';
 require_once __DIR__ . '/class-dd-maintenance-backup-action-controller.php';
 require_once __DIR__ . '/class-dd-maintenance-restore-action-controller.php';
+require_once __DIR__ . '/class-dd-maintenance-admin-request.php';
+require_once __DIR__ . '/class-dd-maintenance-request.php';
 
 
 class DD_Maintenance_Settings_Implementation {
+	private const VALID_TABS = array( 'general', 'config', 's3', 'cron', 'restore', 'logs' );
 	/**
 	 * Repositório das configurações persistidas.
 	 *
@@ -61,40 +65,40 @@ class DD_Maintenance_Settings_Implementation {
 	 */
 	private $restore_action_controller;
 
+	/** @var DD_Maintenance_Admin_Page_Data */
+	private $page_data;
+
 
 	/**
-	 * Construtor.
+	 * Construtor da implementação interna.
 	 *
-	 * @param bool $register_hooks Registra hooks legados quando executado diretamente.
+	 * Os hooks da fronteira WordPress são registrados exclusivamente pela
+	 * fachada DD_Maintenance_Settings, depois da composição dos handlers que
+	 * aplicam autorização e normalização de entrada.
 	 */
-	public function __construct( bool $register_hooks = true ) {
-		$this->settings_repository = new DD_Maintenance_Settings_Repository();
-		$this->backup_workflow      = new DD_Maintenance_Backup_Workflow();
-		$this->restore_workflow     = new DD_Maintenance_Restore_Workflow();
-		$this->page_renderer        = new DD_Maintenance_Admin_Page_Renderer();
-		$this->action_controller    = new DD_Maintenance_Admin_Action_Controller( $this );
+	public function __construct() {
+		$this->settings_repository       = new DD_Maintenance_Settings_Repository();
+		$this->backup_workflow           = new DD_Maintenance_Backup_Workflow();
+		$this->restore_workflow          = new DD_Maintenance_Restore_Workflow();
+		$this->page_renderer             = new DD_Maintenance_Admin_Page_Renderer();
+		$this->page_data                 = new DD_Maintenance_Admin_Page_Data( $this->settings_repository, $this->backup_workflow->storage_service() );
+		$this->action_controller         = new DD_Maintenance_Admin_Action_Controller( $this );
 		$this->backup_action_controller  = new DD_Maintenance_Backup_Action_Controller( $this );
 		$this->restore_action_controller = new DD_Maintenance_Restore_Action_Controller( $this );
-		if ( $register_hooks ) {
-			$this->action_controller->register();
-			$this->backup_action_controller->register();
-			$this->restore_action_controller->register();
-			add_action( 'admin_menu', array( $this, 'register_menu' ) );
-			add_action( 'admin_init', array( $this, 'handle_legacy_redirects' ) );
-			add_action( 'admin_notices', array( $this, 'show_notice' ) );
-		}
 	}
 
 	/**
 	 * Redireciona links antigos de backuper e gerenciador-de-updates-dd para a nova página.
 	 */
-	public function handle_legacy_redirects() {
+	public function handle_legacy_redirects( ?DD_Maintenance_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Request ? $request : DD_Maintenance_Request::from_globals();
 		if ( ! is_admin() || ! current_user_can( 'manage_options' ) ) {
 			return;
 		}
 
-		if ( isset( $_GET['page'] ) && in_array( $_GET['page'], array( 'backuper', 'gerenciador-de-updates-dd' ), true ) ) {
-			$tab = 'gerenciador-de-updates-dd' === $_GET['page'] ? '&tab=config' : '';
+		$page = $request->get_key( 'page' );
+		if ( in_array( $page, array( 'backuper', 'gerenciador-de-updates-dd' ), true ) ) {
+			$tab = 'gerenciador-de-updates-dd' === $page ? '&tab=config' : '';
 			wp_safe_redirect( admin_url( 'admin.php?page=dd-maintenance' . $tab ) );
 			exit;
 		}
@@ -108,10 +112,17 @@ class DD_Maintenance_Settings_Implementation {
 	 */
 	public function page_url( $tab = '' ) {
 		$url = admin_url( 'admin.php?page=dd-maintenance' );
-		if ( $tab ) {
-			$url = add_query_arg( 'tab', $tab, $url );
+		if ( '' === (string) $tab ) {
+			return $url;
 		}
-		return $url;
+		$tab = sanitize_key( (string) $tab );
+		if ( 'backups' === $tab ) {
+			$tab = 'restore';
+		}
+		if ( ! in_array( $tab, self::VALID_TABS, true ) ) {
+			$tab = 'general';
+		}
+		return add_query_arg( 'tab', $tab, $url );
 	}
 
 	/**
@@ -141,35 +152,23 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Renderiza a página principal com abas.
 	 */
-	public function render_page() {
+	public function render_page( ?DD_Maintenance_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Request ? $request : DD_Maintenance_Request::from_globals();
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_die( esc_html__( 'Você não tem permissão para acessar esta página.', 'dd-maintenance' ) );
 		}
 
-		$current_tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'general';
+		$current_tab = $request->get_key( 'tab', 'general' );
 		if ( 'backups' === $current_tab ) {
 			$current_tab = 'restore';
 		}
-		$valid_tabs  = array( 'general', 'config', 's3', 'cron', 'restore', 'logs' );
+		$valid_tabs  = self::VALID_TABS;
 		if ( ! in_array( $current_tab, $valid_tabs, true ) ) {
 			$current_tab = 'general';
 		}
 
-		$settings = $this->settings_repository->get();
-
-		$s3            = new DD_Maintenance_S3();
-		$s3_configured = $s3->is_configured();
-		// Nunca reidrata o segredo salvo na estrutura usada pela renderização HTML.
-		$settings['s3_secret_key'] = '';
-		$config_status = DD_Maintenance_Config::get_wp_config_status();
-		$has_password  = DD_Maintenance_Config::has_password();
-		$last_log      = get_transient( 'dd_maintenance_last_log' );
-		if ( empty( $last_log ) ) {
-			$last_log = get_transient( 'backuper_last_log' );
-			if ( ! empty( $last_log ) && class_exists( 'DD_Maintenance_Legacy_Compatibility' ) ) {
-				DD_Maintenance_Legacy_Compatibility::record_usage( 'transient_backuper_last_log' );
-			}
-		}
+		$page_data = $this->page_data->for_tab( $current_tab );
+		$settings  = $page_data['settings'];
 		if ( function_exists( 'wp_enqueue_style' ) ) {
 			$asset_version = defined( 'DD_MAINTENANCE_VERSION' ) ? DD_MAINTENANCE_VERSION : '1.0.0';
 			wp_enqueue_style( 'dd-maintenance-admin', plugins_url( '../assets/css/dd-maintenance-admin.css', __FILE__ ), array(), $asset_version );
@@ -230,28 +229,28 @@ class DD_Maintenance_Settings_Implementation {
 			<?php
 			switch ( $current_tab ) {
 				case 'config':
-					$this->page_renderer->render_tab_config( $config_status, $has_password );
+					$this->page_renderer->render_tab_config( $page_data['config_status'], $page_data['has_password'] );
 					break;
 
 				case 's3':
-					$this->page_renderer->render_tab_s3( $settings, $s3_configured, $s3 );
+					$this->page_renderer->render_tab_s3( $settings, $page_data['s3_configured'], $page_data['s3'], $page_data['split_size_mb'], $page_data['remote_backups'] );
 					break;
 
 				case 'cron':
-					$this->page_renderer->render_tab_cron( $settings );
+					$this->page_renderer->render_tab_cron( $settings, $page_data['next_cron'], $page_data['split_size_mb'] );
 					break;
 
 				case 'restore':
-					$this->page_renderer->render_tab_restore( $has_password );
+					$this->page_renderer->render_tab_restore( $page_data['has_password'] ?? false, $page_data['local_backups'], $page_data['max_upload'], $page_data['s3'], $page_data['s3_configured'] );
 					break;
 
 				case 'logs':
-					$this->page_renderer->render_tab_logs( $last_log );
+					$this->page_renderer->render_tab_logs( $page_data['last_log'], $page_data['saved_logs'], $page_data['last_event'], $page_data['event_summary'] );
 					break;
 
 				case 'general':
 				default:
-					$this->page_renderer->render_tab_general( $s3_configured, $s3, $config_status, $settings, $last_log );
+					$this->page_renderer->render_tab_general( $page_data['s3_configured'], $page_data['s3'], $page_data['config_status'], $settings, $page_data['last_log'], $page_data['local_backups'], $page_data['next_cron'] );
 					break;
 			}
 			?>
@@ -325,7 +324,8 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Restauração a partir de upload .zip.
 	 */
-	public function handle_restore_upload() {
+	public function handle_restore_upload( ?DD_Maintenance_Restore_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Restore_Request ? $request : DD_Maintenance_Restore_Request::from_globals();
 		if ( $this->operations_disabled() ) {
 			DD_Maintenance::instance()->set_notice( __( 'Uploads e restores novos estão temporariamente desabilitados para rollback.', 'dd-maintenance' ), 'warning' );
 			wp_safe_redirect( $this->page_url( 'restore' ) );
@@ -333,7 +333,7 @@ class DD_Maintenance_Settings_Implementation {
 		}
 
 		if ( DD_Maintenance_Config::has_password() ) {
-			$password = isset( $_POST['restore_password'] ) ? trim( (string) wp_unslash( $_POST['restore_password'] ) ) : '';
+			$password = $request->post_secret( 'restore_password' );
 			if ( ! DD_Maintenance_Config::verify_password( $password ) ) {
 				DD_Maintenance::instance()->set_notice( __( 'Senha incorreta. Restauração cancelada.', 'dd-maintenance' ), 'error' );
 				wp_safe_redirect( $this->page_url( 'restore' ) );
@@ -341,20 +341,21 @@ class DD_Maintenance_Settings_Implementation {
 			}
 		}
 
-		if ( empty( $_FILES['backup_zip'] ) ) {
+		$file_input = $request->file_input( 'backup_zip' );
+		if ( empty( $file_input ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Nenhum arquivo enviado.', 'dd-maintenance' ), 'error' );
 			wp_safe_redirect( $this->page_url( 'restore' ) );
 			exit;
 		}
-		$apply_elementor_compatibility = ! empty( $_POST['apply_elementor_compatibility'] );
+		$apply_elementor_compatibility = $request->post_flag( 'apply_elementor_compatibility' );
 
-		$result  = $this->restore_workflow->from_upload( $_FILES['backup_zip'], $apply_elementor_compatibility );
+		$result  = $this->restore_workflow->from_upload( $file_input, $apply_elementor_compatibility );
 
 		if ( is_wp_error( $result ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Erro na restauração: ', 'dd-maintenance' ) . $result->get_error_message(), 'error' );
 		} else {
-			if ( ! empty( $result->log ) ) {
-				set_transient( 'dd_maintenance_last_log', $result->log, DAY_IN_SECONDS );
+			if ( ! empty( $result->log() ) ) {
+				set_transient( 'dd_maintenance_last_log', $result->log(), DAY_IN_SECONDS );
 			}
 			DD_Maintenance::instance()->set_notice( __( 'Backup restaurado com sucesso!', 'dd-maintenance' ), 'success' );
 		}
@@ -366,7 +367,8 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Restauração a partir de arquivo local.
 	 */
-	public function handle_restore_local() {
+	public function handle_restore_local( ?DD_Maintenance_Restore_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Restore_Request ? $request : DD_Maintenance_Restore_Request::from_globals();
 		if ( $this->operations_disabled() ) {
 			DD_Maintenance::instance()->set_notice( __( 'Uploads e restores novos estão temporariamente desabilitados para rollback.', 'dd-maintenance' ), 'warning' );
 			wp_safe_redirect( $this->page_url( 'restore' ) );
@@ -374,7 +376,7 @@ class DD_Maintenance_Settings_Implementation {
 		}
 
 		if ( DD_Maintenance_Config::has_password() ) {
-			$password = isset( $_POST['restore_password'] ) ? trim( (string) wp_unslash( $_POST['restore_password'] ) ) : '';
+			$password = $request->post_secret( 'restore_password' );
 			if ( ! DD_Maintenance_Config::verify_password( $password ) ) {
 				DD_Maintenance::instance()->set_notice( __( 'Senha incorreta. Restauração cancelada.', 'dd-maintenance' ), 'error' );
 				wp_safe_redirect( $this->page_url( 'restore' ) );
@@ -382,21 +384,21 @@ class DD_Maintenance_Settings_Implementation {
 			}
 		}
 
-		$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
+		$filename = sanitize_file_name( $request->post_text( 'backup_filename' ) );
 		if ( empty( $filename ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Nome de arquivo inválido.', 'dd-maintenance' ), 'error' );
 			wp_safe_redirect( $this->page_url( 'restore' ) );
 			exit;
 		}
-		$apply_elementor_compatibility = ! empty( $_POST['apply_elementor_compatibility'] );
+		$apply_elementor_compatibility = $request->post_flag( 'apply_elementor_compatibility' );
 
 		$result  = $this->restore_workflow->from_local( $filename, $apply_elementor_compatibility );
 
 		if ( is_wp_error( $result ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Erro na restauração: ', 'dd-maintenance' ) . $result->get_error_message(), 'error' );
 		} else {
-			if ( ! empty( $result->log ) ) {
-				set_transient( 'dd_maintenance_last_log', $result->log, DAY_IN_SECONDS );
+			if ( ! empty( $result->log() ) ) {
+				set_transient( 'dd_maintenance_last_log', $result->log(), DAY_IN_SECONDS );
 			}
 			DD_Maintenance::instance()->set_notice( __( 'Backup local restaurado com sucesso!', 'dd-maintenance' ), 'success' );
 		}
@@ -408,9 +410,10 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Exclusão de arquivo de backup local (e opcionalmente do S3 / Spaces).
 	 */
-	public function handle_delete_backup() {
+	public function handle_delete_backup( ?DD_Maintenance_Artifact_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Artifact_Request ? $request : DD_Maintenance_Artifact_Request::from_globals();
 
-		$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
+		$filename = sanitize_file_name( $request->post_text( 'backup_filename' ) );
 		if ( empty( $filename ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Nome de arquivo inválido.', 'dd-maintenance' ), 'error' );
 			wp_safe_redirect( $this->page_url( 'restore' ) );
@@ -420,7 +423,7 @@ class DD_Maintenance_Settings_Implementation {
 		$deleted = DD_Maintenance_Restore::delete_local_backup( $filename );
 
 		$remote_msg = '';
-		if ( ! empty( $_POST['delete_remote'] ) ) {
+		if ( $request->post_flag( 'delete_remote' ) ) {
 			$s3 = $this->backup_workflow->storage_service();
 			if ( $s3->is_configured() ) {
 				$remote_result = $s3->delete_backup_remote( $filename );
@@ -441,8 +444,7 @@ class DD_Maintenance_Settings_Implementation {
 		} else {
 			DD_Maintenance::instance()->set_notice( __( 'Arquivo não encontrado.', 'dd-maintenance' ), 'error' );
 		}
-
-		$redirect_tab = isset( $_POST['redirect_tab'] ) ? sanitize_key( wp_unslash( $_POST['redirect_tab'] ) ) : 'restore';
+		$redirect_tab = $request->post_key( 'redirect_tab', 'restore' );
 		wp_safe_redirect( $this->page_url( $redirect_tab ) );
 		exit;
 	}
@@ -450,9 +452,10 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Exclusão de todos os volumes de um backup agrupado no S3 / Spaces.
 	 */
-	public function handle_delete_s3_backup() {
+	public function handle_delete_s3_backup( ?DD_Maintenance_Artifact_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Artifact_Request ? $request : DD_Maintenance_Artifact_Request::from_globals();
 
-		$identifier = isset( $_POST['backup_identifier'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_identifier'] ) ) : '';
+		$identifier = sanitize_file_name( $request->post_text( 'backup_identifier' ) );
 		if ( empty( $identifier ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Identificador de backup S3 inválido.', 'dd-maintenance' ), 'error' );
 			wp_safe_redirect( $this->page_url( 's3' ) );
@@ -487,8 +490,7 @@ class DD_Maintenance_Settings_Implementation {
 		} else {
 			DD_Maintenance::instance()->set_notice( __( 'Nenhum arquivo desse backup foi encontrado no S3.', 'dd-maintenance' ), 'warning' );
 		}
-
-		$redirect_tab = isset( $_POST['redirect_tab'] ) ? sanitize_key( wp_unslash( $_POST['redirect_tab'] ) ) : 's3';
+		$redirect_tab = $request->post_key( 'redirect_tab', 's3' );
 		wp_safe_redirect( $this->page_url( $redirect_tab ) );
 		exit;
 	}
@@ -496,9 +498,10 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Exclusão direta de um objeto do bucket S3 / Spaces.
 	 */
-	public function handle_delete_s3_object() {
+	public function handle_delete_s3_object( ?DD_Maintenance_Artifact_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Artifact_Request ? $request : DD_Maintenance_Artifact_Request::from_globals();
 
-		$object_key = isset( $_POST['object_key'] ) ? sanitize_text_field( wp_unslash( $_POST['object_key'] ) ) : '';
+		$object_key = $request->post_text( 'object_key' );
 		if ( empty( $object_key ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Chave de objeto S3 inválida.', 'dd-maintenance' ), 'error' );
 			wp_safe_redirect( $this->page_url( 's3' ) );
@@ -519,7 +522,7 @@ class DD_Maintenance_Settings_Implementation {
 			DD_Maintenance::instance()->set_notice( sprintf( __( 'Arquivo "%s" excluído com sucesso do bucket S3 / Spaces.', 'dd-maintenance' ), esc_html( basename( $object_key ) ) ), 'success' );
 		}
 
-		$redirect_tab = isset( $_POST['redirect_tab'] ) ? sanitize_key( wp_unslash( $_POST['redirect_tab'] ) ) : 's3';
+		$redirect_tab = $request->post_key( 'redirect_tab', 's3' );
 		wp_safe_redirect( $this->page_url( $redirect_tab ) );
 		exit;
 	}
@@ -573,62 +576,52 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Salva configurações de S3, backup e agendamento.
 	 */
-	public function save_settings() {
+	public function save_settings( ?DD_Maintenance_Settings_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Settings_Request ? $request : DD_Maintenance_Settings_Request::from_globals();
 		$settings = $this->settings_repository->get();
+		$do_detect = $request->post_flag( 'dd_maint_detect_region' );
 
-		$do_detect = ! empty( $_POST['dd_maint_detect_region'] );
-
-		if ( isset( $_POST['s3_access_key'] ) ) {
-			$settings['s3_access_key'] = sanitize_text_field( wp_unslash( $_POST['s3_access_key'] ) );
+		if ( $request->has_post( 's3_access_key' ) ) {
+			$settings['s3_access_key'] = $request->post_text( 's3_access_key' );
 		}
-		$secret_key = isset( $_POST['s3_secret_key'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['s3_secret_key'] ) ) ) : '';
-		if ( '' !== $secret_key ) {
-			$settings['s3_secret_key'] = $secret_key;
+		if ( $request->has_post( 's3_secret_key' ) ) {
+			$settings['s3_secret_key'] = $request->post_secret( 's3_secret_key' );
 		}
-		if ( isset( $_POST['s3_bucket'] ) ) {
-			$settings['s3_bucket'] = sanitize_text_field( wp_unslash( $_POST['s3_bucket'] ) );
+		if ( $request->has_post( 's3_bucket' ) ) {
+			$settings['s3_bucket'] = $request->post_text( 's3_bucket' );
 		}
-		if ( isset( $_POST['s3_region'] ) ) {
-			$settings['s3_region'] = sanitize_text_field( wp_unslash( $_POST['s3_region'] ) );
+		if ( $request->has_post( 's3_region' ) ) {
+			$settings['s3_region'] = $request->post_key( 's3_region' );
 		}
-		if ( isset( $_POST['s3_endpoint'] ) ) {
-			$settings['s3_endpoint'] = sanitize_text_field( wp_unslash( $_POST['s3_endpoint'] ) );
+		if ( $request->has_post( 's3_endpoint' ) ) {
+			$settings['s3_endpoint'] = $request->post_text( 's3_endpoint' );
 		}
 
-		if ( isset( $_POST['include_db'] ) || isset( $_POST['include_entire'] ) ) {
-			$settings['include_db']        = empty( $_POST['include_db'] ) ? 0 : 1;
-			$settings['include_wpcontent'] = empty( $_POST['include_wpcontent'] ) ? 0 : 1;
-			$settings['include_wpconfig']  = empty( $_POST['include_wpconfig'] ) ? 0 : 1;
-			$settings['include_entire']    = empty( $_POST['include_entire'] ) ? 0 : 1;
-			$settings['keep_local']        = empty( $_POST['keep_local'] ) ? 0 : 1;
+		if ( $request->has_post( 'include_db' ) || $request->has_post( 'include_entire' ) ) {
+			$settings['include_db']        = $request->post_flag( 'include_db' ) ? 1 : 0;
+			$settings['include_wpcontent'] = $request->post_flag( 'include_wpcontent' ) ? 1 : 0;
+			$settings['include_wpconfig']  = $request->post_flag( 'include_wpconfig' ) ? 1 : 0;
+			$settings['include_entire']    = $request->post_flag( 'include_entire' ) ? 1 : 0;
+			$settings['keep_local']        = $request->post_flag( 'keep_local' ) ? 1 : 0;
 		}
 
-		if ( isset( $_POST['schedule_enabled'] ) || ! $do_detect ) {
-			$settings['schedule_enabled'] = empty( $_POST['schedule_enabled'] ) ? 0 : 1;
+		if ( $request->has_post( 'schedule_enabled' ) || ! $do_detect ) {
+			$settings['schedule_enabled'] = $request->post_flag( 'schedule_enabled' ) ? 1 : 0;
+		}
+		if ( $request->has_post( 'schedule_frequency' ) ) {
+			$settings['schedule_frequency'] = $request->post_key( 'schedule_frequency' );
+		}
+		if ( $request->has_post( 'schedule_time' ) ) {
+			$settings['schedule_time'] = $request->post_text( 'schedule_time' );
+		}
+		if ( $request->has_post( 'split_size_mb' ) ) {
+			$settings['split_size_mb'] = $request->post_int( 'split_size_mb' );
+		}
+		if ( $request->has_post( 'retention_local' ) ) {
+			$settings['retention_local'] = $request->post_int( 'retention_local' );
 		}
 
-		if ( isset( $_POST['schedule_frequency'] ) ) {
-			$freq = sanitize_key( wp_unslash( $_POST['schedule_frequency'] ) );
-			if ( in_array( $freq, array( 'daily', 'weekly', 'biweekly', 'monthly' ), true ) ) {
-				$settings['schedule_frequency'] = $freq;
-			}
-		}
-
-		if ( isset( $_POST['schedule_time'] ) ) {
-			$time_str = trim( sanitize_text_field( wp_unslash( $_POST['schedule_time'] ) ) );
-			if ( preg_match( '/^([01]?[0-9]|2[0-3]):([0-5][0-9])$/', $time_str ) ) {
-				$settings['schedule_time'] = $time_str;
-			}
-		}
-		if ( isset( $_POST['split_size_mb'] ) ) {
-			$settings['split_size_mb'] = $this->settings_repository->normalize_split_size_mb( wp_unslash( $_POST['split_size_mb'] ) );
-		}
-
-		if ( isset( $_POST['retention_local'] ) ) {
-			$settings['retention_local'] = max( 0, (int) $_POST['retention_local'] );
-		}
-
-		$redirect_tab = isset( $_POST['active_tab'] ) ? sanitize_key( wp_unslash( $_POST['active_tab'] ) ) : 's3';
+		$redirect_tab = $request->post_key( 'active_tab', 's3' );
 		if ( ! $this->settings_repository->save( $settings ) ) {
 			DD_Maintenance::record_event( 'settings', 'checkpoint_failed', array( 'step' => 'save_settings', 'session_id' => '', 'status' => 'failure', 'failure_code' => 'settings_save_failed', 'error_count' => 1 ) );
 			DD_Maintenance::instance()->set_notice( __( 'Não foi possível persistir as configurações. Nenhuma alteração foi aplicada.', 'dd-maintenance' ), 'error' );
@@ -682,9 +675,9 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Tratamento de ações do wp-config e senhas.
 	 */
-	public function handle_config_action() {
-
-		$result = DD_Maintenance_Config::handle_post();
+	public function handle_config_action( ?DD_Maintenance_Settings_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Settings_Request ? $request : DD_Maintenance_Settings_Request::from_globals();
+		$result = DD_Maintenance_Config::handle_post( $request );
 
 		if ( is_array( $result ) && isset( $result['message'] ) ) {
 			DD_Maintenance::instance()->set_notice( $result['message'], $result['type'] ?? 'info' );
@@ -720,14 +713,14 @@ class DD_Maintenance_Settings_Implementation {
 
 		$site_slug  = sanitize_title( get_bloginfo( 'name' ) );
 		$folder     = ( $site_slug ? $site_slug : 'site' ) . '/' . current_time( 'Y-m-d' );
-		$parts      = ! empty( $backup_result->parts ) ? $backup_result->parts : array( array( 'file' => $backup_result->file, 'name' => $backup_result->name, 'size' => $backup_result->size, 'part' => 1 ) );
-		$total_size = $backup_result->total_size > 0 ? $backup_result->total_size : $backup_result->size;
+		$parts      = ! empty( $backup_result->parts() ) ? $backup_result->parts() : array( array( 'file' => $backup_result->file(), 'name' => $backup_result->name(), 'size' => $backup_result->size(), 'part' => 1 ) );
+		$total_size = $backup_result->total_size() > 0 ? $backup_result->total_size() : $backup_result->size();
 
-		$upload_result = $this->backup_workflow->upload_parts( $parts, $folder, (int) $total_size, (string) ( $backup_result->correlation_id ?? '' ) );
-		if ( ! $upload_result->success ) {
-			DD_Maintenance::instance()->set_notice( implode( ' ', $upload_result->errors ), 'error' );
+		$upload_result = $this->backup_workflow->upload_parts( $parts, $folder, (int) $total_size, $backup_result->correlation_id() );
+		if ( ! $upload_result->is_success() ) {
+			DD_Maintenance::instance()->set_notice( implode( ' ', $upload_result->errors() ), 'error' );
 		} else {
-			$chunk_size_mb = (int) $backup_result->chunk_size_mb;
+			$chunk_size_mb = $backup_result->chunk_size_mb();
 			DD_Maintenance::instance()->set_notice(
 				sprintf(
 					/* translators: 1: Quantidade de partes, 2: Tamanho máximo configurado, 3: Tamanho formatado, 4: Pasta no S3, 5: Nome do bucket */
@@ -836,9 +829,9 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: exclui um log salvo específico.
 	 */
-	public function handle_delete_log() {
-
-		$filename = isset( $_POST['log_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['log_filename'] ) ) : '';
+	public function handle_delete_log( ?DD_Maintenance_Artifact_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Artifact_Request ? $request : DD_Maintenance_Artifact_Request::from_globals();
+		$filename = sanitize_file_name( $request->post_text( 'log_filename' ) );
 		if ( ! empty( $filename ) && DD_Maintenance::delete_saved_log( $filename ) ) {
 			DD_Maintenance::instance()->set_notice( __( 'Arquivo de log excluído com sucesso.', 'dd-maintenance' ), 'info' );
 		} else {
@@ -852,11 +845,10 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: faz download de um arquivo de log salvo.
 	 */
-	public function handle_download_log() {
-
-		$filename = isset( $_GET['log_filename'] ) ? sanitize_file_name( wp_unslash( $_GET['log_filename'] ) ) : '';
+	public function handle_download_log( ?DD_Maintenance_Artifact_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Artifact_Request ? $request : DD_Maintenance_Artifact_Request::from_globals();
+		$filename = sanitize_file_name( $request->get_text( 'log_filename' ) );
 		$content  = DD_Maintenance::get_log_content( $filename );
-
 		if ( is_wp_error( $content ) ) {
 			wp_die( esc_html( $content->get_error_message() ) );
 		}
@@ -872,9 +864,10 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler: Faz download seguro de um arquivo de backup local (.zip ou .sql).
 	 */
-	public function handle_download_backup() {
+	public function handle_download_backup( ?DD_Maintenance_Artifact_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Artifact_Request ? $request : DD_Maintenance_Artifact_Request::from_globals();
 
-		$filename = isset( $_GET['file'] ) ? sanitize_file_name( wp_unslash( $_GET['file'] ) ) : '';
+		$filename = sanitize_file_name( $request->get_text( 'file' ) );
 		if ( empty( $filename ) ) {
 			wp_die( esc_html__( 'Nome de arquivo de backup inválido.', 'dd-maintenance' ), 400 );
 		}
@@ -954,21 +947,23 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler AJAX: executa etapas de manutenção com progresso em tempo real.
 	 */
-	public function ajax_handle_action() {
+	public function ajax_handle_action( ?DD_Maintenance_Backup_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Backup_Request ? $request : DD_Maintenance_Backup_Request::from_globals();
 		if ( ! $this->backup_workflow instanceof DD_Maintenance_Backup_Workflow ) {
 			$this->backup_workflow = new DD_Maintenance_Backup_Workflow();
 		}
-		$step           = isset( $_POST['step'] ) ? sanitize_key( wp_unslash( $_POST['step'] ) ) : '';
-		$session_id     = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
-		$correlation_id = isset( $_POST['correlation_id'] ) ? sanitize_key( wp_unslash( $_POST['correlation_id'] ) ) : '';
-		if ( ! check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false ) ) {
-			DD_Maintenance::record_event( 'backup', 'ajax_rejected', array( 'step' => $step, 'session_id' => $session_id, 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => 'invalid_nonce', 'error_count' => 1 ) );
-			wp_send_json_error( array( 'message' => __( 'Sessão expirada ou nonce inválido. Recarregue a página.', 'dd-maintenance' ), 'correlation_id' => $correlation_id ) );
-		}
-
-		if ( ! current_user_can( 'manage_options' ) ) {
-			DD_Maintenance::record_event( 'backup', 'ajax_rejected', array( 'step' => $step, 'session_id' => $session_id, 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => 'insufficient_capability', 'error_count' => 1 ) );
-			wp_send_json_error( array( 'message' => __( 'Sem permissão.', 'dd-maintenance' ), 'correlation_id' => $correlation_id ) );
+		$step           = $request->post_key( 'step' );
+		$session_id     = sanitize_file_name( $request->post_text( 'session_id' ) );
+		$correlation_id = $request->post_key( 'correlation_id' );
+		if ( ! DD_Maintenance_Admin_Request::authorize_ajax( 'dd_maintenance_ajax_action' ) ) {
+			$has_capability = is_user_logged_in() && current_user_can( 'manage_options' );
+			DD_Maintenance::record_event( 'backup', 'ajax_rejected', array( 'step' => $step, 'session_id' => $session_id, 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => $has_capability ? 'invalid_nonce' : 'insufficient_capability', 'error_count' => 1 ) );
+			wp_send_json_error(
+				array(
+					'message' => $has_capability ? __( 'Sessão expirada ou nonce inválido. Recarregue a página.', 'dd-maintenance' ) : __( 'Sem permissão.', 'dd-maintenance' ),
+					'correlation_id' => $correlation_id,
+				)
+			);
 		}
 
 		if ( function_exists( 'set_time_limit' ) && ! ini_get( 'safe_mode' ) ) {
@@ -1005,7 +1000,7 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'backup_db':
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
 				$result     = $this->backup_workflow->step( 'database', $session_id );
 
 				if ( is_wp_error( $result ) ) {
@@ -1019,7 +1014,7 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'backup_index':
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
 				$result     = $this->backup_workflow->step( 'index', $session_id );
 
 				if ( is_wp_error( $result ) ) {
@@ -1033,7 +1028,7 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'backup_zip_batch':
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
 				$result     = $this->backup_workflow->step( 'zip', $session_id );
 
 				if ( is_wp_error( $result ) ) {
@@ -1047,7 +1042,7 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'backup_finalize':
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
 				$result     = $this->backup_workflow->step( 'finalize', $session_id );
 
 				if ( is_wp_error( $result ) ) {
@@ -1066,9 +1061,9 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'backup_fail_cleanup':
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
-				$error_msg  = isset( $_POST['error'] ) ? sanitize_text_field( wp_unslash( $_POST['error'] ) ) : '';
-				$log_raw    = isset( $_POST['log'] ) ? wp_unslash( $_POST['log'] ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
+				$error_msg  = $request->post_text( 'error' );
+				$log_raw    = $request->post_value( 'log', '' );
 				$lines      = is_array( $log_raw ) ? $log_raw : explode( "\n", (string) $log_raw );
 				$cleanup_result = $this->backup_workflow->cleanup_failed( $session_id, $error_msg, $lines );
 				DD_Maintenance::record_event( 'backup', empty( $cleanup_result['errors'] ) ? 'cleanup_finished' : 'cleanup_failed', array( 'step' => 'backup_fail_cleanup', 'session_id' => $session_id, 'correlation_id' => $correlation_id, 'status' => empty( $cleanup_result['errors'] ) ? 'warning' : 'failure', 'failure_code' => empty( $cleanup_result['errors'] ) ? 'backup_aborted' : 'backup_cleanup_failed', 'error_count' => empty( $cleanup_result['errors'] ) ? 1 : count( $cleanup_result['errors'] ), 'cleanup' => $cleanup_result['errors'] ) );
@@ -1076,10 +1071,10 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'backup_save_log':
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
-				$status     = isset( $_POST['status'] ) ? sanitize_key( wp_unslash( $_POST['status'] ) ) : 'success';
-				$base_name  = isset( $_POST['base_name'] ) ? sanitize_file_name( wp_unslash( $_POST['base_name'] ) ) : '';
-				$log_raw    = isset( $_POST['log'] ) ? wp_unslash( $_POST['log'] ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
+				$status     = $request->post_key( 'status', 'success' );
+				$base_name  = sanitize_file_name( $request->post_text( 'base_name' ) );
+				$log_raw    = $request->post_value( 'log', '' );
 				$lines      = is_array( $log_raw ) ? $log_raw : explode( "\n", (string) $log_raw );
 				$log_path = DD_Maintenance::save_log( $lines, $status, $base_name );
 				if ( '' === $log_path ) {
@@ -1091,7 +1086,7 @@ class DD_Maintenance_Settings_Implementation {
 				break;
 
 			case 'get_log_content':
-				$filename = isset( $_POST['log_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['log_filename'] ) ) : '';
+				$filename = sanitize_file_name( $request->post_text( 'log_filename' ) );
 				$content  = DD_Maintenance::get_log_content( $filename );
 				if ( is_wp_error( $content ) ) {
 					wp_send_json_error( array( 'message' => $content->get_error_message() ) );
@@ -1109,12 +1104,12 @@ class DD_Maintenance_Settings_Implementation {
 				ignore_user_abort( true );
 
 
-				$part_file   = isset( $_POST['part_file'] ) ? sanitize_text_field( wp_unslash( $_POST['part_file'] ) ) : '';
-				$part_name   = isset( $_POST['part_name'] ) ? sanitize_file_name( wp_unslash( $_POST['part_name'] ) ) : '';
-				$part_size   = isset( $_POST['part_size'] ) ? (int) $_POST['part_size'] : 0;
-				$part_index  = isset( $_POST['part_index'] ) ? (int) $_POST['part_index'] : 1;
-				$total_parts = isset( $_POST['total_parts'] ) ? (int) $_POST['total_parts'] : 1;
-				$folder      = isset( $_POST['folder'] ) ? sanitize_text_field( wp_unslash( $_POST['folder'] ) ) : 'site/' . current_time( 'Y-m-d' );
+				$part_file   = $request->post_text( 'part_file' );
+				$part_name   = sanitize_file_name( $request->post_text( 'part_name' ) );
+				$part_size   = max( 0, $request->post_int( 'part_size' ) );
+				$part_index  = max( 1, $request->post_int( 'part_index', 1 ) );
+				$total_parts = max( 1, $request->post_int( 'total_parts', 1 ) );
+				$folder      = $request->post_text( 'folder', 'site/' . current_time( 'Y-m-d' ) );
 
 				$backup_dir = wp_normalize_path( realpath( DD_Maintenance::backup_dir() ) );
 				$real_file  = $part_file ? realpath( $part_file ) : false;
@@ -1137,14 +1132,14 @@ class DD_Maintenance_Settings_Implementation {
 					$correlation_id
 				);
 
-				if ( ! $upload_result->success ) {
+				if ( ! $upload_result->is_success() ) {
 					wp_send_json_error(
 						array(
 							'message' => sprintf(
 								__( 'Erro no envio da parte %1$d/%2$d: %3$s', 'dd-maintenance' ),
 								$part_index,
 								$total_parts,
-								implode( ' ', $upload_result->errors )
+								implode( ' ', $upload_result->errors() )
 							),
 						)
 					);
@@ -1163,7 +1158,7 @@ class DD_Maintenance_Settings_Implementation {
 					? sprintf( __( '[OK] Retenção: %d backup(s) antigo(s) removido(s).', 'dd-maintenance' ), count( $purged ) )
 					: __( '[OK] Retenção verificada (nenhum backup antigo para expurgar).', 'dd-maintenance' );
 
-				$session_id = isset( $_POST['session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['session_id'] ) ) : '';
+				$session_id = sanitize_file_name( $request->post_text( 'session_id' ) );
 				if ( $session_id ) {
 					$this->backup_workflow->cleanup( $session_id );
 				}
@@ -1210,18 +1205,18 @@ class DD_Maintenance_Settings_Implementation {
 	/**
 	 * Handler AJAX: restauração com progresso.
 	 */
-	public function ajax_handle_restore() {
+	public function ajax_handle_restore( ?DD_Maintenance_Restore_Request $request = null ) {
+		$request = $request instanceof DD_Maintenance_Restore_Request ? $request : DD_Maintenance_Restore_Request::from_globals();
 		if ( ! $this->restore_workflow instanceof DD_Maintenance_Restore_Workflow ) {
 			$this->restore_workflow = new DD_Maintenance_Restore_Workflow();
 		}
-		$mode                    = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : '';
-		$restore_session_id      = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
-		$restore_token           = isset( $_POST['restore_token'] ) ? trim( (string) wp_unslash( $_POST['restore_token'] ) ) : '';
-		$correlation_id          = isset( $_POST['correlation_id'] ) ? sanitize_key( wp_unslash( $_POST['correlation_id'] ) ) : '';
+		$mode                    = $request->post_key( 'mode' );
+		$restore_session_id      = sanitize_file_name( $request->post_text( 'restore_session_id' ) );
+		$restore_token           = $request->post_secret( 'restore_token' );
+		$correlation_id          = $request->post_key( 'correlation_id' );
 		$restore                 = $this->restore_workflow;
 		$request_event           = DD_Maintenance::record_event( 'restore', 'ajax_step_started', array( 'step' => $mode, 'session_id' => $restore_session_id, 'correlation_id' => $correlation_id, 'status' => 'running' ) );
-		$correlation_id          = $request_event['correlation_id'];
-		$has_valid_admin_session = is_user_logged_in() && current_user_can( 'manage_options' ) && check_ajax_referer( 'dd_maint_ajax_nonce', 'nonce', false );
+		$has_valid_admin_session = DD_Maintenance_Admin_Request::authorize_ajax( 'dd_maintenance_ajax_restore' );
 
 		$public_continuation_modes = array( 'restore_extract', 'restore_db', 'restore_files', 'restore_finalize', 'restore_fail_cleanup' );
 		$has_valid_restore_token   = in_array( $mode, $public_continuation_modes, true )
@@ -1249,7 +1244,7 @@ class DD_Maintenance_Settings_Implementation {
 
 		$initiating_modes = array( 'upload_init', 'restore_init', 'upload', 'local' );
 		if ( in_array( $mode, $initiating_modes, true ) && DD_Maintenance_Config::has_password() ) {
-			$password = isset( $_POST['restore_password'] ) ? trim( (string) wp_unslash( $_POST['restore_password'] ) ) : '';
+			$password = $request->post_secret( 'restore_password' );
 			if ( ! DD_Maintenance_Config::verify_password( $password ) ) {
 				wp_send_json_error( array( 'message' => __( 'Senha de confirmação incorreta.', 'dd-maintenance' ) ) );
 			}
@@ -1268,7 +1263,7 @@ class DD_Maintenance_Settings_Implementation {
 			DD_Maintenance::record_event( 'restore', 'upload_session_created', array( 'step' => 'upload_init', 'session_id' => $upload_session_id, 'correlation_id' => $correlation_id, 'status' => 'running' ) );
 			wp_send_json_success( array( 'upload_session_id' => $upload_session_id, 'correlation_id' => $correlation_id ) );
 		} elseif ( 'upload_chunk' === $mode ) {
-			$upload_session_id = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
+			$upload_session_id = sanitize_file_name( $request->post_text( 'upload_session_id' ) );
 			if ( empty( $upload_session_id ) || 0 !== strpos( $upload_session_id, 'upload_restore_' ) ) {
 				wp_send_json_error( array( 'message' => __( 'Identificador de sessão de upload inválido.', 'dd-maintenance' ) ) );
 			}
@@ -1282,7 +1277,7 @@ class DD_Maintenance_Settings_Implementation {
 				wp_send_json_error( array( 'message' => __( 'Pasta temporária de upload não encontrada no servidor.', 'dd-maintenance' ) ) );
 			}
 
-			$upload       = isset( $_FILES['file_chunk'] ) && is_array( $_FILES['file_chunk'] ) ? $_FILES['file_chunk'] : array();
+			$upload       = $request->file_input( 'file_chunk' );
 			$tmp_name     = isset( $upload['tmp_name'] ) && is_string( $upload['tmp_name'] ) ? $upload['tmp_name'] : '';
 			$upload_error = isset( $upload['error'] ) ? (int) $upload['error'] : UPLOAD_ERR_NO_FILE;
 			if ( UPLOAD_ERR_OK !== $upload_error || '' === $tmp_name || ! is_uploaded_file( $tmp_name ) ) {
@@ -1309,17 +1304,17 @@ class DD_Maintenance_Settings_Implementation {
 				);
 			}
 
-			$posted_name = isset( $_POST['file_name'] ) && is_string( $_POST['file_name'] ) ? wp_unslash( $_POST['file_name'] ) : '';
+			$posted_name = $request->post_text( 'file_name' );
 			$upload_name = isset( $upload['name'] ) && is_string( $upload['name'] ) ? wp_unslash( $upload['name'] ) : '';
 			$orig_name  = sanitize_file_name( '' !== $posted_name ? $posted_name : $upload_name );
 			if ( '' === $orig_name ) {
 				wp_send_json_error( array( 'message' => __( 'Nome de arquivo inválido nesta etapa do upload.', 'dd-maintenance' ) ) );
 			}
 
-			$chunk_index = isset( $_POST['chunk_index'] ) ? max( 0, (int) $_POST['chunk_index'] ) : 0;
-			$chunk_total = isset( $_POST['chunk_total'] ) ? max( 1, (int) $_POST['chunk_total'] ) : 1;
-			$chunk_offset = isset( $_POST['chunk_offset'] ) ? max( 0, (int) $_POST['chunk_offset'] ) : 0;
-			$file_size   = isset( $_POST['file_size'] ) ? max( 0, (int) $_POST['file_size'] ) : 0;
+			$chunk_index = max( 0, $request->post_int( 'chunk_index' ) );
+			$chunk_total = max( 1, $request->post_int( 'chunk_total', 1 ) );
+			$chunk_offset = max( 0, $request->post_int( 'chunk_offset' ) );
+			$file_size   = max( 0, $request->post_int( 'file_size' ) );
 			$dest_path   = $real_temp . '/' . $orig_name;
 			$part_path   = $real_temp . '/.' . $orig_name . '.uploading';
 			$dest_check  = DD_Maintenance_File_Security::safe_child_path( $real_temp, $orig_name, false );
@@ -1387,14 +1382,14 @@ class DD_Maintenance_Settings_Implementation {
 				)
 			);
 		} elseif ( 'restore_init' === $mode ) {
-			$source     = isset( $_POST['source'] ) ? sanitize_key( wp_unslash( $_POST['source'] ) ) : 'upload';
+			$source     = $request->post_key( 'source', 'upload' );
 			$backup_raw = DD_Maintenance::backup_dir();
 			$backup_dir = wp_normalize_path( realpath( $backup_raw ) );
 			$zip_paths  = array();
 			$temp_dir   = '';
 
 			if ( 'upload' === $source ) {
-				$upload_session_id = isset( $_POST['upload_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['upload_session_id'] ) ) : '';
+				$upload_session_id = sanitize_file_name( $request->post_text( 'upload_session_id' ) );
 				if ( empty( $upload_session_id ) || 0 !== strpos( $upload_session_id, 'upload_restore_' ) ) {
 					wp_send_json_error( array( 'message' => __( 'Identificador de upload inválido.', 'dd-maintenance' ) ) );
 				}
@@ -1410,7 +1405,7 @@ class DD_Maintenance_Settings_Implementation {
 					wp_send_json_error( array( 'message' => __( 'Nenhum arquivo .zip encontrado na pasta de upload.', 'dd-maintenance' ) ) );
 				}
 			} elseif ( 'local' === $source ) {
-				$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
+				$filename = sanitize_file_name( $request->post_text( 'backup_filename' ) );
 				if ( empty( $filename ) ) {
 					wp_send_json_error( array( 'message' => __( 'Identificador de backup local inválido.', 'dd-maintenance' ) ) );
 				}
@@ -1430,7 +1425,7 @@ class DD_Maintenance_Settings_Implementation {
 				wp_send_json_error( array( 'message' => __( 'Origem de restauração inválida.', 'dd-maintenance' ) ) );
 			}
 
-			$apply_elementor_compatibility = ! empty( $_POST['apply_elementor_compatibility'] );
+			$apply_elementor_compatibility = $request->post_flag( 'apply_elementor_compatibility' );
 			$session = $restore->initialize( $zip_paths, $temp_dir, $apply_elementor_compatibility, $correlation_id );
 			if ( is_wp_error( $session ) ) {
 				DD_Maintenance::record_event( 'restore', 'step_failed', array( 'step' => 'restore_init', 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => $session->get_error_code(), 'error_count' => 1 ) );
@@ -1447,8 +1442,8 @@ class DD_Maintenance_Settings_Implementation {
 				)
 			);
 		} elseif ( 'restore_extract' === $mode ) {
-			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
-			$batch_limit        = isset( $_POST['batch_limit'] ) ? max( 1, (int) $_POST['batch_limit'] ) : 5;
+			$restore_session_id = sanitize_file_name( $request->post_text( 'restore_session_id' ) );
+			$batch_limit        = max( 1, $request->post_int( 'batch_limit', 5 ) );
 
 			$result = $restore->extract( $restore_session_id, $batch_limit );
 			if ( is_wp_error( $result ) ) {
@@ -1458,7 +1453,7 @@ class DD_Maintenance_Settings_Implementation {
 			$this->record_restore_result( 'restore_extract', $restore_session_id, $result, $correlation_id );
 			wp_send_json_success( $result );
 		} elseif ( 'restore_db' === $mode ) {
-			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+			$restore_session_id = sanitize_file_name( $request->post_text( 'restore_session_id' ) );
 
 			$result = $restore->database( $restore_session_id );
 			if ( is_wp_error( $result ) ) {
@@ -1468,7 +1463,7 @@ class DD_Maintenance_Settings_Implementation {
 			$this->record_restore_result( 'restore_db', $restore_session_id, $result, $correlation_id );
 			wp_send_json_success( $result );
 		} elseif ( 'restore_files' === $mode ) {
-			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+			$restore_session_id = sanitize_file_name( $request->post_text( 'restore_session_id' ) );
 
 			$result = $restore->files( $restore_session_id );
 			if ( is_wp_error( $result ) ) {
@@ -1478,7 +1473,7 @@ class DD_Maintenance_Settings_Implementation {
 			$this->record_restore_result( 'restore_files', $restore_session_id, $result, $correlation_id );
 			wp_send_json_success( $result );
 		} elseif ( 'restore_finalize' === $mode ) {
-			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+			$restore_session_id = sanitize_file_name( $request->post_text( 'restore_session_id' ) );
 
 			$result = $restore->finalize( $restore_session_id );
 			if ( is_wp_error( $result ) ) {
@@ -1487,11 +1482,13 @@ class DD_Maintenance_Settings_Implementation {
 			}
 
 			$this->record_restore_result( 'restore_finalize', $restore_session_id, $result, $correlation_id );
-			$result_data = is_array( $result ) ? $result : (array) $result;
-			$log_str     = ! empty( $result_data['log'] ) && is_array( $result_data['log'] ) ? implode( "\n", $result_data['log'] ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
-			wp_send_json_success( array( 'log' => $log_str, 'warnings' => $result_data['warnings'] ?? array(), 'status' => ! empty( $result_data['warnings'] ) ? 'warning' : 'success', 'correlation_id' => $correlation_id ) );
+			$result_data = is_array( $result ) ? $result : array();
+			$result_log  = is_object( $result ) && method_exists( $result, 'log' ) ? $result->log() : ( $result_data['log'] ?? array() );
+			$warnings    = is_object( $result ) && method_exists( $result, 'warnings' ) ? $result->warnings() : ( $result_data['warnings'] ?? array() );
+			$log_str     = ! empty( $result_log ) && is_array( $result_log ) ? implode( "\n", $result_log ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+			wp_send_json_success( array( 'log' => $log_str, 'warnings' => $warnings, 'status' => ! empty( $warnings ) ? 'warning' : 'success', 'correlation_id' => $correlation_id ) );
 		} elseif ( 'restore_fail_cleanup' === $mode ) {
-			$restore_session_id = isset( $_POST['restore_session_id'] ) ? sanitize_file_name( wp_unslash( $_POST['restore_session_id'] ) ) : '';
+			$restore_session_id = sanitize_file_name( $request->post_text( 'restore_session_id' ) );
 			$cleanup_result = array( 'cleaned' => true, 'errors' => array() );
 			if ( ! empty( $restore_session_id ) ) {
 				$cleanup_result = $restore->cleanup_failed( $restore_session_id );
@@ -1512,35 +1509,35 @@ class DD_Maintenance_Settings_Implementation {
 			}
 			wp_send_json_success( array( 'cleaned' => empty( $cleanup_result['errors'] ), 'errors' => $cleanup_result['errors'], 'correlation_id' => $correlation_id ) );
 		} elseif ( 'upload' === $mode ) {
-			if ( empty( $_FILES['backup_zip'] ) ) {
+			if ( empty( $request->file_input( 'backup_zip' ) ) ) {
 				DD_Maintenance::record_event( 'restore', 'step_failed', array( 'step' => 'upload', 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => 'upload_missing', 'error_count' => 1 ) );
 				wp_send_json_error( array( 'message' => __( 'Nenhum arquivo enviado.', 'dd-maintenance' ) ) );
 			}
 
-			$apply_elementor_compatibility = ! empty( $_POST['apply_elementor_compatibility'] );
-			$result = $restore->from_upload( $_FILES['backup_zip'], $apply_elementor_compatibility );
+			$apply_elementor_compatibility = $request->post_flag( 'apply_elementor_compatibility' );
+			$result = $restore->from_upload( $request->file_input( 'backup_zip' ), $apply_elementor_compatibility );
 			if ( is_wp_error( $result ) ) {
 				DD_Maintenance::record_event( 'restore', 'step_failed', array( 'step' => 'upload', 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => $result->get_error_code(), 'error_count' => 1 ) );
 				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 			}
 			$this->record_restore_result( 'upload', '', $result, $correlation_id );
-			$log_str = ! empty( $result->log ) ? implode( "\n", $result->log ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+			$log_str = ! empty( $result->log() ) ? implode( "\n", $result->log() ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
 			wp_send_json_success( array( 'log' => $log_str, 'correlation_id' => $correlation_id ) );
 		} elseif ( 'local' === $mode ) {
-			$filename = isset( $_POST['backup_filename'] ) ? sanitize_file_name( wp_unslash( $_POST['backup_filename'] ) ) : '';
+			$filename = sanitize_file_name( $request->post_text( 'backup_filename' ) );
 			if ( empty( $filename ) ) {
 				DD_Maintenance::record_event( 'restore', 'step_failed', array( 'step' => 'local', 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => 'backup_name_missing', 'error_count' => 1 ) );
 				wp_send_json_error( array( 'message' => __( 'Nome de backup local inválido.', 'dd-maintenance' ) ) );
 			}
 
-			$apply_elementor_compatibility = ! empty( $_POST['apply_elementor_compatibility'] );
+			$apply_elementor_compatibility = $request->post_flag( 'apply_elementor_compatibility' );
 			$result = $restore->from_local( $filename, $apply_elementor_compatibility );
 			if ( is_wp_error( $result ) ) {
 				DD_Maintenance::record_event( 'restore', 'step_failed', array( 'step' => 'local', 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => $result->get_error_code(), 'error_count' => 1 ) );
 				wp_send_json_error( array( 'message' => $result->get_error_message() ) );
 			}
 			$this->record_restore_result( 'local', '', $result, $correlation_id );
-			$log_str = ! empty( $result->log ) ? implode( "\n", $result->log ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
+			$log_str = ! empty( $result->log() ) ? implode( "\n", $result->log() ) : __( '[OK] Restauração concluída com sucesso.', 'dd-maintenance' );
 			wp_send_json_success( array( 'log' => $log_str, 'correlation_id' => $correlation_id ) );
 		} else {
 			DD_Maintenance::record_event( 'restore', 'step_failed', array( 'step' => $mode, 'correlation_id' => $correlation_id, 'status' => 'failure', 'failure_code' => 'invalid_mode', 'error_count' => 1 ) );

@@ -17,11 +17,11 @@ class DD_Maintenance_Settings_Handler {
 
 	/** @param DD_Maintenance_Settings_Implementation|null $settings Implementação administrativa. */
 	public function __construct( $settings = null ) {
-		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation( false );
+		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation();
 	}
 
 	public function save_settings() {
 		DD_Maintenance_Admin_Request::authorize( 'dd_maintenance_save_settings' );
-		return $this->settings->save_settings();
+		return $this->settings->save_settings( DD_Maintenance_Settings_Request::from_globals() );
 	}
 }

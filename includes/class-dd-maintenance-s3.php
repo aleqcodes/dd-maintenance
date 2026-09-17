@@ -7,6 +7,11 @@
 
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
+require_once __DIR__ . '/class-dd-maintenance-s3-endpoint.php';
+require_once __DIR__ . '/class-dd-maintenance-s3-signer.php';
+require_once __DIR__ . '/class-dd-maintenance-s3-response-parser.php';
+require_once __DIR__ . '/class-dd-maintenance-s3-retry-policy.php';
+require_once __DIR__ . '/class-dd-maintenance-s3-transport.php';
 
 
 class DD_Maintenance_S3 {
@@ -69,6 +74,21 @@ class DD_Maintenance_S3 {
 	 */
 	private $put_transport;
 
+	/** @var DD_Maintenance_S3_Endpoint */
+	private $endpoint_normalizer;
+
+	/** @var DD_Maintenance_S3_Signer */
+	private $signer;
+
+	/** @var DD_Maintenance_S3_Response_Parser */
+	private $response_parser;
+
+	/** @var DD_Maintenance_S3_Retry_Policy */
+	private $retry_policy;
+
+	/** @var DD_Maintenance_S3_Transport */
+	private $transport;
+
 	/**
 	 * Construtor.
 	 *
@@ -117,7 +137,13 @@ class DD_Maintenance_S3 {
 		if ( defined( 'DD_MAINTENANCE_S3_ENDPOINT' ) && '' !== trim( (string) DD_MAINTENANCE_S3_ENDPOINT ) ) {
 			$this->endpoint = trim( (string) DD_MAINTENANCE_S3_ENDPOINT );
 		}
+		$this->endpoint_normalizer = new DD_Maintenance_S3_Endpoint();
+		$this->signer             = new DD_Maintenance_S3_Signer( $this->access_key, $this->secret_key, $this->region );
+		$this->response_parser    = new DD_Maintenance_S3_Response_Parser();
+		$this->retry_policy       = new DD_Maintenance_S3_Retry_Policy( 2 );
+		$this->transport          = new DD_Maintenance_S3_Transport();
 	}
+
 
 	/**
 	 * Verifica se as credenciais S3 foram informadas.
@@ -153,29 +179,12 @@ class DD_Maintenance_S3 {
 	 * @return string
 	 */
 	public function get_endpoint( $region = null ) {
-		$region = $region ? $region : $this->region;
-
-		if ( ! empty( $this->endpoint ) ) {
-			$endpoint = rtrim( $this->endpoint, '/' );
-
-			if ( ! preg_match( '#^https?://#i', $endpoint ) ) {
-				$endpoint = 'https://' . $endpoint;
-			}
-
-			$parsed = wp_parse_url( $endpoint );
-			$host   = isset( $parsed['host'] ) ? $parsed['host'] : '';
-
-			// Se for DigitalOcean Spaces e o host não tiver o bucket no prefixo, adiciona.
-			if ( strpos( $host, 'digitaloceanspaces.com' ) !== false && 0 !== strpos( $host, $this->bucket . '.' ) ) {
-				$scheme   = isset( $parsed['scheme'] ) ? $parsed['scheme'] : 'https';
-				$port_str = ! empty( $parsed['port'] ) ? ':' . $parsed['port'] : '';
-				return $scheme . '://' . $this->bucket . '.' . $host . $port_str;
-			}
-
-			return $endpoint;
+		$region  = $region ? $region : $this->region;
+		$endpoint = $this->endpoint_normalizer->normalize( $this->bucket, $region, (string) $this->endpoint );
+		if ( '' === $endpoint ) {
+			return 'https://' . $this->bucket . '.' . $region . '.digitaloceanspaces.com';
 		}
-
-		return 'https://' . $this->bucket . '.' . $region . '.digitaloceanspaces.com';
+		return $endpoint;
 	}
 
 	/**
@@ -185,15 +194,7 @@ class DD_Maintenance_S3 {
 	 * @return string
 	 */
 	public function get_host( $endpoint = null ) {
-		$endpoint   = $endpoint ? $endpoint : $this->get_endpoint();
-		$parsed_url = wp_parse_url( $endpoint );
-		$host       = isset( $parsed_url['host'] ) ? $parsed_url['host'] : '';
-
-		if ( ! empty( $parsed_url['port'] ) && ! in_array( (int) $parsed_url['port'], array( 80, 443 ), true ) ) {
-			$host .= ':' . $parsed_url['port'];
-		}
-
-		return $host;
+		return $this->endpoint_normalizer->host( $endpoint ? $endpoint : $this->get_endpoint() );
 	}
 
 	/**
@@ -203,7 +204,7 @@ class DD_Maintenance_S3 {
 	 * @return string
 	 */
 	private function encode_uri( $key ) {
-		return '/' . implode( '/', array_map( 'rawurlencode', explode( '/', ltrim( $key, '/' ) ) ) );
+		return $this->endpoint_normalizer->object_uri( (string) $key );
 	}
 
 	/**
@@ -297,6 +298,7 @@ class DD_Maintenance_S3 {
 		}
 
 		$this->region                = $detected;
+		$this->signer                = new DD_Maintenance_S3_Signer( $this->access_key, $this->secret_key, $this->region );
 		$this->settings['s3_region'] = $detected;
 		update_option( 'dd_maintenance_settings', $this->settings, false );
 
@@ -314,44 +316,13 @@ class DD_Maintenance_S3 {
 	 * @return array
 	 */
 	private function sign_request( $method, $uri, $query, $payload_hash, $extra_headers = array() ) {
-		$amz_date   = gmdate( 'Ymd\THis\Z' );
-		$date_stamp = gmdate( 'Ymd' );
-		$host       = $this->get_host();
-
-		// Cabeçalhos essenciais assinados na Signature V4 (compatível com AWS, Spaces, MinIO e Dokploy).
-		$sign_headers = array_merge(
-			array(
-				'host'                 => $host,
-				'x-amz-content-sha256' => $payload_hash,
-				'x-amz-date'           => $amz_date,
-			),
-			$extra_headers
-		);
-
-		ksort( $sign_headers );
-
-		$canonical_headers_str = '';
-		$signed_headers        = array();
-		foreach ( $sign_headers as $header => $value ) {
-			$header                 = strtolower( trim( $header ) );
-			$canonical_headers_str .= $header . ':' . trim( (string) $value ) . "\n";
-			$signed_headers[]       = $header;
-		}
-		$signed_headers_str = implode( ';', $signed_headers );
-
-		$canonical_request = "{$method}\n{$uri}\n{$query}\n{$canonical_headers_str}\n{$signed_headers_str}\n{$payload_hash}";
-
-		$scope          = "{$date_stamp}/{$this->region}/s3/aws4_request";
-		$string_to_sign = "AWS4-HMAC-SHA256\n{$amz_date}\n{$scope}\n" . hash( 'sha256', $canonical_request );
-
-		$signing_key = $this->get_signing_key( $date_stamp, $this->region, 's3', $this->secret_key );
-		$signature   = hash_hmac( 'sha256', $string_to_sign, $signing_key );
-
-		return array(
-			'Authorization'        => "AWS4-HMAC-SHA256 Credential={$this->access_key}/{$scope}, SignedHeaders={$signed_headers_str}, Signature={$signature}",
-			'x-amz-content-sha256' => $payload_hash,
-			'x-amz-date'           => $amz_date,
-			'Host'                 => $host,
+		return $this->signer->sign(
+			(string) $method,
+			(string) $uri,
+			(string) $query,
+			(string) $payload_hash,
+			$this->get_host(),
+			is_array( $extra_headers ) ? $extra_headers : array()
 		);
 	}
 
@@ -364,32 +335,30 @@ class DD_Maintenance_S3 {
 	 * @return array|WP_Error
 	 */
 	public function put_object( $key, $file_path, $content_type = 'application/zip' ) {
+		$this->record_s3_event( 'request_started', 'put_object', 'running' );
 		if ( ! $this->is_configured() ) {
-			return new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
+			return $this->finish_s3_event( 'put_object', new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) ) );
 		}
 		if ( ! file_exists( $file_path ) ) {
-			return new WP_Error( 'file_missing', __( 'Arquivo de backup não encontrado.', 'dd-maintenance' ) );
+			return $this->finish_s3_event( 'put_object', new WP_Error( 'file_missing', __( 'Arquivo de backup não encontrado.', 'dd-maintenance' ) ) );
 		}
 
-		// Garante a região correta quando usando DigitalOcean Spaces.
 		$region_ok = $this->ensure_region();
 		if ( is_wp_error( $region_ok ) ) {
-			return $region_ok;
+			return $this->finish_s3_event( 'put_object', $region_ok );
 		}
 
 		$size = filesize( $file_path );
 		if ( false === $size ) {
-			return new WP_Error( 'file_size', __( 'Não foi possível determinar o tamanho do arquivo para upload.', 'dd-maintenance' ) );
+			return $this->finish_s3_event( 'put_object', new WP_Error( 'file_size', __( 'Não foi possível determinar o tamanho do arquivo para upload.', 'dd-maintenance' ) ) );
 		}
 		$payload_hash = hash_file( 'sha256', $file_path );
 		if ( false === $payload_hash ) {
-			return new WP_Error( 'file_hash', __( 'Não foi possível calcular a integridade do arquivo para upload.', 'dd-maintenance' ) );
+			return $this->finish_s3_event( 'put_object', new WP_Error( 'file_hash', __( 'Não foi possível calcular a integridade do arquivo para upload.', 'dd-maintenance' ) ) );
 		}
 		$uri          = $this->encode_uri( $key );
-
-		$auth = $this->sign_request( 'PUT', $uri, '', $payload_hash );
-
-		$headers = array(
+		$auth         = $this->sign_request( 'PUT', $uri, '', $payload_hash );
+		$headers      = array(
 			'Host'                 => $auth['Host'],
 			'Authorization'        => $auth['Authorization'],
 			'x-amz-content-sha256' => $auth['x-amz-content-sha256'],
@@ -397,22 +366,20 @@ class DD_Maintenance_S3 {
 			'Content-Type'         => $content_type,
 			'Content-Length'       => (string) $size,
 		);
-
 		$endpoint_url = $this->get_endpoint() . $uri;
-
-		$result = $this->stream_put( $endpoint_url, $headers, $file_path, $size );
-		if ( is_wp_error( $result ) && $this->is_retryable_upload_error( $result ) ) {
-			// PUT no mesmo objeto é idempotente: uma tentativa repetida não cria outra parte.
+		$result       = $this->stream_put( $endpoint_url, $headers, $file_path, $size );
+		if ( $this->retry_policy->should_retry( $result, 1, true ) ) {
 			$result = $this->stream_put( $endpoint_url, $headers, $file_path, $size );
 		}
-
 		if ( is_wp_error( $result ) ) {
-			return $result;
+			return $this->finish_s3_event( 'put_object', $result );
 		}
-
-		return array(
-			'key'  => $key,
-			'etag' => isset( $result['etag'] ) ? $result['etag'] : '',
+		return $this->finish_s3_event(
+			'put_object',
+			array(
+				'key'  => $key,
+				'etag' => isset( $result['etag'] ) ? $result['etag'] : '',
+			)
 		);
 	}
 
@@ -423,68 +390,46 @@ class DD_Maintenance_S3 {
 	 * @return true|WP_Error
 	 */
 	public function delete_object( string $key ) {
+		$this->record_s3_event( 'request_started', 'delete_object', 'running' );
 		if ( ! $this->is_configured() ) {
-			return new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
+			return $this->finish_s3_event( 'delete_object', new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) ) );
 		}
-
+		if ( ! $this->is_safe_remote_key( $key ) ) {
+			return $this->finish_s3_event( 'delete_object', new WP_Error( 's3_key_invalid', __( 'A chave remota solicitada é inválida.', 'dd-maintenance' ) ) );
+		}
 		$region_ok = $this->ensure_region();
 		if ( is_wp_error( $region_ok ) ) {
-			return $region_ok;
+			return $this->finish_s3_event( 'delete_object', $region_ok );
 		}
-
-		$uri  = $this->encode_uri( $key );
-		$auth = $this->sign_request( 'DELETE', $uri, '', self::EMPTY_PAYLOAD_HASH );
-
+		$uri     = $this->encode_uri( $key );
+		$auth    = $this->sign_request( 'DELETE', $uri, '', self::EMPTY_PAYLOAD_HASH );
 		$headers = array(
 			'Host'                 => $auth['Host'],
 			'Authorization'        => $auth['Authorization'],
 			'x-amz-content-sha256' => $auth['x-amz-content-sha256'],
 			'x-amz-date'           => $auth['x-amz-date'],
 		);
-
-		$url = $this->get_endpoint() . $uri;
-
-		$response = wp_remote_request(
-			$url,
-			array(
-				'method'  => 'DELETE',
-				'headers' => $headers,
-				'timeout' => 30,
-			)
-		);
-
+		$response = $this->transport->request( $this->get_endpoint() . $uri, 'DELETE', $headers, '', 30 );
 		if ( is_wp_error( $response ) ) {
-			return $response;
+			return $this->finish_s3_event( 'delete_object', $response );
 		}
-
-		$code = wp_remote_retrieve_response_code( $response );
-		if ( $code >= 200 && $code < 300 ) {
-			return true;
-		}
-
-		$body    = wp_remote_retrieve_body( $response );
-		$message = $this->extract_error_message( $body );
-		return new WP_Error(
-			's3_delete_error',
-			$message ? $message : sprintf( __( 'Erro HTTP %d ao excluir objeto no S3.', 'dd-maintenance' ), $code )
-		);
+		$parsed = $this->response_parser->parse( $response, 'delete' );
+		return $this->finish_s3_event( 'delete_object', is_wp_error( $parsed ) ? $parsed : true );
 	}
-
 	/**
-	 * Lista objetos do bucket S3 / Spaces (com suporte a prefixo).
-	 *
 	 * @param string $prefix Prefixo de busca (ex: site-name/).
 	 * @param int    $max_keys Limite total de objetos; zero lista todas as páginas.
 	 * @return array|WP_Error Array de objetos com key, size, last_modified.
 	 */
 	public function list_objects( string $prefix = '', int $max_keys = 0 ) {
+		$this->record_s3_event( 'request_started', 'list_objects', 'running' );
 		if ( ! $this->is_configured() ) {
-			return new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
+			return $this->finish_s3_event( 'list_objects', new WP_Error( 's3_config', __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) ) );
 		}
 
 		$region_ok = $this->ensure_region();
 		if ( is_wp_error( $region_ok ) ) {
-			return $region_ok;
+			return $this->finish_s3_event( 'list_objects', $region_ok );
 		}
 
 		$objects            = array();
@@ -521,28 +466,15 @@ class DD_Maintenance_S3 {
 			);
 
 			$url      = $this->get_endpoint() . $uri . '?' . $query_string;
-			$response = wp_remote_get(
-				$url,
-				array(
-					'headers' => $headers,
-					'timeout' => 30,
-				)
-			);
-
+			$response = $this->transport->request( $url, 'GET', $headers, '', 30 );
 			if ( is_wp_error( $response ) ) {
-				return $response;
+				return $this->finish_s3_event( 'list_objects', $response );
 			}
-
-			$code = wp_remote_retrieve_response_code( $response );
-			$body = wp_remote_retrieve_body( $response );
-
-			if ( $code < 200 || $code >= 300 ) {
-				$message = $this->extract_error_message( $body );
-				return new WP_Error(
-					's3_list_error',
-					$message ? $message : sprintf( __( 'Erro HTTP %d ao listar objetos no S3.', 'dd-maintenance' ), $code )
-				);
+			$parsed = $this->response_parser->parse( $response, 'list' );
+			if ( is_wp_error( $parsed ) ) {
+				return $this->finish_s3_event( 'list_objects', $parsed );
 			}
+			$body = $parsed['body'];
 
 			if ( preg_match_all( '/<Contents>(.*?)<\/Contents>/s', $body, $matches ) ) {
 				foreach ( $matches[1] as $content_xml ) {
@@ -571,13 +503,13 @@ class DD_Maintenance_S3 {
 				: '';
 
 			if ( $is_truncated && ( '' === $next_token || $next_token === $continuation_token ) ) {
-				return new WP_Error( 's3_list_pagination', __( 'O S3 informou mais objetos, mas não forneceu um token de continuação válido.', 'dd-maintenance' ) );
+				return $this->finish_s3_event( 'list_objects', new WP_Error( 's3_list_pagination', __( 'O S3 informou mais objetos, mas não forneceu um token de continuação válido.', 'dd-maintenance' ) ) );
 			}
 
 			$continuation_token = $next_token;
 		} while ( $is_truncated && $remaining > 0 );
 
-		return $objects;
+		return $this->finish_s3_event( 'list_objects', $objects );
 	}
 
 	/**
@@ -793,21 +725,21 @@ class DD_Maintenance_S3 {
 			);
 		}
 
-		$base_name = preg_replace( '/\.part\d+\.zip$/i', '', $identifier );
-		$base_name = preg_replace( '/\.zip$/i', '', $base_name );
-		$base_name = preg_replace( '/\.sql$/i', '', $base_name );
-		$base_name = sanitize_file_name( $base_name );
-
+		$requested = sanitize_file_name( $identifier );
+		if ( '' === $requested || $requested !== basename( $requested ) || false !== strpos( $identifier, '..' ) ) {
+			return array(
+				'deleted' => 0,
+				'errors'  => array( __( 'Identificador de backup remoto inválido.', 'dd-maintenance' ) ),
+			);
+		}
+		$base_name = preg_replace( '/\.part\d+\.zip$/i', '', $requested );
+		$base_name = preg_replace( '/\.(zip|sql)$/i', '', $base_name );
 		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
 		$site_slug = $site_slug ? $site_slug : 'site';
-
-		// Busca objetos no bucket com o prefixo do site
-		$objects = $this->list_objects( $site_slug );
+		$objects   = $this->list_objects( $site_slug );
 		if ( is_wp_error( $objects ) ) {
-			// Fallback: busca na raiz do bucket se prefixo falhar
 			$objects = $this->list_objects( '' );
 		}
-
 		if ( is_wp_error( $objects ) || empty( $objects ) ) {
 			return array(
 				'deleted' => 0,
@@ -817,26 +749,30 @@ class DD_Maintenance_S3 {
 
 		$deleted_count = 0;
 		$errors        = array();
-
 		foreach ( $objects as $obj ) {
-			$key      = $obj['key'];
+			$key      = isset( $obj['key'] ) ? (string) $obj['key'] : '';
 			$filename = basename( $key );
-			$is_part  = (bool) preg_match( '/^' . preg_quote( $base_name, '/' ) . '\.part\d+\.zip$/i', $filename );
+			$folder   = dirname( $key );
+			if ( ! $this->is_safe_remote_key( $key ) || ( '.' !== $folder && 0 !== strpos( $folder . '/', $site_slug . '/' ) ) ) {
+				continue;
+			}
+			$is_part   = (bool) preg_match( '/^' . preg_quote( $base_name, '/' ) . '\.part\d+\.zip$/i', $filename );
 			$is_single = $filename === $base_name . '.zip' || $filename === $base_name . '.sql';
-			if ( $is_part || $is_single ) {
-				$del = $this->delete_object( $key );
-				if ( is_wp_error( $del ) ) {
-					$errors[] = sprintf( __( 'Erro ao excluir %1$s no S3: %2$s', 'dd-maintenance' ), $key, $del->get_error_message() );
-				} else {
-					$deleted_count++;
-				}
+			if ( ! $is_part && ! $is_single ) {
+				continue;
+			}
+			$del = $this->delete_object( $key );
+			if ( is_wp_error( $del ) ) {
+				$errors[] = sprintf( __( 'Erro ao excluir %1$s no S3: %2$s', 'dd-maintenance' ), $key, $del->get_error_message() );
+			} else {
+				$deleted_count++;
 			}
 		}
-
-		return array(
-			'deleted' => $deleted_count,
-			'errors'  => $errors,
-		);
+		return array( 'deleted' => $deleted_count, 'errors' => $errors );
+	}
+	
+	private function is_safe_remote_key( string $key ): bool {
+		return '' !== $key && 0 !== strpos( $key, '/' ) && false === strpos( $key, '..' ) && 0 === preg_match( '/[\x00-\x1F\x7F]/', $key );
 	}
 
 	/**
@@ -861,12 +797,9 @@ class DD_Maintenance_S3 {
 		ignore_user_abort( true );
 
 		if ( null !== $this->put_transport ) {
-			$response = call_user_func( $this->put_transport, $url, $headers, $file, $size );
+			$response = $this->transport->put_with_callback( $this->put_transport, $url, $headers, $file, $size );
 			if ( is_wp_error( $response ) ) {
 				return $response;
-			}
-			if ( ! is_array( $response ) ) {
-				return new WP_Error( 's3_transport_contract', __( 'O transporte de upload retornou um resultado inválido.', 'dd-maintenance' ) );
 			}
 			return $this->parse_put_response( $response );
 		}
@@ -903,7 +836,7 @@ class DD_Maintenance_S3 {
 					CURLOPT_INFILE          => $handle,
 					CURLOPT_INFILESIZE      => $size,
 					CURLOPT_RETURNTRANSFER  => true,
-					CURLOPT_FOLLOWLOCATION  => true,
+					CURLOPT_FOLLOWLOCATION  => false,
 					CURLOPT_CONNECTTIMEOUT  => 15,
 					CURLOPT_TIMEOUT         => $timeout,
 					CURLOPT_LOW_SPEED_LIMIT => 1024,
@@ -956,10 +889,11 @@ class DD_Maintenance_S3 {
 		$response = wp_remote_request(
 			$url,
 			array(
-				'method'  => 'PUT',
-				'timeout' => 75,
-				'headers' => $headers,
-				'body'    => $body,
+				'method'     => 'PUT',
+				'timeout'    => 75,
+				'redirection' => 0,
+				'headers'    => $headers,
+				'body'       => $body,
 			)
 		);
 
@@ -986,20 +920,22 @@ class DD_Maintenance_S3 {
 	 * @return array|WP_Error
 	 */
 	private function parse_put_response( array $response ) {
-		$code       = isset( $response['status'] ) ? (int) $response['status'] : 0;
-		$body       = isset( $response['body'] ) ? (string) $response['body'] : '';
-		$error      = isset( $response['error'] ) ? (string) $response['error'] : '';
-		$headers    = isset( $response['headers'] ) && is_array( $response['headers'] ) ? $response['headers'] : array();
-		$request_id = isset( $headers['x-amz-request-id'] ) ? (string) $headers['x-amz-request-id'] : '';
-
+		$code = isset( $response['status'] ) ? (int) $response['status'] : 0;
 		if ( $code >= 200 && $code < 300 ) {
-			return array(
-				'etag' => isset( $headers['etag'] ) ? (string) $headers['etag'] : '',
-			);
+			$parsed = $this->response_parser->parse( $response, 'upload' );
+			if ( is_wp_error( $parsed ) ) {
+				return $parsed;
+			}
+			return array( 'etag' => $parsed['etag'] ?? '' );
 		}
-
-		$error_code = 0 === $code && '' !== $error ? 's3_transport' : ( $this->is_retryable_http_code( $code ) ? 's3_upload_retryable' : 's3_upload' );
-		return new WP_Error( $error_code, $this->friendly_error( $code, $body, $error, $request_id ) );
+		$parsed = $this->response_parser->parse( $response, 'upload' );
+		if ( ! is_wp_error( $parsed ) ) {
+			return $parsed;
+		}
+		$error_code = 0 === $code && ! empty( $response['error'] )
+			? 's3_transport'
+			: ( $this->response_parser->is_retryable_status( $code ) ? 's3_upload_retryable' : 's3_upload' );
+		return new WP_Error( $error_code, $parsed->get_error_message() );
 	}
 
 	/**
@@ -1185,5 +1121,26 @@ class DD_Maintenance_S3 {
 		$k_region  = hash_hmac( 'sha256', $region, $k_date, true );
 		$k_service = hash_hmac( 'sha256', $service, $k_region, true );
 		return hash_hmac( 'sha256', 'aws4_request', $k_service, true );
+	}
+	private function record_s3_event( string $event, string $step, string $status, string $failure_code = '' ): void {
+		if ( ! class_exists( 'DD_Maintenance' ) || ! method_exists( 'DD_Maintenance', 'record_event' ) ) {
+			return;
+		}
+		DD_Maintenance::record_event(
+			's3',
+			$event,
+			array(
+				'step'         => $step,
+				'status'       => $status,
+				'failure_code' => $failure_code,
+				'error_count'  => '' !== $failure_code ? 1 : 0,
+			)
+		);
+	}
+
+	private function finish_s3_event( string $step, $result ) {
+		$failure_code = is_wp_error( $result ) ? (string) $result->get_error_code() : '';
+		$this->record_s3_event( 'request_finished', $step, '' === $failure_code ? 'success' : 'failure', $failure_code );
+		return $result;
 	}
 }

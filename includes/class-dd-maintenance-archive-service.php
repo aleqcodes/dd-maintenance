@@ -10,6 +10,7 @@ defined( 'ABSPATH' ) || exit;
 if ( ! class_exists( 'DD_Maintenance_Restore_Implementation' ) ) {
 	require_once __DIR__ . '/class-dd-maintenance-restore-implementation.php';
 }
+require_once __DIR__ . '/class-dd-maintenance-restore-archive-service.php';
 
 class DD_Maintenance_Archive_Service {
 	/** @var DD_Maintenance_Restore_Implementation */
@@ -42,7 +43,8 @@ class DD_Maintenance_Archive_Service {
 
 	/** @return array|WP_Error */
 	public function restore_archive( string $zip_path, bool $apply_elementor_compatibility = false ) {
-		return $this->restore->restore_archive( $zip_path, $apply_elementor_compatibility );
+		$workflow = new DD_Maintenance_Restore_Archive_Service( $this->restore );
+		return $workflow->run( array( $zip_path ), $apply_elementor_compatibility );
 	}
 
 	/** @return array */

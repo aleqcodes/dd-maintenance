@@ -10,7 +10,7 @@ class DD_Maintenance_Admin_General_Handler {
 	/** @var DD_Maintenance_Settings_Implementation */
 	private $settings;
 	public function __construct( $settings = null ) {
-		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation( false );
+		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation();
 	}
 	public function handle_plugins() {
 		DD_Maintenance_Admin_Request::authorize( 'dd_maintenance_update_plugins' );

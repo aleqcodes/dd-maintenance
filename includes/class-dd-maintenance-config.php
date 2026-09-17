@@ -6,6 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/class-dd-maintenance-request.php';
 
 class DD_Maintenance_Config {
 
@@ -79,19 +80,19 @@ class DD_Maintenance_Config {
 	 *
 	 * @return array|null Mensagem com tipo ('success'|'error') ou null se nenhuma ação.
 	 */
-	public static function handle_post(): ?array {
-		if ( empty( $_POST['dd_maintenance_config_action'] ) ) {
+	public static function handle_post( ?DD_Maintenance_Settings_Request $request = null ): ?array {
+		$request = $request instanceof DD_Maintenance_Settings_Request ? $request : DD_Maintenance_Settings_Request::from_globals();
+		$action  = $request->post_key( 'dd_maintenance_config_action' );
+		if ( '' === $action ) {
 			return null;
 		}
 
-		$action = sanitize_key( wp_unslash( $_POST['dd_maintenance_config_action'] ) );
-
 		if ( 'set_password' === $action ) {
-			return self::handle_set_password();
+			return self::handle_set_password( $request );
 		}
 
 		if ( 'save_config' === $action ) {
-			return self::handle_save_config();
+			return self::handle_save_config( $request );
 		}
 
 		return array(
@@ -105,7 +106,8 @@ class DD_Maintenance_Config {
 	 *
 	 * @return array
 	 */
-	public static function handle_set_password(): array {
+	public static function handle_set_password( ?DD_Maintenance_Settings_Request $request = null ): array {
+		$request = $request instanceof DD_Maintenance_Settings_Request ? $request : DD_Maintenance_Settings_Request::from_globals();
 		check_admin_referer( self::NONCE_ACTION_SET_PASSWORD );
 
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -118,7 +120,7 @@ class DD_Maintenance_Config {
 		$has_password = self::has_password();
 
 		if ( $has_password ) {
-			$current_password = self::read_post_string( 'dd_maint_current_password' );
+			$current_password = $request->post_secret( 'dd_maint_current_password' );
 
 			if ( ! self::verify_password( $current_password ) ) {
 				return array(
@@ -128,8 +130,8 @@ class DD_Maintenance_Config {
 			}
 		}
 
-		$new_password     = self::read_post_string( 'dd_maint_new_password' );
-		$confirm_password = self::read_post_string( 'dd_maint_confirm_password' );
+		$new_password     = $request->post_secret( 'dd_maint_new_password' );
+		$confirm_password = $request->post_secret( 'dd_maint_confirm_password' );
 
 		if ( strlen( $new_password ) < 6 ) {
 			return array(
@@ -158,7 +160,8 @@ class DD_Maintenance_Config {
 	 *
 	 * @return array
 	 */
-	public static function handle_save_config(): array {
+	public static function handle_save_config( ?DD_Maintenance_Settings_Request $request = null ): array {
+		$request = $request instanceof DD_Maintenance_Settings_Request ? $request : DD_Maintenance_Settings_Request::from_globals();
 		check_admin_referer( self::NONCE_ACTION_SAVE_CONFIG );
 
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -175,7 +178,7 @@ class DD_Maintenance_Config {
 			);
 		}
 
-		$password = self::read_post_string( 'dd_maint_password' );
+		$password = $request->post_secret( 'dd_maint_password' );
 
 		if ( ! self::verify_password( $password ) ) {
 			return array(
@@ -186,8 +189,8 @@ class DD_Maintenance_Config {
 
 		$result = self::update_wp_config(
 			array(
-				'DISALLOW_FILE_MODS' => self::read_post_bool( 'dd_maint_file_mods' ),
-				'DISALLOW_FILE_EDIT' => self::read_post_bool( 'dd_maint_file_edit' ),
+				'DISALLOW_FILE_MODS' => 'true' === $request->post_key( 'dd_maint_file_mods' ),
+				'DISALLOW_FILE_EDIT' => 'true' === $request->post_key( 'dd_maint_file_edit' ),
 			)
 		);
 
@@ -389,29 +392,6 @@ class DD_Maintenance_Config {
 		return "define( '" . $constant . "', " . ( $value ? 'true' : 'false' ) . ' );';
 	}
 
-	/**
-	 * Lê e limpa string de POST.
-	 *
-	 * @param string $key Chave POST.
-	 * @return string
-	 */
-	private static function read_post_string( string $key ): string {
-		if ( ! isset( $_POST[ $key ] ) ) {
-			return '';
-		}
-
-		return trim( (string) wp_unslash( $_POST[ $key ] ) );
-	}
-
-	/**
-	 * Lê booleano de POST.
-	 *
-	 * @param string $key Chave POST.
-	 * @return bool
-	 */
-	private static function read_post_bool( string $key ): bool {
-		return 'true' === self::read_post_string( $key );
-	}
 
 	/**
 	 * Formata o caminho do arquivo para exibição.

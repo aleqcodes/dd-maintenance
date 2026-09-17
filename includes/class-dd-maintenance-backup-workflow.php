@@ -19,6 +19,12 @@ if ( ! class_exists( 'DD_Maintenance_Backup_Result' ) ) {
 if ( ! class_exists( 'DD_Maintenance_Storage_Upload_Result' ) ) {
 	require_once __DIR__ . '/class-dd-maintenance-storage-upload-result.php';
 }
+if ( ! class_exists( 'DD_Maintenance_Workflow_Steps' ) ) {
+	require_once __DIR__ . '/class-dd-maintenance-workflow-steps.php';
+}
+if ( ! class_exists( 'DD_Maintenance_Cleanup_Result' ) ) {
+	require_once __DIR__ . '/class-dd-maintenance-cleanup-result.php';
+}
 if ( ! class_exists( 'DD_Maintenance_Progress' ) ) {
 	require_once __DIR__ . '/class-dd-maintenance-progress.php';
 }
@@ -51,9 +57,9 @@ class DD_Maintenance_Backup_Workflow {
 	 */
 	public function create( string $correlation_id = '' ) {
 		$started_at  = microtime( true );
-		$start_event = DD_Maintenance::record_event( 'backup', 'operation_started', array( 'step' => 'init', 'status' => 'running', 'correlation_id' => $correlation_id ) );
+		$start_event    = DD_Maintenance::record_event( 'backup', 'operation_started', array( 'step' => DD_Maintenance_Workflow_Steps::BACKUP_INIT, 'status' => 'running', 'correlation_id' => $correlation_id ) );
 		$correlation_id = $start_event['correlation_id'];
-		$session        = $this->step( 'init', '', $correlation_id );
+		$session        = $this->step( DD_Maintenance_Workflow_Steps::BACKUP_INIT, '', $correlation_id );
 		if ( is_wp_error( $session ) ) {
 			DD_Maintenance::record_event(
 				'backup',
@@ -72,8 +78,8 @@ class DD_Maintenance_Backup_Workflow {
 
 		$session_id = $session['session_id'];
 		$result     = array();
-		DD_Maintenance::record_event( 'backup', 'session_created', array( 'step' => 'init', 'session_id' => $session_id, 'status' => 'running', 'correlation_id' => $correlation_id ) );
-		foreach ( array( 'database', 'index', 'zip', 'finalize' ) as $step ) {
+		DD_Maintenance::record_event( 'backup', 'session_created', array( 'step' => DD_Maintenance_Workflow_Steps::BACKUP_INIT, 'session_id' => $session_id, 'status' => 'running', 'correlation_id' => $correlation_id ) );
+		foreach ( array( DD_Maintenance_Workflow_Steps::BACKUP_DATABASE, DD_Maintenance_Workflow_Steps::BACKUP_INDEX, DD_Maintenance_Workflow_Steps::BACKUP_ZIP, DD_Maintenance_Workflow_Steps::BACKUP_FINALIZE ) as $step ) {
 			do {
 				$result = $this->step( $step, $session_id );
 				if ( is_wp_error( $result ) ) {
@@ -141,15 +147,15 @@ class DD_Maintenance_Backup_Workflow {
 	 */
 	public function step( string $step, string $session_id, string $correlation_id = '' ) {
 		switch ( $step ) {
-			case 'init':
+			case DD_Maintenance_Workflow_Steps::BACKUP_INIT:
 				return $this->backup->init_session( $correlation_id );
-			case 'database':
+			case DD_Maintenance_Workflow_Steps::BACKUP_DATABASE:
 				return $this->normalize_progress( $this->backup->dump_database_step( $session_id ) );
-			case 'index':
+			case DD_Maintenance_Workflow_Steps::BACKUP_INDEX:
 				return $this->normalize_progress( $this->backup->index_files_step( $session_id ) );
-			case 'zip':
+			case DD_Maintenance_Workflow_Steps::BACKUP_ZIP:
 				return $this->normalize_progress( $this->backup->zip_batch_step( $session_id ) );
-			case 'finalize':
+			case DD_Maintenance_Workflow_Steps::BACKUP_FINALIZE:
 				return $this->backup->finalize_and_split_step( $session_id );
 			default:
 				return new WP_Error( 'backup_step_invalid', __( 'Etapa de backup inválida.', 'dd-maintenance' ) );
@@ -172,7 +178,7 @@ class DD_Maintenance_Backup_Workflow {
 	 * @return bool
 	 */
 	private function is_completed( $result ): bool {
-		return is_object( $result ) ? ! empty( $result->completed ) : ! empty( $result['completed'] );
+		return is_object( $result ) ? $result->is_completed() : ! empty( $result['completed'] );
 	}
 
 	/**
@@ -198,13 +204,10 @@ class DD_Maintenance_Backup_Workflow {
 			)
 		);
 		$correlation_id = $start_event['correlation_id'];
-		$result         = new DD_Maintenance_Storage_Upload_Result();
-		$result->total  = count( $parts );
-		$result->success = false;
-		$result->total_size = $total_size;
+		$result = DD_Maintenance_Storage_Upload_Result::start( count( $parts ), $total_size );
 
 		if ( ! $this->s3->is_configured() ) {
-			$result->errors[] = __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' );
+			$result->add_error( __( 'Configure as credenciais do S3 / DigitalOcean Spaces.', 'dd-maintenance' ) );
 			DD_Maintenance::record_event(
 				'backup',
 				'upload_failed',
@@ -225,13 +228,15 @@ class DD_Maintenance_Backup_Workflow {
 			$key    = $folder . '/' . $part['name'];
 			$upload = $this->s3->put_object( $key, $part['file'] );
 			if ( is_wp_error( $upload ) ) {
-				$result->errors[] = sprintf(
-					/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome, 4: Erro */
-					__( 'Erro no envio da parte %1$d/%2$d (%3$s): %4$s', 'dd-maintenance' ),
-					$index + 1,
-					$result->total,
-					$part['name'],
-					$upload->get_error_message()
+				$result->add_error(
+					sprintf(
+						/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome, 4: Erro */
+						__( 'Erro no envio da parte %1$d/%2$d (%3$s): %4$s', 'dd-maintenance' ),
+						$index + 1,
+						$result->total(),
+						$part['name'],
+						$upload->get_error_message()
+					)
 				);
 				DD_Maintenance::record_event(
 					'backup',
@@ -250,14 +255,16 @@ class DD_Maintenance_Backup_Workflow {
 				return $result;
 			}
 
-			$result->uploaded++;
+			$result->mark_uploaded();
 			$processed_bytes += isset( $part['size'] ) ? (int) $part['size'] : 0;
-			$result->logs[] = sprintf(
-				/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome */
-				__( '[OK] Parte %1$d/%2$d enviada: %3$s', 'dd-maintenance' ),
-				$result->uploaded,
-				$result->total,
-				$part['name']
+			$result->add_log(
+				sprintf(
+					/* translators: 1: Índice da parte, 2: Total de partes, 3: Nome */
+					__( '[OK] Parte %1$d/%2$d enviada: %3$s', 'dd-maintenance' ),
+					$result->uploaded(),
+					$result->total(),
+					$part['name']
+				)
 			);
 			DD_Maintenance::record_event(
 				'backup',
@@ -266,14 +273,14 @@ class DD_Maintenance_Backup_Workflow {
 					'step'            => 'upload',
 					'status'          => 'running',
 					'bytes_processed' => $processed_bytes,
-					'progress'        => $result->total > 0 ? (int) floor( $result->uploaded / $result->total * 100 ) : 100,
+					'progress'        => $result->total() > 0 ? (int) floor( $result->uploaded() / $result->total() * 100 ) : 100,
 					'correlation_id'  => $correlation_id,
 					'part_index'      => $index + 1,
 				)
 			);
 		}
 
-		$result->success = true;
+		$result->complete();
 		DD_Maintenance::record_event(
 			'backup',
 			'upload_finished',
@@ -326,10 +333,10 @@ class DD_Maintenance_Backup_Workflow {
 			return $log;
 		}
 
-		$parts         = ! empty( $backup_result->parts ) ? $backup_result->parts : array( array( 'file' => $backup_result->file, 'name' => $backup_result->name, 'size' => $backup_result->size, 'part' => 1 ) );
+		$parts         = ! empty( $backup_result->parts() ) ? $backup_result->parts() : array( array( 'file' => $backup_result->file(), 'name' => $backup_result->name(), 'size' => $backup_result->size(), 'part' => 1 ) );
 		$total_parts   = count( $parts );
-		$total_size    = $backup_result->total_size > 0 ? $backup_result->total_size : $backup_result->size;
-		$chunk_size_mb = (int) $backup_result->chunk_size_mb;
+		$total_size    = $backup_result->total_size() > 0 ? $backup_result->total_size() : $backup_result->size();
+		$chunk_size_mb = (int) $backup_result->chunk_size_mb();
 		$log[]         = sprintf(
 			/* translators: 1: Quantidade de partes, 2: Tamanho máximo configurado, 3: Tamanho total */
 			__( '[OK] Backup criado com sucesso: %1$d parte(s) de até %2$d MB (Total: %3$s)', 'dd-maintenance' ),
@@ -343,9 +350,9 @@ class DD_Maintenance_Backup_Workflow {
 		$log[]     = '[OK] Pasta de destino no S3: ' . $folder;
 
 		$upload_result = $this->upload_parts( $parts, $folder, (int) $total_size, $correlation_id );
-		$log          = array_merge( $log, $upload_result->logs );
-		if ( ! $upload_result->success ) {
-			$log = array_merge( $log, array_map( static function ( $error ) { return '[ERRO] ' . $error; }, $upload_result->errors ) );
+		$log          = array_merge( $log, $upload_result->logs() );
+		if ( ! $upload_result->is_success() ) {
+			$log = array_merge( $log, array_map( static function ( $error ) { return '[ERRO] ' . $error; }, $upload_result->errors() ) );
 			$log[] = '[Fim com Erro no S3] ' . current_time( 'Y-m-d H:i:s' );
 			DD_Maintenance::record_event(
 				'backup',
@@ -354,7 +361,7 @@ class DD_Maintenance_Backup_Workflow {
 					'step'            => 'upload',
 					'status'          => 'failure',
 					'failure_code'    => 's3_upload_failed',
-					'error_count'     => count( $upload_result->errors ),
+					'error_count'     => count( $upload_result->errors() ),
 					'bytes_processed' => (int) $total_size,
 					'duration_ms'     => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
 					'correlation_id'  => $correlation_id,
@@ -432,6 +439,10 @@ class DD_Maintenance_Backup_Workflow {
 	 */
 	public function cleanup_failed( string $session_id, string $message = '', array $log = array() ): array {
 		return $this->backup->cleanup_failed_session( $session_id, $message, $log );
+	}
+	/** @return DD_Maintenance_Cleanup_Result */
+	public function cleanup_failed_result( string $session_id, string $message = '', array $log = array() ): DD_Maintenance_Cleanup_Result {
+		return DD_Maintenance_Cleanup_Result::from_array( $this->cleanup_failed( $session_id, $message, $log ) );
 	}
 
 	/**

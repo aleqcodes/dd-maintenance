@@ -68,6 +68,83 @@ final class WordPressBoundaryTest extends TestCase {
 			$_POST = array();
 		}
 	}
+	public function testAdminBackupHandlerRequiresCapabilityAndNonce(): void {
+		$handler = new \DD_Maintenance_Admin_Backup_Handler( new \DD_Maintenance_Settings_Implementation() );
+
+		$GLOBALS['dd_phpunit_can_manage'] = false;
+		try {
+			$handler->handle_backup();
+			$this->fail( 'A ação administrativa deveria rejeitar capacidade ausente.' );
+		} catch ( \DD_Maintenance_Test_Wp_Die $error ) {
+			$this->assertSame( 'Sem permissão.', $error->getMessage() );
+		}
+
+		$GLOBALS['dd_phpunit_can_manage']  = true;
+		$GLOBALS['dd_phpunit_valid_nonce'] = false;
+		try {
+			$handler->handle_backup();
+			$this->fail( 'A ação administrativa deveria rejeitar nonce inválido.' );
+		} catch ( \DD_Maintenance_Test_Wp_Die $error ) {
+			$this->assertSame( 'Nonce inválido.', $error->getMessage() );
+		}
+	}
+
+	public function testInternalSettingsImplementationDoesNotRegisterWordPressHooks(): void {
+		new \DD_Maintenance_Settings_Implementation();
+
+		$this->assertSame( array(), $GLOBALS['dd_phpunit_hooks'] );
+	}
+	public function testAdministrativePolicyDeclaresAuthMethodAndRollbackBoundary(): void {
+		$destructive = \DD_Maintenance_Admin_Request::policy( 'dd_maintenance_delete_backup' );
+		$this->assertSame( 'manage_options', $destructive['capability'] );
+		$this->assertSame( 'dd_maintenance_delete_backup', $destructive['nonce'] );
+		$this->assertSame( 'POST', $destructive['method'] );
+		$this->assertFalse( $destructive['public'] );
+		$this->assertTrue( $destructive['rollback_blocked'] );
+
+		$restore_ajax = \DD_Maintenance_Admin_Request::policy( 'dd_maintenance_ajax_restore' );
+		$this->assertTrue( $restore_ajax['public'] );
+		$this->assertSame( 'dd_maint_ajax_nonce', $restore_ajax['nonce'] );
+		$this->assertSame( 'json', $restore_ajax['response'] );
+	}
+
+	public function testRestoreSessionDoesNotTrustRequestHostForTargetUrls(): void {
+		$backup_dir = \DD_Maintenance::backup_dir();
+		$zip_path   = $backup_dir . '/security.part001.zip';
+		file_put_contents( $zip_path, '' );
+		$_SERVER['HTTP_HOST'] = 'attacker.example.test';
+		$GLOBALS['dd_phpunit_options'] = array(
+			'siteurl' => 'javascript:alert(1)',
+			'home'    => 'https://trusted.example.test/',
+		);
+
+		$restore = new \DD_Maintenance_Restore_Implementation();
+		$session = $restore->init_restore_session( array( $zip_path ), '', false, 'security-correlation' );
+
+		$this->assertIsArray( $session );
+		$this->assertSame( '', $session['target_siteurl'] );
+		$this->assertSame( 'https://trusted.example.test', $session['target_home'] );
+
+		( new \DD_Maintenance_Session_Store() )->remove_directory( $session['extract_dir'] );
+		unlink( $zip_path );
+		$_SERVER['HTTP_HOST'] = '';
+	}
+
+	public function testGeneratedRestoreLoaderDoesNotBuildUrlsFromRequestHost(): void {
+		$loader_dir = WP_CONTENT_DIR . '/mu-plugins';
+		\DD_Maintenance_Restore_Implementation::create_mu_plugin_loader( array( 'test' => true ) );
+		$loader_file = $loader_dir . '/dd-maintenance-loader.php';
+		$loader_code = file_get_contents( $loader_file );
+
+		$this->assertIsString( $loader_code );
+		$this->assertStringContainsString( 'return $val;', $loader_code );
+		$this->assertStringNotContainsString( 'HTTP_HOST', $loader_code );
+		$loader_checksum = hash_file( 'sha256', $loader_file );
+		$this->assertTrue( \DD_Maintenance_Restore_Implementation::create_mu_plugin_loader( array( 'test' => true ) ) );
+		$this->assertSame( $loader_checksum, hash_file( 'sha256', $loader_file ) );
+	}
+
+
 
 
 
@@ -97,6 +174,17 @@ final class WordPressBoundaryTest extends TestCase {
 		$this->assertArrayHasKey( 'hook_admin_post_backuper_run_backup', $usage );
 		$this->assertSame( 1, $usage['hook_admin_post_backuper_run_backup']['count'] );
 	}
+	public function testLegacyMigrationTableCoversPublicContracts(): void {
+		$table = \DD_Maintenance_Legacy_Compatibility::migration_table();
+
+		$this->assertSame( 'DD_Maintenance', $table['classes']['Backuper'] );
+		$this->assertSame( 'admin_post_dd_maintenance_run_backup', $table['hooks']['admin_post_backuper_run_backup'] );
+		$this->assertSame( 'dd_maintenance_settings', $table['options']['backuper_settings'] );
+		$this->assertSame( 'dd_maintenance_last_log', $table['transients']['backuper_last_log'] );
+		$this->assertSame( 'dd-maintenance.php', $table['wrappers']['class-backuper-s3.php'] );
+		$this->assertSame( '3.0.0', $table['removal']['target_version'] );
+	}
+
 
 	public function testLegacyDeprecationNoticePublishesRemovalMajor(): void {
 		ob_start();

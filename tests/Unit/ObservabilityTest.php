@@ -129,4 +129,54 @@ final class ObservabilityTest extends TestCase {
 		$this->assertArrayNotHasKey( 'step', $event['context'] );
 	}
 
+	public function testCatalogCriticalDefaultsAndLogRedaction(): void {
+		$event = \DD_Maintenance_Observability::make_event(
+			's3',
+			'request_failed',
+			array( 'status' => 'failure', 'error_count' => 1 )
+		);
+		$this->assertTrue( \DD_Maintenance_Observability::is_catalog_event( 's3', 'request_failed' ) );
+		$this->assertSame( 'unknown', $event['step'] );
+		$this->assertSame( 'unknown_failure', $event['failure_code'] );
+		$this->assertSame( 1, $event['error_count'] );
+
+		$lines = \DD_Maintenance_Observability::sanitize_log_lines(
+			array(
+				'Authorization: Bearer abc.def.ghi',
+				'SELECT password FROM wp_users WHERE id=1',
+				str_repeat( 'x', 600 ),
+			)
+		);
+		$this->assertStringContainsString( '[redacted]', $lines[0] );
+		$this->assertSame( '[redacted] SQL', $lines[1] );
+		$this->assertSame( 500, strlen( $lines[2] ) );
+	}
+
+	public function testOperationalSummaryMarksPersistenceFailure(): void {
+		$summary = \DD_Maintenance_Observability::summary(
+			array(
+				'status'             => 'success',
+				'persistence_status' => 'created_not_persisted',
+				'correlation_id'     => 'corr-summary',
+				'step'               => 'finalize',
+			)
+		);
+		$this->assertSame( 'persistence_failure', $summary['status'] );
+		$this->assertSame( 'corr-summary', $summary['correlation_id'] );
+	}
+	public function testSavedLogRedactsSensitiveExternalMessages(): void {
+		$path = \DD_Maintenance::save_log(
+			array(
+				'Authorization: Bearer abc.def.ghi',
+				'SELECT password FROM wp_users',
+			),
+			'failure',
+			'redaction-test'
+		);
+		$this->assertNotSame( '', $path );
+		$content = (string) file_get_contents( $path );
+		$this->assertStringContainsString( '[redacted]', $content );
+		$this->assertStringNotContainsString( 'abc.def.ghi', $content );
+		$this->assertStringNotContainsString( 'SELECT password', $content );
+	}
 }

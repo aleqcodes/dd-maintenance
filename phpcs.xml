@@ -2,11 +2,12 @@
 <ruleset name="DD Maintenance">
     <description>WordPress Coding Standards para código próprio.</description>
     <file>dd-maintenance.php</file>
-    <file>backuper.php</file>
     <file>includes</file>
     <exclude-pattern>*/updraftplus/*</exclude-pattern>
+    <exclude-pattern>*/class-dd-maintenance-legacy-compatibility.php</exclude-pattern>
     <exclude-pattern>*/vendor/*</exclude-pattern>
     <!-- Security output is enforced; PHPStan covers contracts and types. -->
+    <rule ref="WordPress.Security.ValidatedSanitizedInput" />
     <rule ref="WordPress.Security.EscapeOutput" />
     <rule ref="Universal.Operators.StrictComparisons" />
     <rule ref="WordPress.PHP.StrictInArray" />

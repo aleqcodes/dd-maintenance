@@ -29,6 +29,14 @@ if ( ! function_exists( 'wp_generate_password' ) ) {
 $options = array();
 function get_option( string $name, $default = false ) { global $options; return $options[ $name ] ?? $default; }
 function update_option( string $name, $value, bool $autoload = true ): bool { global $options; $options[ $name ] = $value; return true; }
+$events = array();
+class DD_Maintenance {
+	public static function record_event( string $operation, string $event, array $context = array() ): array {
+		global $events;
+		$events[] = array( $operation, $event, $context );
+		return array();
+	}
+}
 
 $root = sys_get_temp_dir() . '/dd-elementor-' . bin2hex( random_bytes( 4 ) );
 $plugin_dir = $root . '/plugins';
@@ -63,6 +71,7 @@ require_once __DIR__ . '/../includes/class-dd-maintenance-elementor-compatibilit
 $skipped = DD_Maintenance_Elementor_Compatibility::apply_restore_decision( false );
 assert( 'skipped' === $skipped['status'], 'decisão não autorizada deve pular compatibilidade' );
 assert( ! file_exists( $content_dir . '/mu-plugins/dd-elementor-compat.php' ), 'decisão não autorizada não deve instalar shield' );
+assert( 'elementor' === $events[0][0] && 'compatibility_skipped' === $events[0][1], 'decisão deve emitir evento operacional redigido' );
 
 $result = DD_Maintenance_Elementor_Compatibility::apply( array( $manager ) );
 assert( 'completed' === $result['status'], 'implementação real deve aplicar o patch reconhecido' );
@@ -88,11 +97,21 @@ $unknown_before = file_get_contents( $unknown );
 $unknown_result = DD_Maintenance_Elementor_Compatibility::apply( array( $unknown ) );
 assert( 'rejected' === $unknown_result['status'], 'arquivo de terceiro desconhecido deve ser rejeitado' );
 assert( $unknown_before === file_get_contents( $unknown ), 'arquivo desconhecido não pode ser alterado' );
+$nested = $plugin_dir . '/third-party/elementor/core/dynamic-tags/manager.php';
+wp_mkdir_p( dirname( $nested ) );
+file_put_contents( $nested, $source );
+$nested_result = DD_Maintenance_Elementor_Compatibility::apply( array( $nested ) );
+assert( 'rejected_path' === $nested_result['files'][0]['status'], 'plugin aninhado fora da allowlist deve ser rejeitado' );
 
 $undone = DD_Maintenance_Elementor_Compatibility::undo( $manager );
 assert( 'undone' === $undone['status'], 'desfazer deve restaurar o backup verificado' );
 assert( $source === file_get_contents( $manager ), 'desfazer deve restaurar byte a byte o original' );
 
+$reapplied = DD_Maintenance_Elementor_Compatibility::apply( array( $manager ) );
+assert( 'patched' === $reapplied['files'][0]['status'], 'reaplicação deve criar novo estado verificável' );
+file_put_contents( $manager, (string) file_get_contents( $manager ) . "\n// alteração externa após o patch\n" );
+$conflict = DD_Maintenance_Elementor_Compatibility::undo( $manager );
+assert( 'undo_conflict' === $conflict['status'], 'alteração de terceiro deve impedir undo destrutivo' );
 $explicit = DD_Maintenance_Elementor_Compatibility::apply_restore_decision( true );
 assert( 'completed' === $explicit['status'], 'decisão explícita deve aplicar compatibilidade' );
 assert( is_file( $content_dir . '/mu-plugins/dd-elementor-compat.php' ), 'decisão explícita deve instalar shield próprio' );

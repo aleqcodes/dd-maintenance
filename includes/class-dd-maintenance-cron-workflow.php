@@ -127,23 +127,23 @@ class DD_Maintenance_Cron_Workflow {
 		switch ( $job['phase'] ) {
 			case 'database':
 				$result = $this->backup_workflow->step( 'database', $session_id );
-				if ( ! is_wp_error( $result ) && $result->completed ) {
+				if ( ! is_wp_error( $result ) && $result->is_completed() ) {
 					$job['phase'] = 'index';
-					$job['log'][] = $result->log;
+					$job['log'][] = $result->log();
 				}
 				break;
 			case 'index':
 				$result = $this->backup_workflow->step( 'index', $session_id );
-				if ( ! is_wp_error( $result ) && $result->completed ) {
+				if ( ! is_wp_error( $result ) && $result->is_completed() ) {
 					$job['phase'] = 'zip';
-					$job['log'][] = $result->log;
+					$job['log'][] = $result->log();
 				}
 				break;
 			case 'zip':
 				$result = $this->backup_workflow->step( 'zip', $session_id );
-				if ( ! is_wp_error( $result ) && $result->completed ) {
+				if ( ! is_wp_error( $result ) && $result->is_completed() ) {
 					$job['phase'] = 'finalize';
-					$job['log'][] = $result->log;
+					$job['log'][] = $result->log();
 				}
 				break;
 			case 'finalize':
@@ -160,11 +160,11 @@ class DD_Maintenance_Cron_Workflow {
 				if ( $index < count( $job['parts'] ) ) {
 					$part   = $job['parts'][ $index ];
 					$result = $this->backup_workflow->upload_parts( array( $part ), $job['folder'], (int) $part['size'], $correlation_id );
-					if ( $result->success ) {
+					if ( $result->is_success() ) {
 						$job['upload_index']++;
-						$job['log'] = array_merge( $job['log'], $result->logs );
+						$job['log'] = array_merge( $job['log'], $result->logs() );
 					} else {
-						$result = new WP_Error( 'cron_upload_failed', implode( ' ', $result->errors ) );
+						$result = new WP_Error( 'cron_upload_failed', implode( ' ', $result->errors() ) );
 					}
 				}
 				if ( ! is_wp_error( $result ) && $job['upload_index'] >= count( $job['parts'] ) ) {

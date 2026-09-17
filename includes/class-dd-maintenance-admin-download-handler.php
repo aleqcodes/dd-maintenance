@@ -10,14 +10,14 @@ class DD_Maintenance_Admin_Download_Handler {
 	/** @var DD_Maintenance_Settings_Implementation */
 	private $settings;
 	public function __construct( $settings = null ) {
-		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation( false );
+		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation();
 	}
 	public function handle_delete_backup() {
 		DD_Maintenance_Admin_Request::authorize( 'dd_maintenance_delete_backup' );
-		return $this->settings->handle_delete_backup();
+		return $this->settings->handle_delete_backup( DD_Maintenance_Artifact_Request::from_globals() );
 	}
 	public function handle_download_backup() {
 		DD_Maintenance_Admin_Request::authorize( 'dd_maintenance_download_backup' );
-		return $this->settings->handle_download_backup();
+		return $this->settings->handle_download_backup( DD_Maintenance_Artifact_Request::from_globals() );
 	}
 }

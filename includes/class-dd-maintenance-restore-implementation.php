@@ -12,6 +12,12 @@ require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
 require_once __DIR__ . '/class-dd-maintenance-file-security.php';
 require_once __DIR__ . '/class-dd-maintenance-elementor-compatibility.php';
 require_once __DIR__ . '/class-dd-maintenance-restore-database-adapter.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-archive-service.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-sql-parser.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-query-executor.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-database-finalizer.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-url-migrator.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-mu-loader.php';
 
  
 
@@ -28,6 +34,15 @@ class DD_Maintenance_Restore_Implementation {
 	 */
 	public function __construct() {
 		$this->session_store = new DD_Maintenance_Session_Store();
+	}
+
+	/**
+	 * Migra URLs apenas depois que a integridade mínima do banco foi confirmada.
+	 *
+	 * @return string[]
+	 */
+	public function migrate_urls( string $from_url, string $to_url, string $dump_prefix, DD_Maintenance_Restore_Database_Adapter $database ): array {
+		return $this->perform_url_search_replace( $from_url, $to_url, $dump_prefix, $database );
 	}
 
 	/**
@@ -406,10 +421,14 @@ class DD_Maintenance_Restore_Implementation {
 		if ( is_wp_error( $zip_paths ) ) {
 			return $zip_paths;
 		}
+		$zip_sizes    = array();
+		$zip_checksums = array();
 		foreach ( $zip_paths as $zip_path ) {
 			if ( is_link( $zip_path ) || ! is_file( $zip_path ) ) {
 				return new WP_Error( 'restore_zip_invalid', __( 'Volume de restauração inválido ou simbólico.', 'dd-maintenance' ) );
 			}
+			$zip_sizes[] = (int) filesize( $zip_path );
+			$zip_checksums[] = (string) hash_file( 'sha256', $zip_path );
 		}
 		if ( '' !== $temp_upload_dir && ( is_link( $temp_upload_dir ) || ! is_dir( $temp_upload_dir ) ) ) {
 			return new WP_Error( 'restore_upload_dir_invalid', __( 'Diretório temporário de upload inválido.', 'dd-maintenance' ) );
@@ -435,33 +454,34 @@ class DD_Maintenance_Restore_Implementation {
 			return new WP_Error( 'restore_mkdir_failed', __( 'Não foi possível criar a pasta temporária de extração.', 'dd-maintenance' ) );
 		}
 
-		$scheme = ( is_ssl() || ( isset( $_SERVER['HTTPS'] ) && 'on' === $_SERVER['HTTPS'] ) || ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === $_SERVER['HTTP_X_FORWARDED_PROTO'] ) ) ? 'https://' : 'http://';
-		$host   = $_SERVER['HTTP_HOST'] ?? '';
-		$detected_url = ! empty( $host ) ? untrailingslashit( $scheme . $host ) : '';
-
-		$current_siteurl = get_option( 'siteurl', '' );
-		$current_home    = get_option( 'home', '' );
+		$current_siteurl = self::trusted_site_url( get_option( 'siteurl', '' ) );
+		$current_home    = self::trusted_site_url( get_option( 'home', '' ) );
 
 		$session = array(
 			'session_id'        => $session_id,
 			'extract_dir'       => $extract_dir,
 			'temp_upload_dir'   => $temp_upload_dir,
 			'zip_paths'         => array_values( $zip_paths ),
+			'zip_sizes'         => $zip_sizes,
+			'zip_checksums'     => $zip_checksums,
 			'total_volumes'     => count( $zip_paths ),
 			'current_index'     => 0,
 			'large_rebuilt'     => false,
 			'db_done'           => false,
 			'db_stats'          => null,
-			'target_siteurl'    => ! empty( $current_siteurl ) ? $current_siteurl : $detected_url,
-			'target_home'       => ! empty( $current_home ) ? $current_home : $detected_url,
+			'target_siteurl'    => $current_siteurl,
+			'target_home'       => $current_home,
 			'files_done'        => false,
 			'files_copied'      => 0,
 			'auth_token_hash'   => hash( 'sha256', $restore_token ),
 			'auth_expires_at'   => time() + 7200,
 			'log'               => array( '[Início da Restauração] ' . current_time( 'Y-m-d H:i:s' ) ),
+			'status'            => DD_Maintenance_Session_Policy::STATUS_CREATED,
+			'started_at'        => time(),
+			'updated_at'        => time(),
+			'finished_at'       => null,
+			'last_step'         => 'restore_init',
 			'created_at'        => time(),
-			'apply_elementor_compatibility' => $apply_elementor_compatibility,
-			'correlation_id' => $correlation_id,
 		);
 		if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
 			$this->session_store->remove_directory( $extract_dir );
@@ -485,7 +505,8 @@ class DD_Maintenance_Restore_Implementation {
 		return $this->session_store->load(
 			$extract_dir,
 			'restore_session_missing',
-			'restore_session_corrupted'
+			'restore_session_corrupted',
+			'restore'
 		);
 	}
 
@@ -503,14 +524,15 @@ class DD_Maintenance_Restore_Implementation {
 		}
 
 		$session = $this->get_restore_session_data( $session_id );
-		if ( is_wp_error( $session )
-			|| empty( $session['auth_token_hash'] )
-			|| empty( $session['auth_expires_at'] )
-			|| time() > (int) $session['auth_expires_at'] ) {
+		if ( is_wp_error( $session ) ) {
 			return false;
 		}
-
+		if ( empty( $session['auth_token_hash'] ) || empty( $session['auth_expires_at'] ) || time() > (int) $session['auth_expires_at'] ) {
+			$this->session_store->release( $session['extract_dir'] );
+			return false;
+		}
 		if ( ! hash_equals( (string) $session['auth_token_hash'], hash( 'sha256', $token ) ) ) {
+			$this->session_store->release( $session['extract_dir'] );
 			return false;
 		}
 
@@ -529,7 +551,7 @@ class DD_Maintenance_Restore_Implementation {
 	 * @return bool
 	 */
 	public function save_restore_session_data( string $extract_dir, array $session ): bool {
-		$saved = $this->session_store->save( $extract_dir, $session );
+		$saved = $this->session_store->save( $extract_dir, $session, 'restore' );
 		if ( ! $saved && class_exists( 'DD_Maintenance' ) && method_exists( 'DD_Maintenance', 'record_event' ) ) {
 			$step = 'restore_init';
 			if ( array_key_exists( 'files_queue_created', $session ) || ! empty( $session['files_done'] ) ) {
@@ -587,6 +609,7 @@ class DD_Maintenance_Restore_Implementation {
 				}
 			}
 
+			$this->session_store->release( $extract_dir );
 			return array(
 				'completed'     => true,
 				'current_index' => $total_volumes,
@@ -594,7 +617,7 @@ class DD_Maintenance_Restore_Implementation {
 				'percent'       => 100,
 				'log'           => __( '[OK] Extração de todos os volumes concluída.', 'dd-maintenance' ),
 			);
-		}
+			}
 
 		$processed = 0;
 		$deadline  = microtime( true ) + 8.0;
@@ -602,9 +625,13 @@ class DD_Maintenance_Restore_Implementation {
 
 		while ( $current_index < $total_volumes && $processed < $batch_limit && microtime( true ) < $deadline ) {
 			$zip_path = $zip_paths[ $current_index ];
-
+			$expected_size = (int) ( $session['zip_sizes'][ $current_index ] ?? 0 );
+			$expected_checksum = (string) ( $session['zip_checksums'][ $current_index ] ?? '' );
 			if ( is_link( $zip_path ) || ! is_file( $zip_path ) || filesize( $zip_path ) <= 0 ) {
 				return new WP_Error( 'restore_zip_invalid', sprintf( __( 'Arquivo de lote inválido: %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
+			}
+			if ( ( $expected_size > 0 && (int) filesize( $zip_path ) !== $expected_size ) || ( '' !== $expected_checksum && hash_file( 'sha256', $zip_path ) !== $expected_checksum ) ) {
+				return new WP_Error( 'restore_volume_checksum_mismatch', sprintf( __( 'O volume de restauração foi alterado: %s.', 'dd-maintenance' ), basename( $zip_path ) ) );
 			}
 
 			$zip = new ZipArchive();
@@ -675,6 +702,7 @@ class DD_Maintenance_Restore_Implementation {
 		}
 
 		if ( ! empty( $session['db_done'] ) ) {
+			$this->session_store->release( $session['extract_dir'] );
 			return array(
 				'completed' => true,
 				'has_sql'   => ! empty( $session['db_file'] ),
@@ -763,6 +791,9 @@ class DD_Maintenance_Restore_Implementation {
 				'correlation_id' => $session['correlation_id'] ?? '',
 			)
 		);
+		$restore_constraints = static function ( DD_Maintenance_Restore_Database_Adapter $adapter ): void {
+			$adapter->execute( 'SET FOREIGN_KEY_CHECKS = 1;' );
+		};
 
 		if ( empty( $session['db_initialized'] ) ) {
 			$setup_queries = $use_mysqli
@@ -778,6 +809,7 @@ class DD_Maintenance_Restore_Implementation {
 				$setup_result = $database->execute_required( $setup_query, 'restore_db_init_failed', __( 'Não foi possível preparar o banco de dados para restauração.', 'dd-maintenance' ) );
 				if ( is_wp_error( $setup_result ) ) {
 					fclose( $handle );
+					$restore_constraints( $database );
 					return $setup_result;
 				}
 			}
@@ -850,11 +882,13 @@ class DD_Maintenance_Restore_Implementation {
 							$commit_result = $database->execute_required( 'COMMIT;', 'restore_db_commit_failed', __( 'Não foi possível confirmar o lote restaurado.', 'dd-maintenance' ) );
 							if ( is_wp_error( $commit_result ) ) {
 								fclose( $handle );
+								$restore_constraints( $database );
 								return $commit_result;
 							}
 							$start_result = $database->execute_required( 'START TRANSACTION;', 'restore_db_commit_failed', __( 'Não foi possível reabrir a transação do banco restaurado.', 'dd-maintenance' ) );
 							if ( is_wp_error( $start_result ) ) {
 								fclose( $handle );
+								$restore_constraints( $database );
 								return $start_result;
 							}
 							$uncommited_cnt = 0;
@@ -867,6 +901,7 @@ class DD_Maintenance_Restore_Implementation {
 		$current_offset = ftell( $handle );
 		if ( false === $current_offset ) {
 			fclose( $handle );
+			$restore_constraints( $database );
 			return new WP_Error( 'restore_sql_offset_failed', __( 'Não foi possível salvar o ponto de continuação do arquivo SQL.', 'dd-maintenance' ) );
 		}
 		$percent = min( 100, max( 0, (int) floor( ( $current_offset / $file_size ) * 100 ) ) );
@@ -877,6 +912,7 @@ class DD_Maintenance_Restore_Implementation {
 		if ( $use_mysqli ) {
 			$commit_result = $database->execute_required( 'COMMIT;', 'restore_db_commit_failed', __( 'Não foi possível confirmar o restore do banco de dados.', 'dd-maintenance' ) );
 			if ( is_wp_error( $commit_result ) ) {
+				$restore_constraints( $database );
 				return $commit_result;
 			}
 		}
@@ -891,6 +927,7 @@ class DD_Maintenance_Restore_Implementation {
 		$session['db_query_buffer']  = $buffer;
 		if ( $eof_reached ) {
 			if ( ! $this->save_restore_session_data( $extract_dir, $session ) ) {
+				$restore_constraints( $database );
 				return new WP_Error( 'restore_session_save_failed', __( 'Não foi possível confirmar o checkpoint da importação antes do pós-processamento.', 'dd-maintenance' ) );
 			}
 			$postprocess = $this->finalize_database_restore( $session, $database );
@@ -969,6 +1006,7 @@ class DD_Maintenance_Restore_Implementation {
 		}
 
 		if ( ! empty( $session['files_done'] ) ) {
+			$this->session_store->release( $session['extract_dir'] );
 			return array(
 				'completed' => true,
 				'copied'    => $session['files_copied'] ?? 0,
@@ -1241,6 +1279,7 @@ class DD_Maintenance_Restore_Implementation {
 					'cleanup'        => $cleanup_errors,
 				)
 			);
+			$this->session_store->release( $extract_dir );
 			return new WP_Error( 'restore_cleanup_failed', sprintf( __( 'A restauração foi concluída, mas a limpeza falhou: %s.', 'dd-maintenance' ), implode( ', ', $cleanup_errors ) ) );
 		}
 
@@ -1256,6 +1295,7 @@ class DD_Maintenance_Restore_Implementation {
 
 		$session['log'][] = '[Fim da Restauração] ' . current_time( 'Y-m-d H:i:s' );
 
+		$this->session_store->release( $extract_dir );
 		return array(
 			'success'  => true,
 			'log'      => $session['log'],
@@ -1321,69 +1361,8 @@ class DD_Maintenance_Restore_Implementation {
 	 * @return array|WP_Error
 	 */
 	private function restore_archive_set( array $zip_paths, bool $apply_elementor_compatibility = false ) {
-		$session = $this->init_restore_session( $zip_paths, '', $apply_elementor_compatibility );
-		if ( is_wp_error( $session ) ) {
-			return $session;
-		}
-
-		$session_id = $session['session_id'];
-
-		do {
-			$ext_res = $this->extract_volume_step( $session_id, 10 );
-			if ( is_wp_error( $ext_res ) ) {
-				$cleanup = $this->cleanup_failed_restore( $session_id );
-				return $this->merge_cleanup_error( $ext_res, $cleanup );
-			}
-		} while ( empty( $ext_res['completed'] ) );
-
-		do {
-			$db_res = $this->restore_database_step( $session_id );
-			if ( is_wp_error( $db_res ) ) {
-				$cleanup = $this->cleanup_failed_restore( $session_id );
-				return $this->merge_cleanup_error( $db_res, $cleanup );
-			}
-		} while ( empty( $db_res['completed'] ) );
-
-		do {
-			$files_res = $this->restore_files_step( $session_id );
-			if ( is_wp_error( $files_res ) ) {
-				$cleanup = $this->cleanup_failed_restore( $session_id );
-				return $this->merge_cleanup_error( $files_res, $cleanup );
-			}
-		} while ( empty( $files_res['completed'] ) );
-		$final_result = $this->finalize_restore_step( $session_id );
-		$correlation_id = $session['correlation_id'] ?? '';
-		if ( is_wp_error( $final_result ) ) {
-			DD_Maintenance::record_event(
-				'restore',
-				'operation_failed',
-				array(
-					'step'           => 'restore_finalize',
-					'session_id'     => $session_id,
-					'correlation_id' => $correlation_id,
-					'status'         => 'failure',
-					'failure_code'   => $final_result->get_error_code(),
-					'error_count'    => 1,
-				)
-			);
-		} else {
-			$warnings = ! empty( $final_result['warnings'] ) && is_array( $final_result['warnings'] ) ? $final_result['warnings'] : array();
-			DD_Maintenance::record_event(
-				'restore',
-				'operation_finished',
-				array(
-					'step'           => 'restore_finalize',
-					'session_id'     => $session_id,
-					'correlation_id' => $correlation_id,
-					'status'         => empty( $warnings ) ? 'success' : 'warning',
-					'progress'       => 100,
-					'error_count'    => count( $warnings ),
-					'warning_count'  => count( $warnings ),
-					'failure_code'   => empty( $warnings ) ? '' : 'restore_warnings',
-				)
-			);
-		}
-		return $final_result;
+		$service = new DD_Maintenance_Restore_Archive_Service( $this );
+		return $service->run( $zip_paths, $apply_elementor_compatibility );
 	}
 	/**
 	 * Reconstrói arquivos que atravessaram mais de um volume.
@@ -1545,109 +1524,85 @@ class DD_Maintenance_Restore_Implementation {
 	public function restore_database( string $sql_file ) {
 		global $wpdb;
 
-		// Salva as URLs atuais do site para preservar a navegação no domínio atual após a restauração.
 		$current_siteurl = get_option( 'siteurl', '' );
 		$current_home    = get_option( 'home', '' );
-
-		$handle = fopen( $sql_file, 'r' );
+		$handle          = fopen( $sql_file, 'r' );
 		if ( ! $handle ) {
 			return new WP_Error( 'restore_sql_open_failed', __( 'Não foi possível ler o arquivo SQL do banco de dados.', 'dd-maintenance' ) );
 		}
 
-		// Desativa temporariamente checagem de foreign keys.
-		$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 0;' );
+		$database = new DD_Maintenance_Restore_Database_Adapter( $wpdb );
+		$executor = new DD_Maintenance_Restore_Query_Executor( $database );
+		$parser   = new DD_Maintenance_Restore_Sql_Parser();
+		$finalizer = new DD_Maintenance_Restore_Database_Finalizer();
+		$warnings = array();
+		$changed  = 0;
 
-		$query_buffer  = '';
-		$query_count   = 0;
-		$table_count   = 0;
-		$error_count   = 0;
-		$in_string     = false;
-		$string_char   = '';
-
-		while ( ! feof( $handle ) ) {
-			$line = fgets( $handle );
-			if ( false === $line ) {
-				break;
-			}
-
-			$trimmed = trim( $line );
-
-			// Pula linhas de comentário simples caso não esteja dentro de uma string.
-			if ( ! $in_string ) {
-				if ( '' === $trimmed || 0 === strpos( $trimmed, '--' ) || 0 === strpos( $trimmed, '/*' ) || 0 === strpos( $trimmed, '#' ) ) {
-					continue;
-				}
-			}
-
-			$query_buffer .= $line;
-
-			// Verifica fim de comando SQL delimitado por ponto e vírgula.
-			$len = strlen( $line );
-			for ( $i = 0; $i < $len; $i++ ) {
-				$char = $line[ $i ];
-
-				if ( "'" === $char || '"' === $char || '`' === $char ) {
-					if ( ! $in_string ) {
-						$in_string   = true;
-						$string_char = $char;
-					} elseif ( $string_char === $char ) {
-						// Verifica se não é escape de barra (\').
-						$escaped = false;
-						$j       = $i - 1;
-						while ( $j >= 0 && '\\' === $line[ $j ] ) {
-							$escaped = ! $escaped;
-							$j--;
-						}
-						if ( ! $escaped ) {
-							$in_string   = false;
-							$string_char = '';
-						}
-					}
-				}
-			}
-
-			if ( ! $in_string && preg_match( '/;\s*$/', $trimmed ) ) {
-				$sql = trim( $query_buffer );
-				$query_buffer = '';
-
-				if ( '' !== $sql ) {
-					// Ignora comandos de criação ou troca de banco de dados para manter sempre o banco ativo do wp-config.php.
-					if ( preg_match( '/^(CREATE DATABASE|DROP DATABASE|USE\s+)/i', $sql ) ) {
-						continue;
-					}
-
-					if ( preg_match( '/^(CREATE TABLE|DROP TABLE)/i', $sql ) ) {
-						$table_count++;
-					}
-
-					$result = $wpdb->query( $sql );
-					if ( false === $result && ! empty( $wpdb->last_error ) ) {
-						$error_count++;
-					}
-					$query_count++;
-				}
-			}
+		$setup = $executor->execute_required(
+			'SET FOREIGN_KEY_CHECKS = 0;',
+			'restore_db_init_failed',
+			__( 'Não foi possível preparar o banco de dados para restauração.', 'dd-maintenance' )
+		);
+		if ( is_wp_error( $setup ) ) {
+			fclose( $handle );
+			return $setup;
 		}
 
-		fclose( $handle );
-
-		// Restaura checagem de foreign keys.
-		$wpdb->query( 'SET FOREIGN_KEY_CHECKS = 1;' );
-
-		// Garante que o site continue acessível no domínio atual (caso o backup tenha vindo de outro domínio).
-		if ( ! empty( $current_siteurl ) ) {
-			$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
-			$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'siteurl'", $current_siteurl ) );
+		try {
+			$parsed = $parser->parse(
+				$handle,
+				static function ( string $sql ) use ( $executor, &$changed ): bool {
+					$result = $executor->execute( $sql );
+					if ( false !== $result && is_int( $result ) ) {
+						$changed += max( 0, $result );
+					}
+					return true;
+				}
+			);
+		} finally {
+			fclose( $handle );
 		}
-		if ( ! empty( $current_home ) ) {
-			$options_table = ! empty( $wpdb->options ) ? $wpdb->options : $wpdb->prefix . 'options';
-			$wpdb->query( $wpdb->prepare( "UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = 'home'", $current_home ) );
+
+		$connection_result = $finalizer->restore_connection( $executor );
+		if ( is_wp_error( $connection_result ) ) {
+			return $connection_result;
+		}
+		if ( ! empty( $parsed['buffer'] ) ) {
+			$warnings[] = 'O dump terminou com um comando SQL incompleto; o trecho final foi ignorado.';
+		}
+
+		$options_table = ! empty( $wpdb->options ) ? (string) $wpdb->options : (string) $wpdb->prefix . 'options';
+		if ( ! DD_Maintenance_Restore_Database_Finalizer::validate_prefix( (string) $wpdb->prefix ) || ! DD_Maintenance_Restore_Database_Adapter::is_safe_identifier( $options_table ) ) {
+			return new WP_Error( 'restore_prefix_invalid', __( 'O prefixo atual do banco contém caracteres inválidos.', 'dd-maintenance' ) );
+		}
+
+		foreach ( array( 'siteurl' => $current_siteurl, 'home' => $current_home ) as $option_name => $option_value ) {
+			if ( ! is_string( $option_value ) || ! preg_match( '#^https?://[^\\s]+#i', $option_value ) ) {
+				$warnings[] = sprintf( 'A opção %s não possui uma URL confiável; atualização ignorada.', $option_name );
+				continue;
+			}
+			$result = $executor->execute_required(
+				$database->prepare(
+					"UPDATE `{$options_table}` SET `option_value` = %s WHERE `option_name` = %s",
+					untrailingslashit( $option_value ),
+					$option_name
+				),
+				'restore_option_update_failed',
+				sprintf( __( 'Não foi possível atualizar a opção obrigatória %s.', 'dd-maintenance' ), $option_name )
+			);
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
 		}
 
 		return array(
-			'queries' => $query_count,
-			'tables'  => $table_count,
-			'errors'  => $error_count,
+			'queries'       => $parsed['queries'],
+			'tables'        => $parsed['tables'],
+			'skipped'       => $parsed['skipped'],
+			'errors'        => $executor->error_count(),
+			'error_samples' => $executor->error_samples(),
+			'warnings'      => $warnings,
+			'rows_changed'  => $changed,
 		);
 	}
 
@@ -2005,6 +1960,33 @@ class DD_Maintenance_Restore_Implementation {
 	}
 
 	/**
+	 * Aceita apenas URLs de site persistidas e sem componentes ambíguos.
+	 *
+	 * O host da requisição não é uma fonte confiável para configurar uma
+	 * restauração: ele pode ser controlado por cabeçalhos enviados ao servidor.
+	 *
+	 * @param mixed $value Valor persistido na opção do WordPress.
+	 * @return string
+	 */
+	private static function trusted_site_url( $value ): string {
+		if ( ! is_string( $value ) ) {
+			return '';
+		}
+		$value  = trim( $value );
+		$parsed = parse_url( $value );
+		if ( false === $parsed || empty( $parsed['scheme'] ) || empty( $parsed['host'] ) ) {
+			return '';
+		}
+		if ( ! in_array( strtolower( $parsed['scheme'] ), array( 'http', 'https' ), true ) ) {
+			return '';
+		}
+		if ( isset( $parsed['user'] ) || isset( $parsed['pass'] ) || isset( $parsed['query'] ) || isset( $parsed['fragment'] ) ) {
+			return '';
+		}
+		return rtrim( $value, '/' );
+	}
+
+	/**
 	 * Tenta elevar limites de execução e memória para restaurar grandes backups.
 	 */
 	private function set_time_and_memory_limits() {
@@ -2026,36 +2008,22 @@ class DD_Maintenance_Restore_Implementation {
 	private function finalize_database_restore( array $session, DD_Maintenance_Restore_Database_Adapter $database ) {
 		global $wpdb;
 
-		$cleanup_queries = $database->uses_mysqli()
-			? array(
-				'COMMIT;',
-				'SET AUTOCOMMIT = 1;',
-				'SET FOREIGN_KEY_CHECKS = 1;',
-				'SET UNIQUE_CHECKS = 1;',
-			)
-			: array( 'SET FOREIGN_KEY_CHECKS = 1;' );
-		foreach ( $cleanup_queries as $cleanup_query ) {
-			if ( ! $database->execute( $cleanup_query ) ) {
-				return new WP_Error( 'restore_db_finalize_failed', __( 'Não foi possível finalizar a conexão do banco restaurado.', 'dd-maintenance' ) );
-			}
+		$finalizer = new DD_Maintenance_Restore_Database_Finalizer();
+		$executor  = new DD_Maintenance_Restore_Query_Executor( $database );
+		$connection_result = $finalizer->restore_connection( $executor );
+		if ( is_wp_error( $connection_result ) ) {
+			return $connection_result;
 		}
 
-		$detected_tables = $database->get_col( "SHOW TABLES LIKE '%options'" );
-		$dump_prefix     = ! empty( $wpdb->prefix ) ? (string) $wpdb->prefix : 'wp_';
-		if ( ! DD_Maintenance_Restore_Database_Adapter::is_safe_identifier( $dump_prefix ) ) {
-			return new WP_Error( 'restore_prefix_invalid', __( 'O prefixo atual do banco contém caracteres inválidos.', 'dd-maintenance' ) );
+		$discovered = $finalizer->discover_options_table(
+			$database,
+			! empty( $wpdb->prefix ) ? (string) $wpdb->prefix : 'wp_'
+		);
+		if ( is_wp_error( $discovered ) ) {
+			return $discovered;
 		}
-		$options_table = '';
-		if ( is_array( $detected_tables ) ) {
-			foreach ( $detected_tables as $table ) {
-				if ( ! is_string( $table ) || ! preg_match( '/^([A-Za-z0-9_]+)options$/', $table, $matches ) ) {
-					continue;
-				}
-				$dump_prefix   = $matches[1];
-				$options_table = $table;
-				break;
-			}
-		}
+		$dump_prefix   = $discovered['prefix'];
+		$options_table = $discovered['table'];
 		if ( '' === $options_table ) {
 			return array(
 				'errors'        => $database->error_count(),
@@ -2143,7 +2111,8 @@ class DD_Maintenance_Restore_Implementation {
 		}
 
 		if ( ! empty( $old_siteurl ) && ! empty( $target_siteurl ) ) {
-			$warnings = array_merge( $warnings, $this->perform_url_search_replace( $old_siteurl, $target_siteurl, $dump_prefix, $database ) );
+			$migrator = new DD_Maintenance_Restore_Url_Migrator();
+			$warnings = array_merge( $warnings, $migrator->warnings( $this, $old_siteurl, $target_siteurl, $dump_prefix, $database ) );
 		}
 		$warnings = array_merge( $warnings, self::ensure_elementor_active_kit( $dump_prefix, $database ) );
 		$warnings = array_merge( $warnings, self::rebuild_elementor_theme_builder_conditions( $dump_prefix, $database ) );
@@ -2800,63 +2769,8 @@ class DD_Maintenance_Restore_Implementation {
 	 * @param array $event_context Contexto operacional seguro.
 	 */
 	public static function create_mu_plugin_loader( array $event_context = array() ): bool {
-		$mu_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
-		if ( ! is_dir( $mu_dir ) ) {
-			wp_mkdir_p( $mu_dir );
-		}
-		if ( ! is_dir( $mu_dir ) ) {
-			self::record_mu_plugin_loader_failure( 'mu_loader_create_failed', $event_context );
-			return false;
-		}
-		if ( is_dir( $mu_dir ) ) {
-			$loader_code = "<?php\n"
-				. "// DD Maintenance restore persistence and database recovery drop-in\n"
-				. "defined( 'ABSPATH' ) || exit;\n\n"
-				. "if ( ( isset( \$_POST['action'] ) && 'dd_maintenance_ajax_restore' === \$_POST['action'] )"
-				. " || ( isset( \$_GET['action'] ) && 'dd_maintenance_ajax_restore' === \$_GET['action'] ) ) {\n"
-				. "    add_filter( 'pre_option_siteurl', static function( \$val ) {\n"
-				. "        return ! empty( \$val ) ? \$val : ( ( is_ssl() ? 'https://' : 'http://' ) . ( \$_SERVER['HTTP_HOST'] ?? 'localhost' ) );\n"
-				. "    }, 1 );\n"
-				. "    add_filter( 'pre_option_home', static function( \$val ) {\n"
-				. "        return ! empty( \$val ) ? \$val : ( ( is_ssl() ? 'https://' : 'http://' ) . ( \$_SERVER['HTTP_HOST'] ?? 'localhost' ) );\n"
-				. "    }, 1 );\n"
-				. "    add_filter( 'wp_die_handler', static function() {\n"
-				. "        return static function( \$message, \$title = '', \$args = array() ) {\n"
-				. "            if ( is_string( \$message ) && false !== strpos( \$message, 'database tables are unavailable' ) ) {\n"
-				. "                return;\n"
-				. "            }\n"
-				. "            if ( function_exists( '_default_wp_die_handler' ) ) {\n"
-				. "                _default_wp_die_handler( \$message, \$title, \$args );\n"
-				. "            }\n"
-				. "        };\n"
-				. "    }, 1 );\n"
-				. "}\n\n"
-				. "if ( ! class_exists( 'DD_Maintenance' ) ) {\n"
-				. "    \$candidates = array(\n"
-				. "        __DIR__ . '/../plugins/dd-maintenance/dd-maintenance.php',\n"
-				. "        __DIR__ . '/../plugins/backuper/backuper.php',\n"
-				. "        defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/dd-maintenance/dd-maintenance.php' : '',\n"
-				. "        defined( 'WP_PLUGIN_DIR' ) ? WP_PLUGIN_DIR . '/backuper/backuper.php' : '',\n"
-				. "    );\n"
-				. "    foreach ( \$candidates as \$file ) {\n"
-				. "        if ( ! empty( \$file ) && file_exists( \$file ) ) {\n"
-				. "            require_once \$file;\n"
-				. "            break;\n"
-				. "        }\n"
-				. "    }\n"
-				. "}\n"
-				. "if ( class_exists( 'DD_Maintenance' ) ) {\n"
-				. "    DD_Maintenance::instance();\n"
-				. "}\n";
-			$loader_file = $mu_dir . '/dd-maintenance-loader.php';
-			$written = file_put_contents( $loader_file, $loader_code, LOCK_EX );
-			if ( false === $written || (int) $written !== strlen( $loader_code ) ) {
-				if ( file_exists( $loader_file ) ) {
-					unlink( $loader_file );
-				}
-				self::record_mu_plugin_loader_failure( 'mu_loader_create_failed', $event_context );
-				return false;
-			}
+		$loader = new DD_Maintenance_Restore_Mu_Loader();
+		if ( $loader->create() ) {
 			return true;
 		}
 		self::record_mu_plugin_loader_failure( 'mu_loader_create_failed', $event_context );
@@ -2884,15 +2798,11 @@ class DD_Maintenance_Restore_Implementation {
 	 * @return bool
 	 */
 	public static function remove_mu_plugin_loader( array $event_context = array() ): bool {
-		$mu_dir      = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
-		$loader_file = $mu_dir . '/dd-maintenance-loader.php';
-		if ( ! file_exists( $loader_file ) ) {
+		$loader = new DD_Maintenance_Restore_Mu_Loader();
+		if ( $loader->remove() ) {
 			return true;
 		}
-		if ( ! unlink( $loader_file ) ) {
-			self::record_mu_plugin_loader_failure( 'mu_loader_remove_failed', $event_context );
-			return false;
-		}
-		return true;
+		self::record_mu_plugin_loader_failure( 'mu_loader_remove_failed', $event_context );
+		return false;
 	}
 }

@@ -31,7 +31,11 @@ class DD_Maintenance_Backup_Action_Controller {
 
 		foreach ( $actions as $hook => $method ) {
 			$callback = function () use ( $method ) {
-				return call_user_func_array( array( $this->settings, $method ), func_get_args() );
+				$args = func_get_args();
+				if ( 'ajax_handle_action' === $method ) {
+					$args = array( DD_Maintenance_Backup_Request::from_globals() );
+				}
+				return call_user_func_array( array( $this->settings, $method ), $args );
 			};
 			if ( 0 === strpos( $hook, 'admin_post_backuper_' ) ) {
 				DD_Maintenance_Legacy_Compatibility::register_legacy_hook( $hook, $callback );

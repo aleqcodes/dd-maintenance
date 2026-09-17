@@ -14,18 +14,21 @@ require_once __DIR__ . '/class-dd-maintenance-archive-service.php';
 require_once __DIR__ . '/class-dd-maintenance-restore-database-service.php';
 require_once __DIR__ . '/class-dd-maintenance-url-migration-service.php';
 require_once __DIR__ . '/class-dd-maintenance-restore-elementor-adapter.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-finalizer-service.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-cleanup-service.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-file-copier.php';
+require_once __DIR__ . '/class-dd-maintenance-restore-database-importer.php';
 
 class DD_Maintenance_Restore {
-	/** @var DD_Maintenance_Restore_Implementation */
 	private $implementation;
-	/** @var DD_Maintenance_Restore_Session_Service */
 	private $sessions;
-	/** @var DD_Maintenance_Restore_Files_Service */
 	private $files;
-	/** @var DD_Maintenance_Archive_Service */
 	private $archives;
-	/** @var DD_Maintenance_Restore_Database_Service */
 	private $database;
+	private $database_importer;
+	private $finalizer;
+	private $cleanup;
+	private $file_copier;
 
 	/**
 	 * @param DD_Maintenance_Restore_Implementation|null $implementation Implementação dos serviços.
@@ -36,7 +39,12 @@ class DD_Maintenance_Restore {
 		$this->files          = new DD_Maintenance_Restore_Files_Service( $this->implementation );
 		$this->archives       = new DD_Maintenance_Archive_Service( $this->implementation );
 		$this->database       = new DD_Maintenance_Restore_Database_Service( $this->implementation );
+		$this->database_importer = new DD_Maintenance_Restore_Database_Importer( $this->implementation );
+		$this->finalizer      = new DD_Maintenance_Restore_Finalizer_Service( $this->implementation );
+		$this->cleanup        = new DD_Maintenance_Restore_Cleanup_Service( $this->implementation );
+		$this->file_copier    = new DD_Maintenance_Restore_File_Copier( $this->implementation );
 	}
+ 
 
 	/** @return array|WP_Error */
 	public function restore_from_upload( array $file_input, bool $apply_elementor_compatibility = false ) { return $this->archives->from_upload( $file_input, $apply_elementor_compatibility ); }
@@ -59,19 +67,19 @@ class DD_Maintenance_Restore {
 	/** @return array|WP_Error */
 	public function extract_volume_step( string $session_id, int $batch_limit = 10 ) { return $this->files->extract_volume_step( $session_id, $batch_limit ); }
 	/** @return array|WP_Error */
-	public function restore_database_step( string $session_id, float $time_limit_seconds = 7.0 ) { return $this->database->step( $session_id, $time_limit_seconds ); }
+	public function restore_database_step( string $session_id, float $time_limit_seconds = 7.0 ) { return $this->database_importer->step( $session_id, $time_limit_seconds ); }
 	/** @return array|WP_Error */
-	public function restore_files_step( string $session_id ) { return $this->files->step( $session_id ); }
+	public function restore_files_step( string $session_id ) { return $this->file_copier->step( $session_id ); }
 	/** @return array|WP_Error */
-	public function finalize_restore_step( string $session_id ) { return $this->implementation->finalize_restore_step( $session_id ); }
+	public function finalize_restore_step( string $session_id ) { return $this->finalizer->run( $session_id ); }
 	/** @return array */
-	public function cleanup_failed_restore( string $session_id ): array { return $this->implementation->cleanup_failed_restore( $session_id ); }
+	public function cleanup_failed_restore( string $session_id ): array { return $this->cleanup->failed( $session_id ); }
 	/** @return array|WP_Error */
-	public function restore_database( string $sql_file ) { return $this->database->restore( $sql_file ); }
+	public function restore_database( string $sql_file ) { return $this->database_importer->import( $sql_file ); }
 	/** @return array|WP_Error */
 	public function restore_files( string $extract_dir ) { return $this->files->restore( $extract_dir ); }
 	/** @return int|WP_Error */
-	public function copy_directory( string $source_dir, string $dest_dir, array $ignore_paths = array() ) { return $this->files->copy_directory( $source_dir, $dest_dir, $ignore_paths ); }
+	public function copy_directory( string $source_dir, string $dest_dir, array $ignore_paths = array() ) { return $this->file_copier->copy( $source_dir, $dest_dir, $ignore_paths ); }
 
 	/** @return array */
 	public static function get_local_backups(): array { return DD_Maintenance_Archive_Service::local_backups(); }

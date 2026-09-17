@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<ruleset name="DD Maintenance Legacy">
+    <description>Regras mínimas para contratos legacy isolados.</description>
+    <file>backuper.php</file>
+    <file>includes/class-dd-maintenance-legacy-compatibility.php</file>
+    <rule ref="WordPress.Security.EscapeOutput" />
+    <rule ref="Universal.Operators.StrictComparisons" />
+    <rule ref="WordPress.PHP.StrictInArray" />
+</ruleset>

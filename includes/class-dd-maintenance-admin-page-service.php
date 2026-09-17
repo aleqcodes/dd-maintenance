@@ -17,7 +17,7 @@ class DD_Maintenance_Admin_Page_Service {
 
 	/** @param DD_Maintenance_Settings_Implementation|null $settings Implementação administrativa. */
 	public function __construct( $settings = null ) {
-		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation( false );
+		$this->settings = $settings instanceof DD_Maintenance_Settings_Implementation ? $settings : new DD_Maintenance_Settings_Implementation();
 	}
 
 	public function page_url( $tab = '' ): string { return $this->settings->page_url( $tab ); }

@@ -324,7 +324,22 @@ class DD_Maintenance {
 				);
 			}
 		}
-
+		try {
+			self::purge_old_event_files();
+		} catch ( Throwable $e ) {
+			if ( function_exists( 'set_transient' ) ) {
+				set_transient(
+					'dd_maintenance_last_event_retention_error',
+					array(
+						'code'           => 'event_retention_failed',
+						'operation'      => $payload['operation'],
+						'event'          => $payload['event'],
+						'correlation_id' => $payload['correlation_id'],
+					),
+					DAY_IN_SECONDS
+				);
+			}
+		}
 		if ( function_exists( 'set_transient' ) ) {
 			set_transient( 'dd_maintenance_last_event', $payload, DAY_IN_SECONDS );
 		}
@@ -355,7 +370,7 @@ class DD_Maintenance {
 	 */
 	public static function save_log( $log, string $status = 'success', string $base_name = '' ): string {
 		$lines = is_array( $log ) ? $log : explode( "\n", (string) $log );
-		$lines = array_values( array_filter( array_map( 'trim', $lines ) ) );
+		$lines = DD_Maintenance_Observability::sanitize_log_lines( array_values( array_filter( array_map( 'trim', $lines ) ) ) );
 
 		set_transient( 'dd_maintenance_last_log', $lines, DAY_IN_SECONDS );
 		set_transient( 'backuper_last_log', $lines, DAY_IN_SECONDS );
@@ -393,7 +408,7 @@ class DD_Maintenance {
 			$write_ok = false;
 		}
 		try {
-			self::purge_old_log_files( 30 );
+			self::purge_old_log_files( DD_Maintenance_Observability::LOG_RETENTION_FILES );
 		} catch ( Throwable $e ) {
 			// Falha de retenção não deve ocultar o resultado da gravação do log.
 		}
@@ -435,6 +450,30 @@ class DD_Maintenance {
 		for ( $i = $keep; $i < $total; $i++ ) {
 			if ( is_file( $files[ $i ] ) ) {
 				unlink( $files[ $i ] );
+			}
+		}
+	}
+
+	/**
+	 * Remove arquivos JSONL de eventos antigos mantendo a retenção definida.
+	 *
+	 * @param int $keep Quantidade máxima de arquivos diários.
+	 */
+	public static function purge_old_event_files( int $keep = DD_Maintenance_Observability::EVENT_RETENTION_FILES ): void {
+		$dir   = self::logs_dir();
+		$files = glob( $dir . '/events-*.jsonl' );
+		if ( ! is_array( $files ) || count( $files ) <= $keep ) {
+			return;
+		}
+		usort(
+			$files,
+			function( $a, $b ) {
+				return filemtime( $b ) - filemtime( $a );
+			}
+		);
+		foreach ( array_slice( $files, $keep ) as $file ) {
+			if ( is_file( $file ) ) {
+				unlink( $file );
 			}
 		}
 	}
@@ -554,6 +593,8 @@ class DD_Maintenance {
 			}
 		}
 		delete_transient( 'dd_maintenance_last_event' );
+		delete_transient( 'dd_maintenance_last_event_error' );
+		delete_transient( 'dd_maintenance_last_event_retention_error' );
 
 		return $count;
 	}
