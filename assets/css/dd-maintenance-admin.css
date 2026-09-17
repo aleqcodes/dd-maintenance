@@ -1,0 +1,483 @@
+				.dd-maintenance-wrap h1 {
+					display: flex;
+					align-items: center;
+					gap: 8px;
+				}
+				.dd-maintenance-wrap h1 .dashicons {
+					font-size: 30px;
+					width: 30px;
+					height: 30px;
+					line-height: 1;
+					color: #2271b1;
+					display: inline-flex;
+					align-items: center;
+					justify-content: center;
+				}
+				.dd-maintenance-wrap .nav-tab {
+					display: inline-flex;
+					align-items: center;
+					gap: 6px;
+				}
+				.dd-maintenance-wrap .nav-tab .dashicons {
+					font-size: 18px;
+					width: 18px;
+					height: 18px;
+					line-height: 1;
+					margin: 0;
+					display: inline-flex;
+					align-items: center;
+					justify-content: center;
+				}
+				.dd-maintenance-actions {
+					display: flex;
+					flex-wrap: wrap;
+					gap: 12px;
+					align-items: center;
+					margin-top: 16px;
+				}
+				.dd-maintenance-actions form {
+					margin: 0;
+					padding: 0;
+					display: inline-block;
+				}
+				.dd-maintenance-actions .button {
+					display: inline-flex !important;
+					align-items: center !important;
+					justify-content: center !important;
+					gap: 8px !important;
+					height: 42px !important;
+					min-height: 42px !important;
+					line-height: 1 !important;
+					padding: 0 16px !important;
+					font-size: 13px !important;
+					white-space: nowrap !important;
+					box-sizing: border-box !important;
+					cursor: pointer;
+				}
+				.dd-maintenance-actions .button-primary {
+					font-size: 13.5px !important;
+					font-weight: 600 !important;
+					padding: 0 20px !important;
+				}
+				.dd-maintenance-actions .button .dashicons {
+					font-size: 18px !important;
+					width: 18px !important;
+					height: 18px !important;
+					line-height: 18px !important;
+					margin: 0 !important;
+					padding: 0 !important;
+					display: inline-flex !important;
+					align-items: center !important;
+					justify-content: center !important;
+					flex-shrink: 0;
+					vertical-align: middle !important;
+				}
+				.dd-maintenance-actions .button span.btn-text {
+					line-height: 1 !important;
+					display: inline-block !important;
+				}
+				.dd-maintenance-card-title {
+					display: flex;
+					align-items: center;
+					gap: 6px;
+					margin-top: 0;
+				}
+				.dd-maintenance-card-title .dashicons {
+					font-size: 20px;
+					width: 20px;
+					height: 20px;
+					line-height: 1;
+					display: inline-flex;
+					align-items: center;
+					justify-content: center;
+				}
+				.dd-maintenance-wrap h2 {
+					display: flex;
+					align-items: center;
+					gap: 8px;
+				}
+				.dd-maintenance-wrap h2 .dashicons {
+					font-size: 22px;
+					width: 22px;
+					height: 22px;
+					line-height: 1;
+					display: inline-flex;
+					align-items: center;
+					justify-content: center;
+					color: #2271b1;
+					color: #2271b1;
+				}
+				/* Modal de Progresso em Tempo Real */
+				.dd-maint-modal {
+					position: fixed !important;
+					top: 0 !important;
+					left: 0 !important;
+					width: 100vw !important;
+					height: 100vh !important;
+					z-index: 9999999 !important;
+					display: flex;
+					align-items: center;
+					justify-content: center;
+				}
+				.dd-maint-modal-backdrop {
+					position: absolute !important;
+					top: 0 !important;
+					left: 0 !important;
+					width: 100% !important;
+					height: 100% !important;
+					background: rgba(18, 23, 28, 0.75) !important;
+					backdrop-filter: blur(3px) !important;
+				}
+				.dd-maint-modal-dialog {
+					position: relative !important;
+					background: #ffffff !important;
+					width: 92% !important;
+					max-width: 680px !important;
+					max-height: 88vh !important;
+					display: flex !important;
+					flex-direction: column !important;
+					border-radius: 8px !important;
+					box-shadow: 0 15px 35px rgba(0,0,0,0.35) !important;
+					overflow: hidden !important;
+					z-index: 10 !important;
+					animation: ddMaintFadeIn 0.25s ease-out;
+				}
+				.dd-maint-download-box {
+					background: #f0f6fc;
+					border: 1px solid #c8d7e1;
+					border-left: 4px solid #46b450;
+					border-radius: 4px;
+					padding: 12px 14px;
+					margin-bottom: 14px;
+				}
+				#dd-maint-downloads-list {
+					max-height: 220px !important;
+					overflow-y: auto !important;
+					padding-right: 4px !important;
+					display: flex !important;
+					flex-direction: column !important;
+					gap: 5px !important;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar {
+					width: 6px;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar-track {
+					background: #e7eef4;
+					border-radius: 3px;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar-thumb {
+					background: #90a4ae;
+					border-radius: 3px;
+				}
+				#dd-maint-downloads-list::-webkit-scrollbar-thumb:hover {
+					background: #607d8b;
+				}
+				.dd-maint-download-item {
+					display: flex;
+					align-items: center;
+					justify-content: space-between;
+					background: #ffffff;
+					border: 1px solid #dcdcde;
+					border-radius: 4px;
+					padding: 6px 10px;
+					gap: 8px;
+					transition: border-color 0.15s ease, box-shadow 0.15s ease;
+				}
+				.dd-maint-download-item:hover {
+					border-color: #2271b1;
+					box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+				}
+				.dd-maint-download-name {
+					font-family: Consolas, Monaco, monospace;
+					font-size: 11.5px;
+					font-weight: 600;
+					color: #1d2327;
+					word-break: break-all;
+				}
+				.dd-maint-part-badge {
+					display: inline-block;
+					background: #e7f5ea;
+					color: #1a7e37;
+					font-size: 11px;
+					font-weight: 600;
+					padding: 2px 8px;
+					border-radius: 10px;
+					border: 1px solid #b4e2be;
+					white-space: nowrap;
+				}
+				.dd-maint-sql-badge {
+					display: inline-block;
+					background: #f0f6fc;
+					color: #0969da;
+					font-size: 11px;
+					font-weight: 600;
+					padding: 2px 8px;
+					border-radius: 10px;
+					border: 1px solid #c8d7e1;
+					white-space: nowrap;
+				}
+				@keyframes ddMaintFadeIn {
+					from { opacity: 0; transform: translateY(-15px); }
+					to { opacity: 1; transform: translateY(0); }
+				}
+				.dd-maint-modal-header {
+					display: flex !important;
+					align-items: center !important;
+					justify-content: space-between !important;
+					padding: 14px 20px !important;
+					background: #f6f7f7 !important;
+					box-sizing: border-box !important;
+					flex-shrink: 0 !important;
+				}
+				.dd-maint-modal-header h3 {
+					margin: 0 !important;
+					padding: 0 !important;
+					display: flex !important;
+					align-items: center !important;
+					gap: 8px !important;
+					font-size: 15px !important;
+					font-weight: 600 !important;
+					color: #1d2327 !important;
+					line-height: 1.4 !important;
+				}
+				.dd-maint-badge {
+					display: inline-block !important;
+					background: #2271b1 !important;
+					color: #ffffff !important;
+					font-size: 13px !important;
+					padding: 3px 10px !important;
+					border-radius: 12px !important;
+					letter-spacing: 0.5px !important;
+					line-height: 1.4 !important;
+					flex-shrink: 0 !important;
+					box-sizing: border-box !important;
+				}
+				.dd-maint-badge.success {
+					background: #46b450 !important;
+				}
+				.dd-maint-badge.error {
+					background: #d63638 !important;
+				}
+				.dd-maint-badge.warning {
+					background: #dba617 !important;
+				}
+				.dd-maint-modal-body {
+					padding: 16px 20px !important;
+					overflow-y: auto !important;
+					flex: 1 1 auto !important;
+					max-height: calc(88vh - 125px) !important;
+					box-sizing: border-box !important;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar {
+					width: 7px;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar-track {
+					background: #f0f0f1;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar-thumb {
+					background: #c3c4c7;
+					border-radius: 4px;
+				}
+				.dd-maint-modal-body::-webkit-scrollbar-thumb:hover {
+					background: #a7aaad;
+				}
+				.dd-maint-modal-footer {
+					padding: 12px 20px !important;
+					background: #f6f7f7 !important;
+					border-top: 1px solid #dcdcde !important;
+					display: flex !important;
+					justify-content: space-between !important;
+					align-items: center !important;
+					flex-shrink: 0 !important;
+					box-sizing: border-box !important;
+				}
+				.dd-maint-progress-container {
+					width: 100%;
+					height: 18px;
+					background: #e0e0e0;
+					border-radius: 9px;
+					overflow: hidden;
+					margin-bottom: 12px;
+					box-shadow: inset 0 1px 2px rgba(0,0,0,0.12);
+				}
+				.dd-maint-progress-bar {
+					height: 100%;
+					width: 0%;
+					background-color: #2271b1;
+					background-image: linear-gradient(45deg, rgba(255,255,255,0.2) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0.2) 75%, transparent 75%, transparent);
+					background-size: 30px 30px;
+					border-radius: 9px;
+					transition: width 0.35s ease;
+					animation: ddMaintProgressStripes 1s linear infinite;
+				}
+				.dd-maint-progress-bar.success {
+					background-color: #46b450;
+				}
+				.dd-maint-progress-bar.warning {
+					background-color: #dba617;
+				}
+				.dd-maint-progress-bar.error {
+					background-color: #d63638;
+				}
+				@keyframes ddMaintProgressStripes {
+					0% { background-position: 0 0; }
+					100% { background-position: 30px 0; }
+				}
+				.dd-maint-status-text {
+					font-size: 13.5px;
+					font-weight: 500;
+					color: #1d2327;
+					margin: 0 0 14px 0;
+					min-height: 20px;
+				}
+				.dd-maint-console-container {
+					background: #1d2327;
+					border-radius: 5px;
+					border: 1px solid #0c0d0e;
+					overflow: hidden;
+				}
+				.dd-maint-console-header {
+					background: #2c3338;
+					color: #8c8f94;
+					padding: 6px 12px;
+					font-size: 11px;
+					font-weight: 600;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+				}
+				.dd-maint-console {
+					margin: 0;
+					padding: 12px;
+					background: transparent;
+					color: #72aee6;
+					font-family: Consolas, Monaco, monospace;
+					font-size: 12px;
+					line-height: 1.55;
+					max-height: 160px;
+					overflow-y: auto;
+					white-space: pre-wrap;
+					word-break: break-all;
+				}
+				.dd-maint-spin {
+					animation: ddMaintSpin 1.2s linear infinite;
+				}
+				@keyframes ddMaintSpin {
+					100% { transform: rotate(360deg); }
+				}
+
+/* Centralized legacy inline declarations from administrative markup. */
+.dd-maint-style-margin-bottom-16px-79a1c5 {margin-bottom:16px;}
+.dd-maint-style-color-2271b1-5dadfa {color:#2271b1;}
+.dd-maint-style-margin-top-24px-display-flex-align-items-center--47a341 {margin-top:24px;display:flex;align-items:center;gap:6px;}
+.dd-maint-style-margin-30px-0-66f287 {margin:30px 0;}
+.dd-maint-style-color-b32d2e-text-decoration-none-990de9 {color:#b32d2e;text-decoration:none;}
+.dd-maint-style-font-size-13px-width-13px-height-13px-color-2271-df0d9f {font-size:13px;width:13px;height:13px;color:#2271b1;}
+.dd-maint-style-margin-0-1da9fa {margin:0;}
+.dd-maint-style-font-size-11px-color-50575e-margin-right-6px-dis-36c7fe {font-size:11px;color:#50575e;margin-right:6px;display:inline-flex;align-items:center;gap:3px;cursor:pointer;}
+.dd-maint-style-display-inline-block-44c26a {display:inline-block;}
+.dd-maint-style-vertical-align-middle-font-size-14px-width-14px--f0d581 {vertical-align:middle;font-size:14px;width:14px;height:14px;}
+.dd-maint-style-display-block-margin-8px-0-font-size-12px-ebcd62 {display:block;margin:8px 0;font-size:12px;}
+.dd-maint-style-width-105px-height-30px-font-size-12px-ce55b4 {width:105px;height:30px;font-size:12px;}
+.dd-maint-style-display-inline-block-margin-right-6px-15b26a {display:inline-block;margin-right:6px;}
+.dd-maint-style-text-align-right-a527ba {text-align:right;}
+.dd-maint-style-font-size-12px-vertical-align-middle-f45765 {font-size:12px;vertical-align:middle;}
+.dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1 {font-size:13px;vertical-align:middle;line-height:1.4;}
+.dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-5c6531 {display:flex;flex-wrap:wrap;gap:4px;}
+.dd-maint-style-display-flex-flex-direction-column-gap-6px-align-916be7 {display:flex;flex-direction:column;gap:6px;align-items:flex-start;}
+.dd-maint-style-font-weight-600-font-size-12-5px-4f0b20 {font-weight:600;font-size:12.5px;}
+.dd-maint-style-font-size-12-5px-color-50575e-751583 {font-size:12.5px;color:#50575e;}
+.dd-maint-style-margin-2px-0-9d1682 {margin:2px 0;}
+.dd-maint-style-margin-4px-0-0-14px-padding-0-list-style-disc-d66f4b {margin:4px 0 0 14px;padding:0;list-style:disc;}
+.dd-maint-style-cursor-pointer-color-2271b1-159ccf {cursor:pointer;color:#2271b1;}
+.dd-maint-style-margin-top-6px-font-size-11px-color-50575e-f4d163 {margin-top:6px;font-size:11px;color:#50575e;}
+.dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-align-items--6583bc {display:flex;flex-wrap:wrap;gap:4px;align-items:center;}
+.dd-maint-style-font-weight-600-font-family-monospace-font-size--6ede09 {font-weight:600;font-family:monospace;font-size:13px;color:#1d2327;margin-bottom:4px;}
+.dd-maint-style-text-align-right-min-width-180px-31267b {text-align:right;min-width:180px;}
+.dd-maint-style-min-width-210px-860edd {min-width:210px;}
+.dd-maint-style-width-110px-80ffd2 {width:110px;}
+.dd-maint-style-width-140px-7a1ab9 {width:140px;}
+.dd-maint-style-min-width-220px-1576af {min-width:220px;}
+.dd-maint-style-margin-top-12px-border-1px-solid-c3c4c7-bd7524 {margin-top:12px;border:1px solid #c3c4c7;}
+.dd-maint-style-color-72aee6-vertical-align-middle-8f9b66 {color:#72aee6;vertical-align:middle;}
+.dd-maint-style-margin-4px-0-60946a {margin:4px 0;}
+.dd-maint-style-margin-16px-0-598bcd {margin:16px 0;}
+.dd-maint-style-margin-top-0-291b7b {margin-top:0;}
+.dd-maint-style-font-size-12px-color-50575e-background-f0f0f1-pa-719fa0 {font-size:12px;color:#50575e;background:#f0f0f1;padding:4px 10px;border-radius:12px;}
+.dd-maint-style-margin-0-display-flex-align-items-center-gap-8px-b271d5 {margin:0;display:flex;align-items:center;gap:8px;}
+.dd-maint-style-display-flex-justify-content-space-between-align-c674fa {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
+.dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-830b2a {background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:960px;margin-bottom:24px;}
+.dd-maint-style-color-666-font-style-italic-margin-0-a70e5c {color:#666;font-style:italic;margin:0;}
+.dd-maint-style-color-f0f0f1-margin-0-font-family-monospace-font-8a6b87 {color:#f0f0f1;margin:0;font-family:monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;}
+.dd-maint-style-padding-20px-flex-1-overflow-auto-background-1d2-75dcd3 {padding:20px;flex:1;overflow:auto;background:#1d2327;}
+.dd-maint-style-margin-0-font-size-16px-f36234 {margin:0;font-size:16px;}
+.dd-maint-style-padding-16px-20px-border-bottom-1px-solid-ddd-di-181c93 {padding:16px 20px;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;align-items:center;}
+.dd-maint-style-background-fff-border-radius-6px-width-80-max-wi-d438d8 {background:#fff;border-radius:6px;width:80%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.3);}
+.dd-maint-style-display-none-z-index-100001-position-fixed-top-0-84d2b7 {display:none;z-index:100001;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;}
+.dd-maint-style-display-inline-margin-0-165435 {display:inline;margin:0;}
+.dd-maint-style-font-size-14px-vertical-align-middle-line-height-29c3c7 {font-size:14px;vertical-align:middle;line-height:1.4;}
+.dd-maint-style-text-align-right-display-flex-gap-6px-justify-co-7268be {text-align:right;display:flex;gap:6px;justify-content:flex-end;align-items:center;}
+.dd-maint-style-margin-top-0-margin-bottom-16px-display-flex-ali-b2d039 {margin-top:0;margin-bottom:16px;display:flex;align-items:center;gap:8px;}
+.dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-1cf229 {background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;}
+.dd-maint-style-color-666-font-style-italic-5f541e {color:#666;font-style:italic;}
+.dd-maint-style-background-1d2327-color-f0f0f1-padding-16px-bord-c00564 {background:#1d2327;color:#f0f0f1;padding:16px;border-radius:4px;overflow:auto;max-height:350px;font-family:monospace;font-size:13px;line-height:1.6;}
+.dd-maint-style-margin-0-0-12px-color-50575e-ad976f {margin:0 0 12px;color:#50575e;}
+.dd-maint-style-display-flex-justify-content-space-between-align-bcbb84 {display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
+.dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-5658c0 {background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;margin-bottom:24px;}
+.dd-maint-style-color-d63638-vertical-align-middle-f9ba26 {color:#d63638;vertical-align:middle;}
+.dd-maint-style-color-666-margin-top-0-98bc7f {color:#666;margin-top:0;}
+.dd-maint-style-color-46b450-5c8216 {color:#46b450;}
+.dd-maint-style-color-46b450-vertical-align-middle-bd2f9d {color:#46b450;vertical-align:middle;}
+.dd-maint-style-margin-top-0-display-flex-align-items-center-gap-8981e5 {margin-top:0;display:flex;align-items:center;gap:8px;}
+.dd-maint-style-font-size-12px-color-50575e-223965 {font-size:12px;color:#50575e;}
+.dd-maint-style-font-size-12px-font-weight-600-050002 {font-size:12px;font-weight:600;}
+.dd-maint-style-margin-5px-0-0-16px-ae6033 {margin:5px 0 0 16px;}
+.dd-maint-style-display-inline-block-padding-2px-6px-background--092f8d {display:inline-block;padding:2px 6px;background:#f0f0f1;color:#50575e;border-radius:3px;font-size:11px;}
+.dd-maint-style-display-inline-block-padding-2px-6px-background--c3c091 {display:inline-block;padding:2px 6px;background:#e7f3ff;color:#135e96;border-radius:3px;font-size:11px;}
+.dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-align-items--1bd370 {display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px;}
+.dd-maint-style-font-size-11px-e48b05 {font-size:11px;}
+.dd-maint-style-font-family-monospace-font-size-12px-5dc977 {font-family:monospace;font-size:12px;}
+.dd-maint-style-text-align-right-width-150px-9d3ff8 {text-align:right;width:150px;}
+.dd-maint-style-width-180px-34f7b3 {width:180px;}
+.dd-maint-style-width-120px-9fe45c {width:120px;}
+.dd-maint-style-margin-top-10px-border-1px-solid-c3c4c7-9450dc {margin-top:10px;border:1px solid #c3c4c7;}
+.dd-maint-style-margin-12px-0-41db5c {margin:12px 0;}
+.dd-maint-style-display-flex-justify-content-space-between-align-801166 {display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;}
+.dd-maint-style-margin-24px-0-95e61b {margin:24px 0;}
+.dd-maint-style-max-width-100-0697ec {max-width:100%;}
+.dd-maint-style-margin-bottom-30px-5370cb {margin-bottom:30px;}
+.dd-maint-style-margin-bottom-20px-7dde5e {margin-bottom:20px;}
+.dd-maint-style-color-666-6a8c41 {color:#666;}
+.dd-maint-style-color-46b450-font-weight-bold-f5419f {color:#46b450;font-weight:bold;}
+.dd-maint-style-color-d63638-font-weight-bold-68da2c {color:#d63638;font-weight:bold;}
+.dd-maint-style-font-weight-600-0b87e9 {font-weight:600;}
+.dd-maint-style-width-240px-font-weight-600-a08b79 {width:240px;font-weight:600;}
+.dd-maint-style-margin-20px-0-border-1px-solid-c3c4c7-1db2a8 {margin: 20px 0; border: 1px solid #c3c4c7;}
+.dd-maint-style-background-f6f7f7-padding-12px-border-1px-solid--be1e89 {background:#f6f7f7;padding:12px;border:1px solid #dcdcde;border-radius:3px;overflow:auto;max-height:220px;font-size:12px;line-height:1.5;}
+.dd-maint-style-display-flex-justify-content-space-between-align-812972 {display:flex;justify-content:space-between;align-items:center;}
+.dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-368b1d {background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;}
+.dd-maint-style-margin-top-2px-b08169 {margin-top:2px;}
+.dd-maint-style-font-family-monospace-font-size-13px-179b58 {font-family:monospace;font-size:13px;}
+.dd-maint-style-border-1px-solid-c3c4c7-791c44 {border:1px solid #c3c4c7;}
+.dd-maint-style-margin-top-0-color-50575e-5e3ae0 {margin-top:0;color:#50575e;}
+.dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-7486dd {background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;margin-bottom:24px;}
+.dd-maint-style-margin-top-8px-margin-bottom-0-f27a7b {margin-top:8px;margin-bottom:0;}
+.dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac {display:flex;align-items:center;gap:6px;}
+.dd-maint-style-margin-4px-0-color-666-font-size-12px-015270 {margin:4px 0;color:#666;font-size:12px;}
+.dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-213afc {background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);}
+.dd-maint-style-color-46b450-font-weight-600-e9a241 {color:#46b450;font-weight:600;}
+.dd-maint-style-color-d63638-font-weight-600-5671c2 {color:#d63638;font-weight:600;}
+.dd-maint-style-color-dba617-a100d6 {color:#dba617;}
+.dd-maint-style-margin-bottom-0-76084e {margin-bottom:0;}
+.dd-maint-style-display-grid-grid-template-columns-repeat-auto-f-e40afb {display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:16px;margin-bottom:24px;}
+.dd-maint-style-display-none-c8be1c {display:none;}
+.dd-maint-style-display-flex-gap-8px-b9bbe5 {display:flex;gap:8px;}
+.dd-maint-style-vertical-align-middle-font-size-15px-width-15px--92034c {vertical-align:middle;font-size:15px;width:15px;height:15px;}
+.dd-maint-style-width-100-font-size-12px-padding-4px-8px-border--813fa3 {width:100%;font-size:12px;padding:4px 8px;border-radius:4px;border:1px solid #ccd0d4;}
+.dd-maint-style-display-none-margin-bottom-8px-4e9275 {display:none;margin-bottom:8px;}
+.dd-maint-style-font-size-13-5px-color-1d2327-945815 {font-size:13.5px;color:#1d2327;}
+.dd-maint-style-color-46b450-font-size-18px-width-18px-height-18-64c686 {color:#46b450;font-size:18px;width:18px;height:18px;}
+.dd-maint-style-display-flex-justify-content-space-between-align-005261 {display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;}
+.dd-maint-style-width-0-b05fd1 {width:0%;}
+.dd-maint-style-color-2271b1-font-size-22px-width-22px-height-22-0a10bf {color:#2271b1;font-size:22px;width:22px;height:22px;vertical-align:middle;}
+.dd-maint-style-margin-bottom-20px-b75fad {margin-bottom: 20px;}
+.dd-maint-style-font-size-13px-font-weight-normal-color-666-marg-778af7 {font-size:13px;font-weight:normal;color:#666;margin-left:10px;}

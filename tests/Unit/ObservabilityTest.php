@@ -40,31 +40,70 @@ final class ObservabilityTest extends TestCase {
 	}
 
 	public function testSensitiveContextIsRedactedBeforeEncoding(): void {
-		$event = \DD_Maintenance_Observability::make_event(
+		$sensitive_context = array(
+			'outer' => array(
+				'token'         => 'restore-secret-token',
+				'access_key'    => 'DO00SECRET',
+				'sql_query'     => 'SELECT password FROM users',
+				'authorization' => 'Bearer abc.def.ghi',
+				'files'         => array( 'count' => 4 ),
+			),
+		);
+		$sanitized = \DD_Maintenance_Observability::sanitize_context( $sensitive_context );
+		$event     = \DD_Maintenance_Observability::make_event(
 			'restore',
 			'step_finished',
 			array(
-				'session_id' => 'sess-99',
-				'context'    => array(
-					'token'        => 'restore-secret-token',
-					'access_key'   => 'DO00SECRET',
-					'sql_query'    => 'SELECT password FROM users',
-					'authorization' => 'Bearer abc.def.ghi',
-					'files'        => array( 'count' => 4 ),
-				),
+				'session_id'      => 'sess-99',
+				'step'            => 'restore_finalize',
+				'request_payload' => $sensitive_context,
+				'notices'         => $sensitive_context,
 			)
 		);
 		$json = \DD_Maintenance_Observability::encode( $event );
 
-		$this->assertSame( '[redacted]', $event['context']['context']['token'] );
-		$this->assertSame( '[redacted]', $event['context']['context']['access_key'] );
-		$this->assertSame( '[redacted]', $event['context']['context']['sql_query'] );
-		$this->assertSame( '[redacted]', $event['context']['context']['authorization'] );
-		$this->assertSame( 4, $event['context']['context']['files']['count'] );
+		$this->assertSame( '[redacted]', $sanitized['outer']['token'] );
+		$this->assertSame( '[redacted]', $sanitized['outer']['access_key'] );
+		$this->assertSame( '[redacted]', $sanitized['outer']['sql_query'] );
+		$this->assertSame( '[redacted]', $sanitized['outer']['authorization'] );
+		$this->assertSame( 4, $sanitized['outer']['files']['count'] );
+		$this->assertArrayNotHasKey( 'step', $event['context'] );
+		$this->assertArrayNotHasKey( 'request_payload', $event['context'] );
+		$this->assertArrayNotHasKey( 'notices', $event['context'] );
 		$this->assertStringNotContainsString( 'restore-secret-token', $json );
 		$this->assertStringNotContainsString( 'DO00SECRET', $json );
 		$this->assertStringNotContainsString( 'SELECT password FROM users', $json );
 		$this->assertStringNotContainsString( 'abc.def.ghi', $json );
+	}
+
+	public function testFailedPersistenceKeepsCreatedEventAndRaisesAlert(): void {
+		$path = \DD_Maintenance::logs_dir() . '/events-' . gmdate( 'Y-m-d' ) . '.jsonl';
+		if ( file_exists( $path ) ) {
+			unlink( $path );
+		}
+		mkdir( $path );
+
+		try {
+			$event = \DD_Maintenance::record_event(
+				'restore',
+				'step_failed',
+				array(
+					'correlation_id' => 'corr-write-failure',
+					'session_id'     => 'sess-write-failure',
+					'step'           => 'restore_files',
+					'status'         => 'failure',
+					'failure_code'   => 'disk_full',
+					'error_count'    => 1,
+				)
+			);
+
+			$this->assertSame( 'created_not_persisted', $event['persistence_status'] );
+			$this->assertSame( $event, \DD_Maintenance::get_last_event() );
+			$this->assertSame( 'event_write_failed', get_transient( 'dd_maintenance_last_event_error' )['code'] );
+			$this->assertStringContainsString( 'persistence=created_not_persisted', \DD_Maintenance_Observability::format( $event ) );
+		} finally {
+			rmdir( $path );
+		}
 	}
 
 	public function testEventIsPersistedAndFormattedWithoutContext(): void {
@@ -81,10 +120,13 @@ final class ObservabilityTest extends TestCase {
 			)
 		);
 
+		$this->assertSame( 'persisted', $event['persistence_status'] );
 		$this->assertSame( $event, \DD_Maintenance::get_last_event() );
 		$this->assertStringContainsString( 'session_id=sess-persisted', \DD_Maintenance_Observability::format( $event ) );
 		$this->assertStringContainsString( 'step=restore_files', \DD_Maintenance_Observability::format( $event ) );
 		$this->assertStringContainsString( 'failure_code=disk_full', \DD_Maintenance_Observability::format( $event ) );
 		$this->assertStringNotContainsString( 'must-not-appear', \DD_Maintenance_Observability::format( $event ) );
+		$this->assertArrayNotHasKey( 'step', $event['context'] );
 	}
+
 }

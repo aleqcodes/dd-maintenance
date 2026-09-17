@@ -46,10 +46,12 @@ class DD_Maintenance_Restore_Workflow {
 	 *
 	 * @param array  $zip_paths       Volumes.
 	 * @param string $temp_upload_dir Diretório temporário.
+	 * @param bool   $apply_elementor_compatibility Aplicar compatibilidade Elementor.
+	 * @param string $correlation_id  Correlação operacional da sessão.
 	 * @return array|WP_Error
 	 */
-	public function initialize( array $zip_paths, string $temp_upload_dir = '', bool $apply_elementor_compatibility = false ) {
-		return $this->restore->init_restore_session( $zip_paths, $temp_upload_dir, $apply_elementor_compatibility );
+	public function initialize( array $zip_paths, string $temp_upload_dir = '', bool $apply_elementor_compatibility = false, string $correlation_id = '' ) {
+		return $this->restore->init_restore_session( $zip_paths, $temp_upload_dir, $apply_elementor_compatibility, $correlation_id );
 	}
 
 	/**
@@ -97,10 +99,10 @@ class DD_Maintenance_Restore_Workflow {
 
 	/**
 	 * @param string $session_id Sessão.
-	 * @return void
+	 * @return array{cleaned:bool,errors:string[]}
 	 */
-	public function cleanup_failed( string $session_id ): void {
-		$this->restore->cleanup_failed_restore( $session_id );
+	public function cleanup_failed( string $session_id ): array {
+		return $this->restore->cleanup_failed_restore( $session_id );
 	}
 
 	/**

@@ -35,37 +35,36 @@ class DD_Maintenance_Observability {
 			'error_count'      => max( 0, (int) ( $context['error_count'] ?? 0 ) ),
 			'failure_code'     => self::safe_identifier( $context['failure_code'] ?? '' ),
 		);
-		$extra = array_diff_key(
+		$extra = array_intersect_key(
 			$context,
 			array(
-				'session_id'    => true,
-				'correlation_id' => true,
-				'status'        => true,
-				'progress'      => true,
-				'bytes_processed'=> true,
-				'duration_ms'   => true,
-				'error_count'   => true,
-				'failure_code'  => true,
+				'parts_total'   => true,
+				'part_index'    => true,
+				'base_name'     => true,
+				'cleanup'       => true,
+				'warning_count' => true,
 			)
 		);
 
 		return array(
-			'schema_version' => self::SCHEMA_VERSION,
-			'event_id'       => self::new_identifier( 'event' ),
-			'timestamp'      => gmdate( 'c' ),
-			'operation'      => self::safe_identifier( $operation ),
-			'event'          => self::safe_identifier( $event ),
-			'correlation_id' => $correlation_id,
-			'session_id'     => $session_id,
-			'step'           => self::safe_identifier( $context['step'] ?? '' ),
-			'status'         => $known['status'],
-			'progress'       => $known['progress'],
-			'bytes_processed'=> $known['bytes_processed'],
-			'duration_ms'    => $known['duration_ms'],
-			'error_count'    => $known['error_count'],
-			'failure_code'   => $known['failure_code'],
-			'context'        => self::sanitize_context( $extra ),
+			'schema_version'      => self::SCHEMA_VERSION,
+			'event_id'            => self::new_identifier( 'event' ),
+			'timestamp'           => gmdate( 'c' ),
+			'operation'           => self::safe_identifier( $operation ),
+			'event'               => self::safe_identifier( $event ),
+			'correlation_id'      => $correlation_id,
+			'session_id'          => $session_id,
+			'step'                => self::safe_identifier( $context['step'] ?? '' ),
+			'status'              => $known['status'],
+			'progress'            => $known['progress'],
+			'bytes_processed'     => $known['bytes_processed'],
+			'duration_ms'         => $known['duration_ms'],
+			'error_count'         => $known['error_count'],
+			'failure_code'        => $known['failure_code'],
+			'persistence_status'  => 'created',
+			'context'             => self::sanitize_context( $extra ),
 		);
+
 	}
 
 	/**
@@ -94,6 +93,10 @@ class DD_Maintenance_Observability {
 			if ( '' !== (string) ( $event[ $field ] ?? '' ) && null !== ( $event[ $field ] ?? null ) ) {
 				$parts[] = $field . '=' . $event[ $field ];
 			}
+		}
+		$persistence_status = (string) ( $event['persistence_status'] ?? 'created' );
+		if ( 'persisted' !== $persistence_status ) {
+			$parts[] = 'persistence=' . self::safe_identifier( $persistence_status );
 		}
 		return implode( ' ', $parts );
 	}

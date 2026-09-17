@@ -13,6 +13,7 @@ class DD_Maintenance_Restore_Result {
 	public $log = array();
 	public $db_stats = null;
 	public $files = 0;
+	public $warnings = array();
 
 	/**
 	 * Converte o array legado de restauração para um resultado explícito.

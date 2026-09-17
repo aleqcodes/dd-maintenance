@@ -53,7 +53,7 @@ class DD_Maintenance_Backup_Workflow {
 		$started_at  = microtime( true );
 		$start_event = DD_Maintenance::record_event( 'backup', 'operation_started', array( 'step' => 'init', 'status' => 'running', 'correlation_id' => $correlation_id ) );
 		$correlation_id = $start_event['correlation_id'];
-		$session        = $this->step( 'init', '' );
+		$session        = $this->step( 'init', '', $correlation_id );
 		if ( is_wp_error( $session ) ) {
 			DD_Maintenance::record_event(
 				'backup',
@@ -77,7 +77,10 @@ class DD_Maintenance_Backup_Workflow {
 			do {
 				$result = $this->step( $step, $session_id );
 				if ( is_wp_error( $result ) ) {
-					$this->cleanup_failed( $session_id, $result->get_error_message() );
+					$cleanup = $this->cleanup_failed( $session_id, $result->get_error_message() );
+					if ( ! empty( $cleanup['errors'] ) ) {
+						return new WP_Error( $result->get_error_code(), $result->get_error_message() . ' [cleanup: ' . implode( ', ', $cleanup['errors'] ) . ']' );
+					}
 					DD_Maintenance::record_event(
 						'backup',
 						'operation_failed',
@@ -96,7 +99,22 @@ class DD_Maintenance_Backup_Workflow {
 			} while ( ! $this->is_completed( $result ) );
 		}
 
-		$this->cleanup( $session_id );
+		$cleanup_result = $this->cleanup( $session_id );
+		if ( is_wp_error( $cleanup_result ) ) {
+			DD_Maintenance::record_event(
+				'backup',
+				'operation_failed',
+				array(
+					'step'           => 'backup_cleanup',
+					'session_id'     => $session_id,
+					'status'         => 'failure',
+					'failure_code'   => $cleanup_result->get_error_code(),
+					'error_count'    => 1,
+					'correlation_id' => $correlation_id,
+				)
+			);
+			return $cleanup_result;
+		}
 		DD_Maintenance::record_event(
 			'backup',
 			'operation_finished',
@@ -109,20 +127,22 @@ class DD_Maintenance_Backup_Workflow {
 				'correlation_id' => $correlation_id,
 			)
 		);
+		$result['correlation_id'] = $correlation_id;
 		return DD_Maintenance_Backup_Result::from_array( $result );
 	}
 
 	/**
 	 * Executa uma etapa incremental do backup.
 	 *
-	 * @param string $step       Nome da etapa.
-	 * @param string $session_id ID da sessão.
+	 * @param string $step          Nome da etapa.
+	 * @param string $session_id    ID da sessão.
+	 * @param string $correlation_id Correlação operacional da etapa inicial.
 	 * @return array|DD_Maintenance_Progress|WP_Error
 	 */
-	public function step( string $step, string $session_id ) {
+	public function step( string $step, string $session_id, string $correlation_id = '' ) {
 		switch ( $step ) {
 			case 'init':
-				return $this->backup->init_session();
+				return $this->backup->init_session( $correlation_id );
 			case 'database':
 				return $this->normalize_progress( $this->backup->dump_database_step( $session_id ) );
 			case 'index':
@@ -174,7 +194,7 @@ class DD_Maintenance_Backup_Workflow {
 				'status'         => 'running',
 				'bytes_processed' => 0,
 				'correlation_id' => $correlation_id,
-				'context'        => array( 'parts_total' => count( $parts ) ),
+				'parts_total'     => count( $parts ),
 			)
 		);
 		$correlation_id = $start_event['correlation_id'];

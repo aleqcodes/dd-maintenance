@@ -36,7 +36,7 @@ final class LegacyScriptRunner {
 		$stderr = stream_get_contents( $pipes[2] );
 		fclose( $pipes[1] );
 		$exit_code = proc_close( $process );
-		if ( 0 !== $exit_code && preg_match( '/backup|restore/i', $script ) ) {
+		if ( 0 !== $exit_code ) {
 			$artifact_dir = dirname( __DIR__ ) . '/artifacts';
 			if ( ! is_dir( $artifact_dir ) ) {
 				mkdir( $artifact_dir, 0755, true );
@@ -46,6 +46,7 @@ final class LegacyScriptRunner {
 				json_encode(
 					array(
 						'script'    => $script,
+						'step'      => 'legacy_script:' . $script,
 						'exit_code' => $exit_code,
 						'stdout'    => $stdout,
 						'stderr'    => $stderr,

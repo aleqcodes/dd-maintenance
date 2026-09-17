@@ -24,6 +24,7 @@ final class LegacyScriptRunnerTest extends TestCase {
 			$payload = json_decode( file_get_contents( $artifact ), true );
 			$this->assertIsArray( $payload );
 			$this->assertSame( 'missing-restore-fixture.php', $payload['script'] );
+			$this->assertSame( 'legacy_script:missing-restore-fixture.php', $payload['step'] );
 			$this->assertSame( $result['stderr'], $payload['stderr'] );
 		} finally {
 			if ( file_exists( $artifact ) ) {

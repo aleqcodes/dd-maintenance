@@ -20,9 +20,10 @@ final class WordPressBoundaryTest extends TestCase {
 		$GLOBALS['dd_phpunit_logged_in']   = true;
 		$GLOBALS['dd_phpunit_can_manage']  = true;
 		$GLOBALS['dd_phpunit_valid_nonce'] = true;
+		$GLOBALS['dd_phpunit_fail_update_option'] = false;
 	}
 	public function testRestoreUploadInitCallsProductionHandlerAndCreatesSession(): void {
-		$settings = ( new \ReflectionClass( \DD_Maintenance_Settings::class ) )->newInstanceWithoutConstructor();
+		$settings = new \DD_Maintenance_Settings();
 		$_POST    = array( 'mode' => 'upload_init' );
 
 		try {
@@ -41,7 +42,7 @@ final class WordPressBoundaryTest extends TestCase {
 		}
 	}
 	public function testRestoreUploadInitRejectsMissingCapabilityOrNonce(): void {
-		$settings = ( new \ReflectionClass( \DD_Maintenance_Settings::class ) )->newInstanceWithoutConstructor();
+		$settings = new \DD_Maintenance_Settings();
 		$_POST    = array( 'mode' => 'upload_init' );
 
 		$GLOBALS['dd_phpunit_can_manage'] = false;
@@ -83,6 +84,29 @@ final class WordPressBoundaryTest extends TestCase {
 		$this->assertArrayHasKey( 'wp_ajax_dd_maintenance_ajax_action', $GLOBALS['dd_phpunit_hooks'] );
 		$this->assertSame( 'handled', ( $GLOBALS['dd_phpunit_hooks']['admin_post_dd_maintenance_run_backup'][0] )() );
 	}
+	public function testLegacyBackupHookDelegatesAndRecordsUsage(): void {
+		$GLOBALS['dd_phpunit_options'][ \DD_Maintenance_Legacy_Compatibility::USAGE_OPTION ] = array();
+		$settings = new class {
+			public function handle_backup(): string { return 'handled'; }
+		};
+		$controller = new \DD_Maintenance_Backup_Action_Controller( $settings );
+		$controller->register();
+
+		$this->assertSame( 'handled', ( $GLOBALS['dd_phpunit_hooks']['admin_post_backuper_run_backup'][0] )() );
+		$usage = \DD_Maintenance_Legacy_Compatibility::usage();
+		$this->assertArrayHasKey( 'hook_admin_post_backuper_run_backup', $usage );
+		$this->assertSame( 1, $usage['hook_admin_post_backuper_run_backup']['count'] );
+	}
+
+	public function testLegacyDeprecationNoticePublishesRemovalMajor(): void {
+		ob_start();
+		\DD_Maintenance_Legacy_Compatibility::render_deprecation_notice();
+		$notice = ob_get_clean();
+
+		$this->assertStringContainsString( 'DD Maintenance 3.0.0', $notice );
+		$this->assertStringContainsString( 'obsoletos', $notice );
+	}
+
 
 	public function testRestoreControllerRegistersAuthenticatedAndPublicContinuationHooks(): void {
 		$controller = new \DD_Maintenance_Restore_Action_Controller( new \stdClass() );

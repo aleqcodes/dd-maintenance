@@ -7,6 +7,7 @@
 
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/class-dd-maintenance-observability.php';
+require_once __DIR__ . '/class-dd-maintenance-legacy-compatibility.php';
 require_once __DIR__ . '/class-dd-maintenance-settings-repository.php';
 require_once __DIR__ . '/class-dd-maintenance-cron-job-store.php';
 require_once __DIR__ . '/class-dd-maintenance-elementor-compatibility.php';
@@ -81,7 +82,7 @@ class DD_Maintenance {
 		add_action( 'dd_maintenance_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
 
 		// Compatibilidade com agendamentos anteriores do Backuper.
-		add_action( 'backuper_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
+		DD_Maintenance_Legacy_Compatibility::register_legacy_hook( 'backuper_daily_maintenance', array( $this, 'cron_full_maintenance' ) );
 		add_action( 'dd_maintenance_backup_continue', array( $this, 'cron_backup_continue' ), 10, 1 );
 		add_action( 'plugins_loaded', array( $this, 'register_elementor_compatibility' ), 1 );
 	}
@@ -154,11 +155,11 @@ class DD_Maintenance {
 		$legacy_settings  = get_option( 'backuper_settings', null );
 		$current_settings = get_option( 'dd_maintenance_settings', null );
 
+		if ( is_array( $legacy_settings ) ) {
+			DD_Maintenance_Legacy_Compatibility::record_usage( 'option_backuper_settings' );
+		}
 		if ( null === $current_settings && is_array( $legacy_settings ) ) {
 			update_option( 'dd_maintenance_settings', $legacy_settings, false );
-		}
-		if ( is_array( $legacy_settings ) ) {
-			delete_option( 'backuper_settings' );
 		}
 	}
 
@@ -197,13 +198,15 @@ class DD_Maintenance {
 		if ( is_link( $dir ) ) {
 			return $dir;
 		}
-		if ( ! is_dir( $dir ) ) {
-			wp_mkdir_p( $dir );
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
+			throw new RuntimeException( 'Não foi possível criar a pasta de backups.' );
 		}
 
 		$index_file = $dir . '/index.php';
 		if ( ! file_exists( $index_file ) ) {
-			file_put_contents( $index_file, '<?php // Silence is golden.' );
+			if ( ! self::write_file_fully( $index_file, '<?php // Silence is golden.' ) ) {
+				throw new RuntimeException( 'Não foi possível criar a proteção index.php dos backups.' );
+			}
 		}
 
 		// Proteção .htaccess para servidores Apache e LiteSpeed (bloqueia download direto de .zip e .sql).
@@ -217,7 +220,9 @@ class DD_Maintenance {
 				. "<IfModule authz_core_module>\n"
 				. "Require all denied\n"
 				. "</IfModule>\n";
-			file_put_contents( $htaccess_file, $htaccess_content );
+			if ( ! self::write_file_fully( $htaccess_file, $htaccess_content ) ) {
+				throw new RuntimeException( 'Não foi possível criar a proteção .htaccess dos backups.' );
+			}
 		}
 
 		// Proteção web.config para servidores IIS.
@@ -231,29 +236,55 @@ class DD_Maintenance {
 				. "    </authorization>\n"
 				. "  </system.webServer>\n"
 				. "</configuration>\n";
-			file_put_contents( $webconfig_file, $webconfig_content );
+			if ( ! self::write_file_fully( $webconfig_file, $webconfig_content ) ) {
+				throw new RuntimeException( 'Não foi possível criar a proteção web.config dos backups.' );
+			}
 		}
 
 		return $dir;
 	}
-
 	/**
-	 * Pasta de logs persistentes em uploads.
+	 * Indica se novos backups, uploads e restores estão bloqueados para rollback.
 	 *
-	 * @return string
+	 * @return bool
 	 */
+	public static function operations_disabled(): bool {
+		return defined( 'DD_MAINTENANCE_DISABLE_OPERATIONS' ) && true === DD_MAINTENANCE_DISABLE_OPERATIONS;
+	}
+
+
 	public static function logs_dir(): string {
 		$dir = self::backup_dir() . '/logs';
-		if ( ! is_dir( $dir ) ) {
-			wp_mkdir_p( $dir );
+		if ( ! is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) {
+			throw new RuntimeException( 'Não foi possível criar a pasta de logs.' );
 		}
 
 		$index_file = $dir . '/index.php';
 		if ( ! file_exists( $index_file ) ) {
-			file_put_contents( $index_file, '<?php // Silence is golden.' );
+			if ( ! self::write_file_fully( $index_file, '<?php // Silence is golden.' ) ) {
+				throw new RuntimeException( 'Não foi possível criar a proteção index.php dos logs.' );
+			}
 		}
 
 		return $dir;
+	}
+	/**
+	 * Escreve conteúdo completo e só confirma sucesso após todos os bytes.
+	 *
+	 * @param string $path    Arquivo de destino.
+	 * @param string $content Conteúdo.
+	 * @param int    $flags   Flags de file_put_contents().
+	 * @return bool
+	 */
+	private static function write_file_fully( string $path, string $content, int $flags = 0 ): bool {
+		$written = file_put_contents( $path, $content, $flags );
+		if ( false !== $written && strlen( $content ) === (int) $written ) {
+			return true;
+		}
+		if ( file_exists( $path ) ) {
+			unlink( $path );
+		}
+		return false;
 	}
 	/**
 	 * Registra um evento operacional estruturado e sem dados sensíveis.
@@ -265,9 +296,34 @@ class DD_Maintenance {
 	 */
 	public static function record_event( string $operation, string $event, array $context = array() ): array {
 		$payload = DD_Maintenance_Observability::make_event( $operation, $event, $context );
-		$line    = DD_Maintenance_Observability::encode( $payload ) . "\n";
-		$path    = self::logs_dir() . '/events-' . gmdate( 'Y-m-d' ) . '.jsonl';
-		file_put_contents( $path, $line, FILE_APPEND | LOCK_EX );
+		$payload['persistence_status'] = 'persisted';
+		try {
+			$line    = DD_Maintenance_Observability::encode( $payload ) . "\n";
+			$path    = self::logs_dir() . '/events-' . gmdate( 'Y-m-d' ) . '.jsonl';
+			$written = file_put_contents( $path, $line, FILE_APPEND | LOCK_EX );
+			if ( false === $written || (int) $written !== strlen( $line ) ) {
+				throw new RuntimeException( 'event_write_failed' );
+			}
+			if ( function_exists( 'delete_transient' ) ) {
+				delete_transient( 'dd_maintenance_last_event_error' );
+			}
+		} catch ( Throwable $e ) {
+			$payload['persistence_status'] = 'created_not_persisted';
+			if ( function_exists( 'set_transient' ) ) {
+				set_transient(
+					'dd_maintenance_last_event_error',
+					array(
+						'code'           => 'event_write_failed',
+						'event_id'       => $payload['event_id'],
+						'operation'      => $payload['operation'],
+						'event'          => $payload['event'],
+						'correlation_id' => $payload['correlation_id'],
+						'step'           => $payload['step'],
+					),
+					DAY_IN_SECONDS
+				);
+			}
+		}
 
 		if ( function_exists( 'set_transient' ) ) {
 			set_transient( 'dd_maintenance_last_event', $payload, DAY_IN_SECONDS );
@@ -304,9 +360,8 @@ class DD_Maintenance {
 		set_transient( 'dd_maintenance_last_log', $lines, DAY_IN_SECONDS );
 		set_transient( 'backuper_last_log', $lines, DAY_IN_SECONDS );
 
-		$logs_dir = self::logs_dir();
-		$status   = in_array( $status, array( 'success', 'warning', 'failure', 'error', 'info' ), true ) ? $status : 'info';
-		$has_error = false;
+		$status     = in_array( $status, array( 'success', 'warning', 'failure', 'error', 'info' ), true ) ? $status : 'info';
+		$has_error  = false;
 		$has_warning = false;
 		foreach ( $lines as $line ) {
 			$has_error   = $has_error || 0 === strpos( $line, '[ERRO]' );
@@ -318,31 +373,43 @@ class DD_Maintenance {
 			$status = 'warning';
 		}
 
-		$date_stamp = current_time( 'Y-m-d-His' );
-		if ( ! empty( $base_name ) ) {
-			$clean_base = sanitize_file_name( $base_name );
-			$filename   = sprintf( 'backup-%s-%s-%s.log', $clean_base, $status, $date_stamp );
-		} else {
-			$filename = sprintf( 'backup-%s-%s.log', $status, $date_stamp );
-		}
+		$write_ok = false;
+		$filepath = '';
+		try {
+			$logs_dir = self::logs_dir();
+			$date_stamp = current_time( 'Y-m-d-His' );
+			if ( ! empty( $base_name ) ) {
+				$clean_base = sanitize_file_name( $base_name );
+				$filename   = sprintf( 'backup-%s-%s-%s.log', $clean_base, $status, $date_stamp );
+			} else {
+				$filename = sprintf( 'backup-%s-%s.log', $status, $date_stamp );
+			}
 
-		$filepath = $logs_dir . '/' . $filename;
-		$content  = implode( "\n", $lines ) . "\n";
-		$written  = file_put_contents( $filepath, $content );
-		self::purge_old_log_files( 30 );
+			$filepath = $logs_dir . '/' . $filename;
+			$content  = implode( "\n", $lines ) . "\n";
+			$written  = file_put_contents( $filepath, $content );
+			$write_ok = false !== $written && (int) $written === strlen( $content );
+		} catch ( Throwable $e ) {
+			$write_ok = false;
+		}
+		try {
+			self::purge_old_log_files( 30 );
+		} catch ( Throwable $e ) {
+			// Falha de retenção não deve ocultar o resultado da gravação do log.
+		}
 		self::record_event(
 			'backup',
 			'log_saved',
 			array(
 				'step'          => 'finalize',
-				'status'        => false === $written ? 'failure' : $status,
+				'status'        => $write_ok ? $status : 'failure',
 				'error_count'   => count( array_filter( $lines, static function ( $line ) { return 0 === strpos( $line, '[ERRO]' ); } ) ),
-				'failure_code'  => false === $written ? 'log_write_failed' : '',
+				'failure_code'  => $write_ok ? '' : 'log_write_failed',
 				'base_name'     => $base_name,
 			)
 		);
 
-		return false === $written ? '' : $filepath;
+		return $write_ok ? $filepath : '';
 	}
 
 	/**
@@ -607,7 +674,6 @@ class DD_Maintenance {
 				$deleted[] = $item['display_name'];
 			}
 		}
-
 		return $deleted;
 	}
 
@@ -616,6 +682,19 @@ class DD_Maintenance {
 	 * Cada evento seguinte executa apenas um lote persistido.
 	 */
 	public function cron_full_maintenance() {
+		if ( self::operations_disabled() ) {
+			self::record_event(
+				'backup',
+				'cron_rejected',
+				array(
+					'step'         => 'init',
+					'status'       => 'failure',
+					'failure_code' => 'operations_disabled',
+					'error_count'  => 1,
+				)
+			);
+			return;
+		}
 		$this->cron_workflow->start();
 	}
 
@@ -625,9 +704,22 @@ class DD_Maintenance {
 	 * @param string $session_id ID da sessão.
 	 */
 	public function cron_backup_continue( $session_id ) {
+		if ( self::operations_disabled() ) {
+			self::record_event(
+				'backup',
+				'cron_rejected',
+				array(
+					'step'         => 'continue',
+					'session_id'   => (string) $session_id,
+					'status'       => 'failure',
+					'failure_code' => 'operations_disabled',
+					'error_count'  => 1,
+				)
+			);
+			return;
+		}
 		$this->cron_workflow->continue( (string) $session_id );
 	}
-
 
 	/**
 	 * Executa a manutenção completa:
@@ -641,6 +733,19 @@ class DD_Maintenance {
 	 * @return array Log de execução.
 	 */
 	public function run_full() {
+		if ( self::operations_disabled() ) {
+			self::record_event(
+				'backup',
+				'operation_rejected',
+				array(
+					'step'         => 'init',
+					'status'       => 'failure',
+					'failure_code' => 'operations_disabled',
+					'error_count'  => 1,
+				)
+			);
+			return array( '[ERRO] Backups e restores novos estão desabilitados para rollback.' );
+		}
 		return $this->backup_workflow->run_full( array( $this, 'apply_retention_policy' ) );
 	}
 

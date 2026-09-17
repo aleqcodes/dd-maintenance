@@ -11,6 +11,7 @@ require_once dirname( __DIR__, 2 ) . '/includes/class-dd-maintenance-settings-re
 final class SettingsRepositoryTest extends TestCase {
 	protected function setUp(): void {
 		$GLOBALS['dd_phpunit_options'] = array();
+		$GLOBALS['dd_phpunit_fail_update_option'] = false;
 	}
 
 	public function testDefaultsExposeEffectiveSplitSize(): void {
@@ -42,5 +43,18 @@ final class SettingsRepositoryTest extends TestCase {
 		$repository = new \DD_Maintenance_Settings_Repository();
 
 		$this->assertSame( 50, $repository->get_split_size_mb() );
+	}
+
+	public function testSaveRejectsUnpersistedConfiguration(): void {
+		$repository = new \DD_Maintenance_Settings_Repository();
+		$initial = $repository->get();
+		$changed = $initial;
+		$changed['s3_region'] = 'ams3';
+
+		$this->assertTrue( $repository->save( $initial ) );
+		$GLOBALS['dd_phpunit_fail_update_option'] = true;
+
+		$this->assertFalse( $repository->save( $changed ) );
+		$this->assertSame( $initial, $repository->get() );
 	}
 }

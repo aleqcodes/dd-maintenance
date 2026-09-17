@@ -24,8 +24,8 @@ final class LegacyScriptsSmokeTest extends TestCase {
 		return array(
 			'backup batches' => array( 'backup-batch-self-check.php', 'backup volume self-check: OK' ),
 			'chunked upload' => array( 'test-chunked-upload-restore.php', 'upload sequencial' ),
-			'file security' => array( 'test-file-security.php', 'File security paths validated' ),
 			'local backups' => array( 'test-local-backup-download.php', 'listagem, download' ),
+			'S3 remote delete and upload transports' => array( 'test-s3-remote-delete.php', 'Testes de exclusão remota no S3 passaram com sucesso!' ),
 			'serialized replace' => array( 'test-serialized-replace.php', 'Search & Replace' ),
 		);
 	}

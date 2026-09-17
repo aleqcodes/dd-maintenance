@@ -28,7 +28,12 @@ class DD_Maintenance_Cron_Job_Store {
 	 * @return bool
 	 */
 	public function save( array $job ): bool {
-		return (bool) update_option( self::OPTION_NAME, $job, false );
+		$updated = update_option( self::OPTION_NAME, $job, false );
+		if ( $updated ) {
+			return true;
+		}
+		$persisted = get_option( self::OPTION_NAME, null );
+		return is_array( $persisted ) && $persisted === $job;
 	}
 
 	/**

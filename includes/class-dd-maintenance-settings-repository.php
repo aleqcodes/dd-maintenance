@@ -79,7 +79,12 @@ class DD_Maintenance_Settings_Repository {
 	 * @return bool
 	 */
 	public function save( array $settings ): bool {
-		return (bool) update_option( self::OPTION_NAME, $settings, false );
+		$updated = update_option( self::OPTION_NAME, $settings, false );
+		if ( $updated ) {
+			return true;
+		}
+		$persisted = get_option( self::OPTION_NAME, null );
+		return is_array( $persisted ) && $persisted === $settings;
 	}
 
 	/**

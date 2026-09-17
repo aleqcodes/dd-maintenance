@@ -1,5 +1,5 @@
 parameters:
-    level: 1
+    level: 3
     paths:
         - dd-maintenance.php
         - backuper.php
@@ -10,9 +10,7 @@ parameters:
         - tests/bootstrap.php
     ignoreErrors:
         -
-            message: '#^Function .+ not found\.$#'
-        -
-            message: '#^Function __ invoked with \d+ parameters, \d+ required\.$#'
+            message: '#^Function (?:_n|add_filter|add_menu_page|add_options_page|add_query_arg|admin_url|check_admin_referer|checked|current_time|delete_option|esc_attr|esc_attr_e|esc_html|esc_html__|esc_html_e|esc_url|get_bloginfo|get_date_from_gmt|get_post_meta|is_admin|is_ssl|maybe_unserialize|nocache_headers|number_format_i18n|plugin_dir_path|plugin_dir_url|plugins_url|register_activation_hook|register_deactivation_hook|sanitize_text_field|sanitize_title|selected|size_format|submit_button|untrailingslashit|wp_check_password|wp_clear_scheduled_hook|wp_create_nonce|wp_die|wp_enqueue_script|wp_generate_password|wp_hash_password|wp_json_encode|wp_list_pluck|wp_max_upload_size|wp_next_scheduled|wp_nonce_field|wp_parse_url|wp_remote_get|wp_remote_request|wp_remote_retrieve_body|wp_remote_retrieve_header|wp_remote_retrieve_response_code|wp_safe_redirect|wp_schedule_event|wp_schedule_single_event) not found\.$#'
     excludePaths:
         - %currentWorkingDirectory%/updraftplus/*
-    reportUnmatchedIgnoredErrors: false
+    reportUnmatchedIgnoredErrors: true

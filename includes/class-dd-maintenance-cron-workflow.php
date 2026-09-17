@@ -57,7 +57,9 @@ class DD_Maintenance_Cron_Workflow {
 		if ( isset( $active['status'], $active['session_id'], $active['started_at'] ) && 'running' === $active['status'] ) {
 			if ( ( $now - (int) $active['started_at'] ) < 3600 ) {
 				$active['correlation_id'] = $correlation_id;
-				$this->job_store->save( $active );
+				if ( ! $this->save_job( $active, $active['phase'] ?? 'resume' ) ) {
+					return;
+				}
 				DD_Maintenance::record_event( 'backup', 'cron_resumed', array( 'step' => $active['phase'] ?? 'unknown', 'status' => 'running', 'session_id' => $active['session_id'], 'correlation_id' => $correlation_id ) );
 				return;
 			}
@@ -65,7 +67,7 @@ class DD_Maintenance_Cron_Workflow {
 			DD_Maintenance::record_event( 'backup', 'cron_expired', array( 'step' => $active['phase'] ?? 'unknown', 'status' => 'failure', 'session_id' => $active['session_id'], 'failure_code' => 'cron_timeout', 'error_count' => 1, 'correlation_id' => $correlation_id ) );
 		}
 
-		$session = $this->backup_workflow->step( 'init', '' );
+		$session = $this->backup_workflow->step( 'init', '', $correlation_id );
 		if ( is_wp_error( $session ) ) {
 			$log = array( '[ERRO] Backup: ' . $session->get_error_message() );
 			set_transient( 'dd_maintenance_last_log', $log, DAY_IN_SECONDS );
@@ -89,7 +91,9 @@ class DD_Maintenance_Cron_Workflow {
 			'correlation_id'=> $correlation_id,
 			'log'          => array( '[Início] ' . current_time( 'Y-m-d H:i:s' ) ),
 		);
-		$this->job_store->save( $job );
+		if ( ! $this->save_job( $job, 'database' ) ) {
+			return;
+		}
 		DD_Maintenance::record_event( 'backup', 'cron_session_created', array( 'step' => 'database', 'status' => 'running', 'session_id' => $session['session_id'], 'correlation_id' => $correlation_id ) );
 		$this->schedule_continuation( $session['session_id'] );
 	}
@@ -218,10 +222,38 @@ class DD_Maintenance_Cron_Workflow {
 			DD_Maintenance::save_log( $job['log'], 'success', $job['base_name'] ?? '' );
 		}
 
-		$this->job_store->save( $job );
+		if ( ! $this->save_job( $job, $phase ) ) {
+			return;
+		}
 		if ( 'running' === $job['status'] ) {
 			$this->schedule_continuation( $session_id );
 		}
+	}
+
+	/**
+	 * Persiste o job e registra falha de checkpoint sem avançar o cron.
+	 *
+	 * @param array  $job  Estado do job.
+	 * @param string $step Etapa em execução.
+	 * @return bool
+	 */
+	private function save_job( array $job, string $step ): bool {
+		if ( $this->job_store->save( $job ) ) {
+			return true;
+		}
+		DD_Maintenance::record_event(
+			'backup',
+			'checkpoint_failed',
+			array(
+				'step'           => $step,
+				'session_id'     => $job['session_id'] ?? '',
+				'correlation_id' => $job['correlation_id'] ?? '',
+				'status'         => 'failure',
+				'failure_code'   => 'cron_job_save_failed',
+				'error_count'    => 1,
+			)
+		);
+		return false;
 	}
 
 	/**

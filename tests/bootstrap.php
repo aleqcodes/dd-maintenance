@@ -66,6 +66,9 @@ if ( ! function_exists( 'get_option' ) ) {
 }
 if ( ! function_exists( 'update_option' ) ) {
 	function update_option( string $name, $value, bool $autoload = true ): bool {
+		if ( ! empty( $GLOBALS['dd_phpunit_fail_update_option'] ) ) {
+			return false;
+		}
 		$GLOBALS['dd_phpunit_options'][ $name ] = $value;
 		return true;
 	}

@@ -27,9 +27,11 @@ class DD_Maintenance_Config {
 			return $hash;
 		}
 
-		// Fallback para opção do plugin legado.
 		$legacy_hash = get_option( self::LEGACY_OPTION_PASSWORD_HASH, '' );
 		if ( is_string( $legacy_hash ) && '' !== $legacy_hash ) {
+			if ( class_exists( 'DD_Maintenance_Legacy_Compatibility' ) ) {
+				DD_Maintenance_Legacy_Compatibility::record_usage( 'option_dd_gerenciador_updates_password_hash' );
+			}
 			update_option( self::OPTION_PASSWORD_HASH, $legacy_hash, false );
 			return $legacy_hash;
 		}
@@ -300,7 +302,7 @@ class DD_Maintenance_Config {
 
 		$result = file_put_contents( $config_path, $updated_contents, LOCK_EX );
 
-		if ( false === $result ) {
+		if ( false === $result || (int) $result !== strlen( $updated_contents ) ) {
 			if ( ! copy( $backup_path, $config_path ) ) {
 				return new WP_Error( 'dd_config_restore_failed', __( 'Não foi possível gravar no wp-config.php nem restaurar o backup original.', 'dd-maintenance' ) );
 			}
@@ -506,7 +508,7 @@ class DD_Maintenance_Config {
 		}
 
 		$result = file_put_contents( $config_path, $updated, LOCK_EX );
-		if ( false === $result ) {
+		if ( false === $result || (int) $result !== strlen( $updated ) ) {
 			if ( ! copy( $backup_path, $config_path ) ) {
 				return new WP_Error( 'dd_config_restore_failed', __( 'Falha ao salvar o prefixo e restaurar o wp-config.php original.', 'dd-maintenance' ) );
 			}

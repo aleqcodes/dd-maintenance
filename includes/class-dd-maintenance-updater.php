@@ -109,8 +109,9 @@ class DD_Maintenance_Updater {
 				);
 			} else {
 				$error = is_wp_error( $result ) ? $result->get_error_message() : __( 'erro desconhecido', 'dd-maintenance' );
-				if ( $skin && method_exists( $skin, 'get_errors' ) && is_wp_error( $skin->get_errors() ) ) {
-					$error .= ' (' . $skin->get_errors()->get_error_message() . ')';
+				$skin_errors = is_object( $skin ) && is_callable( array( $skin, 'get_errors' ) ) ? call_user_func( array( $skin, 'get_errors' ) ) : null;
+				if ( is_wp_error( $skin_errors ) ) {
+					$error .= ' (' . $skin_errors->get_error_message() . ')';
 				}
 				$logs[] = sprintf(
 					/* translators: 1: Nome do plugin, 2: Mensagem de erro */
@@ -167,10 +168,10 @@ class DD_Maintenance_Updater {
 		if ( is_wp_error( $result ) ) {
 			return new WP_Error( 'core_upgrade', $result->get_error_message() );
 		}
-
 		if ( false === $result || null === $result ) {
-			if ( $skin && method_exists( $skin, 'get_errors' ) && is_wp_error( $skin->get_errors() ) ) {
-				return new WP_Error( 'core_upgrade', $skin->get_errors()->get_error_message() );
+			$skin_errors = is_object( $skin ) && is_callable( array( $skin, 'get_errors' ) ) ? call_user_func( array( $skin, 'get_errors' ) ) : null;
+			if ( is_wp_error( $skin_errors ) ) {
+				return new WP_Error( 'core_upgrade', $skin_errors->get_error_message() );
 			}
 			return new WP_Error( 'core_upgrade', __( 'Não foi possível atualizar o core do WordPress.', 'dd-maintenance' ) );
 		}

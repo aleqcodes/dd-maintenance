@@ -55,53 +55,53 @@ class DD_Maintenance_Admin_Page_Renderer {
 			$next_cron = wp_next_scheduled( 'backuper_daily_maintenance' );
 		}
 		?>
-		<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:16px;margin-bottom:24px;">
+		<div class="dd-maint-style-display-grid-grid-template-columns-repeat-auto-f-e40afb">
 			<!-- Card 1: Status do S3 -->
-			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
+			<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-213afc">
 				<h3 class="dd-maintenance-card-title">
-					<span class="dashicons dashicons-cloud" style="color:#2271b1;"></span>
+					<span class="dashicons dashicons-cloud dd-maint-style-color-2271b1-5dadfa"></span>
 					<?php esc_html_e( 'Armazenamento S3 (Spaces)', 'dd-maintenance' ); ?>
 				</h3>
 				<?php if ( $s3_configured ) : ?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span> <strong><?php esc_html_e( 'Configurado e Pronto', 'dd-maintenance' ); ?></strong></p>
-					<p style="margin-bottom:0;"><code><?php echo esc_html( $s3->get_bucket() ); ?></code> (<?php echo esc_html( $s3->get_region() ); ?>)</p>
+					<p class="dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac"><span class="dashicons dashicons-yes-alt dd-maint-style-color-46b450-5c8216"></span> <strong><?php esc_html_e( 'Configurado e Pronto', 'dd-maintenance' ); ?></strong></p>
+					<p class="dd-maint-style-margin-bottom-0-76084e"><code><?php echo esc_html( $s3->get_bucket() ); ?></code> (<?php echo esc_html( $s3->get_region() ); ?>)</p>
 				<?php else : ?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-warning" style="color:#dba617;"></span> <strong><?php esc_html_e( 'Não configurado', 'dd-maintenance' ); ?></strong></p>
+					<p class="dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac"><span class="dashicons dashicons-warning dd-maint-style-color-dba617-a100d6"></span> <strong><?php esc_html_e( 'Não configurado', 'dd-maintenance' ); ?></strong></p>
 					<p><a href="<?php echo esc_url( $this->page_url( 's3' ) ); ?>" class="button button-small"><?php esc_html_e( 'Configurar credenciais', 'dd-maintenance' ); ?></a></p>
 				<?php endif; ?>
 			</div>
 
 			<!-- Card 2: Status do wp-config.php -->
-			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
+			<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-213afc">
 				<h3 class="dd-maintenance-card-title">
-					<span class="dashicons dashicons-admin-settings" style="color:#2271b1;"></span>
+					<span class="dashicons dashicons-admin-settings dd-maint-style-color-2271b1-5dadfa"></span>
 					<?php esc_html_e( 'Travas wp-config.php', 'dd-maintenance' ); ?>
 				</h3>
-				<p style="margin:4px 0;">
+				<p class="dd-maint-style-margin-4px-0-60946a">
 					<strong>DISALLOW_FILE_MODS:</strong>
 					<?php if ( true === $file_mods ) : ?>
-						<span style="color:#d63638;font-weight:600;"><?php esc_html_e( 'Bloqueado (true)', 'dd-maintenance' ); ?></span>
+						<span class="dd-maint-style-color-d63638-font-weight-600-5671c2"><?php esc_html_e( 'Bloqueado (true)', 'dd-maintenance' ); ?></span>
 					<?php else : ?>
-						<span style="color:#46b450;font-weight:600;"><?php esc_html_e( 'Liberado (false)', 'dd-maintenance' ); ?></span>
+						<span class="dd-maint-style-color-46b450-font-weight-600-e9a241"><?php esc_html_e( 'Liberado (false)', 'dd-maintenance' ); ?></span>
 					<?php endif; ?>
 				</p>
-				<p style="margin:4px 0;">
+				<p class="dd-maint-style-margin-4px-0-60946a">
 					<strong>DISALLOW_FILE_EDIT:</strong>
 					<?php if ( true === $file_edit ) : ?>
-						<span style="color:#d63638;font-weight:600;"><?php esc_html_e( 'Bloqueado (true)', 'dd-maintenance' ); ?></span>
+						<span class="dd-maint-style-color-d63638-font-weight-600-5671c2"><?php esc_html_e( 'Bloqueado (true)', 'dd-maintenance' ); ?></span>
 					<?php else : ?>
-						<span style="color:#46b450;font-weight:600;"><?php esc_html_e( 'Liberado (false)', 'dd-maintenance' ); ?></span>
+						<span class="dd-maint-style-color-46b450-font-weight-600-e9a241"><?php esc_html_e( 'Liberado (false)', 'dd-maintenance' ); ?></span>
 					<?php endif; ?>
 				</p>
-				<p style="margin-top:8px;margin-bottom:0;">
+				<p class="dd-maint-style-margin-top-8px-margin-bottom-0-f27a7b">
 					<a href="<?php echo esc_url( $this->page_url( 'config' ) ); ?>" class="button button-small"><?php esc_html_e( 'Gerenciar com senha', 'dd-maintenance' ); ?></a>
 				</p>
 			</div>
 
 			<!-- Card 3: Status da Automação & Retenção -->
-			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
+			<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-213afc">
 				<h3 class="dd-maintenance-card-title">
-					<span class="dashicons dashicons-backup" style="color:#2271b1;"></span>
+					<span class="dashicons dashicons-backup dd-maint-style-color-2271b1-5dadfa"></span>
 					<?php esc_html_e( 'Automação & Retenção', 'dd-maintenance' ); ?>
 				</h3>
 				<?php if ( ! empty( $settings['schedule_enabled'] ) ) : ?>
@@ -116,41 +116,41 @@ class DD_Maintenance_Admin_Page_Renderer {
 					$freq_label = isset( $freq_labels[ $freq_key ] ) ? $freq_labels[ $freq_key ] : __( 'Ativada', 'dd-maintenance' );
 					$retention  = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
 					?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span> <strong><?php echo esc_html( $freq_label ); ?></strong></p>
+					<p class="dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac"><span class="dashicons dashicons-yes-alt dd-maint-style-color-46b450-5c8216"></span> <strong><?php echo esc_html( $freq_label ); ?></strong></p>
 					<?php if ( $next_cron ) : ?>
-						<p style="margin:4px 0;color:#666;font-size:12px;"><?php printf( esc_html__( 'Próxima: %s', 'dd-maintenance' ), esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ) ); ?></p>
+						<p class="dd-maint-style-margin-4px-0-color-666-font-size-12px-015270"><?php printf( esc_html__( 'Próxima: %s', 'dd-maintenance' ), esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ) ); ?></p>
 					<?php endif; ?>
-					<p style="margin:4px 0;color:#666;font-size:12px;"><?php printf( esc_html__( 'Retenção: %s', 'dd-maintenance' ), $retention > 0 ? sprintf( esc_html__( 'últimos %d backups', 'dd-maintenance' ), $retention ) : esc_html__( 'Ilimitada', 'dd-maintenance' ) ); ?></p>
+					<p class="dd-maint-style-margin-4px-0-color-666-font-size-12px-015270"><?php printf( esc_html__( 'Retenção: %s', 'dd-maintenance' ), $retention > 0 ? sprintf( esc_html__( 'últimos %s backups', 'dd-maintenance' ), esc_html( (string) $retention ) ) : esc_html__( 'Ilimitada', 'dd-maintenance' ) ); ?></p>
 				<?php else : ?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-marker" style="color:#666;"></span> <strong><?php esc_html_e( 'Desativada', 'dd-maintenance' ); ?></strong></p>
+					<p class="dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac"><span class="dashicons dashicons-marker dd-maint-style-color-666-6a8c41"></span> <strong><?php esc_html_e( 'Desativada', 'dd-maintenance' ); ?></strong></p>
 					<p><a href="<?php echo esc_url( $this->page_url( 'cron' ) ); ?>" class="button button-small"><?php esc_html_e( 'Configurar agendamento', 'dd-maintenance' ); ?></a></p>
 				<?php endif; ?>
 			</div>
 
 			<!-- Card 4: Backups Locais no Servidor -->
-			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:16px;box-shadow:0 1px 1px rgba(0,0,0,0.04);">
+			<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-213afc">
 				<h3 class="dd-maintenance-card-title">
-					<span class="dashicons dashicons-database-import" style="color:#2271b1;"></span>
+					<span class="dashicons dashicons-database-import dd-maint-style-color-2271b1-5dadfa"></span>
 					<?php esc_html_e( 'Backups Locais Salvos', 'dd-maintenance' ); ?>
 				</h3>
 				<?php if ( $backup_count > 0 ) : ?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-yes-alt" style="color:#46b450;"></span> <strong><?php printf( esc_html__( '%d pacote(s) disponível(is)', 'dd-maintenance' ), $backup_count ); ?></strong></p>
-					<p style="margin:4px 0;color:#666;font-size:12px;"><?php printf( esc_html__( 'Tamanho em disco: %s', 'dd-maintenance' ), esc_html( size_format( $total_bytes ) ) ); ?></p>
-					<p style="margin-top:8px;margin-bottom:0;">
+					<p class="dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac"><span class="dashicons dashicons-yes-alt dd-maint-style-color-46b450-5c8216"></span> <strong><?php printf( esc_html__( '%s pacote(s) disponível(is)', 'dd-maintenance' ), esc_html( (string) $backup_count ) ); ?></strong></p>
+					<p class="dd-maint-style-margin-4px-0-color-666-font-size-12px-015270"><?php printf( esc_html__( 'Tamanho em disco: %s', 'dd-maintenance' ), esc_html( size_format( $total_bytes ) ) ); ?></p>
+					<p class="dd-maint-style-margin-top-8px-margin-bottom-0-f27a7b">
 						<a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small button-primary">
-							<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+							<span class="dashicons dashicons-download dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 							<?php esc_html_e( 'Baixar Backups', 'dd-maintenance' ); ?> &rarr;
 						</a>
 					</p>
 				<?php else : ?>
-					<p style="display:flex;align-items:center;gap:6px;"><span class="dashicons dashicons-marker" style="color:#666;"></span> <strong><?php esc_html_e( 'Nenhum backup local', 'dd-maintenance' ); ?></strong></p>
-					<p style="margin-top:8px;margin-bottom:0;"><a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small"><?php esc_html_e( 'Ver pasta de backups', 'dd-maintenance' ); ?></a></p>
+					<p class="dd-maint-style-display-flex-align-items-center-gap-6px-ac86ac"><span class="dashicons dashicons-marker dd-maint-style-color-666-6a8c41"></span> <strong><?php esc_html_e( 'Nenhum backup local', 'dd-maintenance' ); ?></strong></p>
+					<p class="dd-maint-style-margin-top-8px-margin-bottom-0-f27a7b"><a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small"><?php esc_html_e( 'Ver pasta de backups', 'dd-maintenance' ); ?></a></p>
 				<?php endif; ?>
 			</div>
 		</div>
 
 		<?php if ( true === $file_mods ) : ?>
-			<div class="notice notice-warning inline" style="margin-bottom:20px;">
+			<div class="notice notice-warning inline dd-maint-style-margin-bottom-20px-7dde5e">
 				<p>
 					<strong><?php esc_html_e( 'Atenção:', 'dd-maintenance' ); ?></strong>
 					<?php esc_html_e( 'A constante DISALLOW_FILE_MODS está ativa no seu wp-config.php. Atualizações de plugins e do core do WordPress podem ser bloqueadas pelo WordPress até que ela seja liberada.', 'dd-maintenance' ); ?>
@@ -159,8 +159,8 @@ class DD_Maintenance_Admin_Page_Renderer {
 			</div>
 		<?php endif; ?>
 
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;margin-bottom:24px;">
-			<h2 style="margin-top:0;"><?php esc_html_e( 'Ações Manuais de Manutenção', 'dd-maintenance' ); ?></h2>
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-7486dd">
+			<h2 class="dd-maint-style-margin-top-0-291b7b"><?php esc_html_e( 'Ações Manuais de Manutenção', 'dd-maintenance' ); ?></h2>
 			<p><?php esc_html_e( 'Execute o ciclo completo ou dispare cada etapa de manutenção individualmente:', 'dd-maintenance' ); ?></p>
 
 			<div class="dd-maintenance-actions">
@@ -207,27 +207,27 @@ class DD_Maintenance_Admin_Page_Renderer {
 		</div>
 
 		<?php if ( ! empty( $local_backups ) ) : ?>
-			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;margin-bottom:24px;">
-				<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-					<h2 style="margin:0;display:flex;align-items:center;gap:8px;">
-						<span class="dashicons dashicons-download" style="color:#2271b1;"></span>
+			<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-7486dd">
+				<div class="dd-maint-style-display-flex-justify-content-space-between-align-801166">
+					<h2 class="dd-maint-style-margin-0-display-flex-align-items-center-gap-8px-b271d5">
+						<span class="dashicons dashicons-download dd-maint-style-color-2271b1-5dadfa"></span>
 						<?php esc_html_e( 'Últimos Backups Locais (Downloads Rápidos)', 'dd-maintenance' ); ?>
 					</h2>
 					<a href="<?php echo esc_url( $this->page_url( 'restore' ) ); ?>" class="button button-small">
 						<?php esc_html_e( 'Ver todos os backups locais', 'dd-maintenance' ); ?> &rarr;
 					</a>
 				</div>
-				<p style="margin-top:0;color:#50575e;">
+				<p class="dd-maint-style-margin-top-0-color-50575e-5e3ae0">
 					<?php esc_html_e( 'Baixe os arquivos de backup gerados no servidor diretamente para seu computador:', 'dd-maintenance' ); ?>
 				</p>
 
-				<table class="widefat striped" style="border:1px solid #c3c4c7;">
+				<table class="widefat striped dd-maint-style-border-1px-solid-c3c4c7-791c44">
 					<thead>
 						<tr>
 							<th scope="col"><?php esc_html_e( 'Backup & Volumes', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="width:140px;"><?php esc_html_e( 'Data', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="width:110px;"><?php esc_html_e( 'Tamanho', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="min-width:210px;"><?php esc_html_e( 'Download Imediato', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-width-140px-7a1ab9"><?php esc_html_e( 'Data', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-width-110px-80ffd2"><?php esc_html_e( 'Tamanho', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-min-width-210px-860edd"><?php esc_html_e( 'Download Imediato', 'dd-maintenance' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -237,10 +237,10 @@ class DD_Maintenance_Admin_Page_Renderer {
 						?>
 							<tr>
 								<td>
-									<strong style="font-family:monospace;font-size:13px;"><?php echo esc_html( $b['identifier'] ); ?></strong>
-									<div style="margin-top:2px;">
+									<strong class="dd-maint-style-font-family-monospace-font-size-13px-179b58"><?php echo esc_html( $b['identifier'] ); ?></strong>
+									<div class="dd-maint-style-margin-top-2px-b08169">
 										<?php if ( ! empty( $b['is_multipart'] ) ) : ?>
-											<span class="dd-maint-part-badge"><?php printf( esc_html__( '%d volumes', 'dd-maintenance' ), $b['total_parts'] ); ?></span>
+											<span class="dd-maint-part-badge"><?php printf( esc_html__( '%s volumes', 'dd-maintenance' ), esc_html( (string) (int) $b['total_parts'] ) ); ?></span>
 										<?php elseif ( ! empty( $b['parts'] ) ) : ?>
 											<span class="dd-maint-part-badge"><?php esc_html_e( 'Volume Único (.zip)', 'dd-maintenance' ); ?></span>
 										<?php endif; ?>
@@ -249,30 +249,30 @@ class DD_Maintenance_Admin_Page_Renderer {
 										<?php endif; ?>
 									</div>
 								</td>
-								<td style="font-size:12.5px;color:#50575e;"><?php echo esc_html( $b['date_formatted'] ); ?></td>
-								<td style="font-weight:600;font-size:12.5px;"><?php echo esc_html( $b['size_formatted'] ); ?></td>
+								<td class="dd-maint-style-font-size-12-5px-color-50575e-751583"><?php echo esc_html( $b['date_formatted'] ); ?></td>
+								<td class="dd-maint-style-font-weight-600-font-size-12-5px-4f0b20"><?php echo esc_html( $b['size_formatted'] ); ?></td>
 								<td>
-									<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+									<div class="dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-align-items--6583bc">
 										<?php if ( ! empty( $b['is_multipart'] ) && count( $b['parts'] ) > 1 ) : ?>
-											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $b['parts'], 'filename' ) ) ); ?>, this);">
-												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+											<button type="button" class="button button-primary button-small dd-maint-download-all-trigger" data-dd-download-parts="<?php echo esc_attr( wp_json_encode( wp_list_pluck( $b['parts'], 'filename' ) ) ); ?>">
+												<span class="dashicons dashicons-download dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 												<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
 											</button>
 											<?php foreach ( $b['parts'] as $p ) : ?>
 												<a href="<?php echo esc_url( self::get_download_url( $p['filename'] ) ); ?>" class="button button-secondary button-small" download="<?php echo esc_attr( $p['filename'] ); ?>" title="<?php echo esc_attr( $p['filename'] ); ?>">
-													<?php printf( esc_html__( 'P%d (%s)', 'dd-maintenance' ), $p['part'], esc_html( $p['size_formatted'] ) ); ?>
+													<?php printf( esc_html__( 'P%s (%s)', 'dd-maintenance' ), esc_html( (string) (int) $p['part'] ), esc_html( $p['size_formatted'] ) ); ?>
 												</a>
 											<?php endforeach; ?>
 										<?php elseif ( ! empty( $b['parts'] ) ) : ?>
 											<a href="<?php echo esc_url( self::get_download_url( $b['parts'][0]['filename'] ) ); ?>" class="button button-primary button-small" download="<?php echo esc_attr( $b['parts'][0]['filename'] ); ?>">
-												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+												<span class="dashicons dashicons-download dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 												<?php esc_html_e( 'Baixar Backup (.zip)', 'dd-maintenance' ); ?>
 											</a>
 										<?php endif; ?>
 
 										<?php if ( ! empty( $b['has_sql'] ) && ! empty( $b['sql_filename'] ) ) : ?>
 											<a href="<?php echo esc_url( self::get_download_url( $b['sql_filename'] ) ); ?>" class="button button-secondary button-small" download="<?php echo esc_attr( $b['sql_filename'] ); ?>" title="<?php esc_attr_e( 'Baixar dump SQL do banco de dados', 'dd-maintenance' ); ?>">
-												<span class="dashicons dashicons-database" style="font-size:12px;vertical-align:middle;"></span>
+												<span class="dashicons dashicons-database dd-maint-style-font-size-12px-vertical-align-middle-f45765"></span>
 												<?php esc_html_e( 'SQL', 'dd-maintenance' ); ?>
 											</a>
 										<?php endif; ?>
@@ -286,12 +286,12 @@ class DD_Maintenance_Admin_Page_Renderer {
 		<?php endif; ?>
 
 		<?php if ( ! empty( $last_log ) && is_array( $last_log ) ) : ?>
-			<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;">
-				<div style="display:flex;justify-content:space-between;align-items:center;">
-					<h2 style="margin-top:0;"><?php esc_html_e( 'Última Execução', 'dd-maintenance' ); ?></h2>
+			<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-368b1d">
+				<div class="dd-maint-style-display-flex-justify-content-space-between-align-812972">
+					<h2 class="dd-maint-style-margin-top-0-291b7b"><?php esc_html_e( 'Última Execução', 'dd-maintenance' ); ?></h2>
 					<a href="<?php echo esc_url( $this->page_url( 'logs' ) ); ?>" class="button button-small"><?php esc_html_e( 'Ver logs completos', 'dd-maintenance' ); ?></a>
 				</div>
-				<pre style="background:#f6f7f7;padding:12px;border:1px solid #dcdcde;border-radius:3px;overflow:auto;max-height:220px;font-size:12px;line-height:1.5;"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
+				<pre class="dd-maint-style-background-f6f7f7-padding-12px-border-1px-solid--be1e89"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
 			</div>
 		<?php endif; ?>
 		<?php
@@ -302,8 +302,8 @@ class DD_Maintenance_Admin_Page_Renderer {
 	 */
 	public function render_tab_config( $status, $has_password ) {
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;margin-bottom:24px;">
-			<h2 style="margin-top:0;display:flex;align-items:center;gap:8px;">
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-5658c0">
+			<h2 class="dd-maint-style-margin-top-0-display-flex-align-items-center-gap-8981e5">
 				<span class="dashicons dashicons-shield"></span>
 				<?php esc_html_e( 'Controle de Travas no wp-config.php', 'dd-maintenance' ); ?>
 			</h2>
@@ -317,38 +317,38 @@ class DD_Maintenance_Admin_Page_Renderer {
 				<li><code>define( 'DISALLOW_FILE_EDIT', true/false );</code> &mdash; <?php esc_html_e( 'true bloqueia o editor de arquivos de temas/plugins no painel; false libera.', 'dd-maintenance' ); ?></li>
 			</ul>
 
-			<table class="widefat striped" style="margin: 20px 0; border: 1px solid #c3c4c7;">
+			<table class="widefat striped dd-maint-style-margin-20px-0-border-1px-solid-c3c4c7-1db2a8">
 				<tbody>
 					<tr>
-						<th scope="row" style="width:240px;font-weight:600;"><?php esc_html_e( 'Arquivo detectado', 'dd-maintenance' ); ?></th>
+						<th scope="row" class="dd-maint-style-width-240px-font-weight-600-a08b79"><?php esc_html_e( 'Arquivo detectado', 'dd-maintenance' ); ?></th>
 						<td><code><?php echo esc_html( DD_Maintenance_Config::format_status_path( $status ) ); ?></code></td>
 					</tr>
 					<tr>
-						<th scope="row" style="font-weight:600;"><code>DISALLOW_FILE_MODS</code></th>
+						<th scope="row" class="dd-maint-style-font-weight-600-0b87e9"><code>DISALLOW_FILE_MODS</code></th>
 						<td>
 							<?php
 							$mods_val = DD_Maintenance_Config::get_status_value( $status, 'DISALLOW_FILE_MODS' );
 							if ( true === $mods_val ) {
-								echo '<span style="color:#d63638;font-weight:bold;">' . esc_html__( 'true - BLOQUEADO (updates e arquivos travados)', 'dd-maintenance' ) . '</span>';
+								echo '<span class="dd-maint-style-color-d63638-font-weight-bold-68da2c">' . esc_html__( 'true - BLOQUEADO (updates e arquivos travados)', 'dd-maintenance' ) . '</span>';
 							} elseif ( false === $mods_val ) {
-								echo '<span style="color:#46b450;font-weight:bold;">' . esc_html__( 'false - LIBERADO (updates permitidos)', 'dd-maintenance' ) . '</span>';
+								echo '<span class="dd-maint-style-color-46b450-font-weight-bold-f5419f">' . esc_html__( 'false - LIBERADO (updates permitidos)', 'dd-maintenance' ) . '</span>';
 							} else {
-								echo '<span style="color:#666;">' . esc_html__( 'Não definido (padrão: liberado)', 'dd-maintenance' ) . '</span>';
+								echo '<span class="dd-maint-style-color-666-6a8c41">' . esc_html__( 'Não definido (padrão: liberado)', 'dd-maintenance' ) . '</span>';
 							}
 							?>
 						</td>
 					</tr>
 					<tr>
-						<th scope="row" style="font-weight:600;"><code>DISALLOW_FILE_EDIT</code></th>
+						<th scope="row" class="dd-maint-style-font-weight-600-0b87e9"><code>DISALLOW_FILE_EDIT</code></th>
 						<td>
 							<?php
 							$edit_val = DD_Maintenance_Config::get_status_value( $status, 'DISALLOW_FILE_EDIT' );
 							if ( true === $edit_val ) {
-								echo '<span style="color:#d63638;font-weight:bold;">' . esc_html__( 'true - BLOQUEADO (editor desativado)', 'dd-maintenance' ) . '</span>';
+								echo '<span class="dd-maint-style-color-d63638-font-weight-bold-68da2c">' . esc_html__( 'true - BLOQUEADO (editor desativado)', 'dd-maintenance' ) . '</span>';
 							} elseif ( false === $edit_val ) {
-								echo '<span style="color:#46b450;font-weight:bold;">' . esc_html__( 'false - LIBERADO (editor permitido)', 'dd-maintenance' ) . '</span>';
+								echo '<span class="dd-maint-style-color-46b450-font-weight-bold-f5419f">' . esc_html__( 'false - LIBERADO (editor permitido)', 'dd-maintenance' ) . '</span>';
 							} else {
-								echo '<span style="color:#666;">' . esc_html__( 'Não definido (padrão: liberado)', 'dd-maintenance' ) . '</span>';
+								echo '<span class="dd-maint-style-color-666-6a8c41">' . esc_html__( 'Não definido (padrão: liberado)', 'dd-maintenance' ) . '</span>';
 							}
 							?>
 						</td>
@@ -357,7 +357,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 			</table>
 
 			<?php if ( ! $has_password ) : ?>
-				<div class="notice notice-info inline" style="margin-bottom:20px;">
+				<div class="notice notice-info inline dd-maint-style-margin-bottom-20px-7dde5e">
 					<p><strong><?php esc_html_e( 'Criar senha de proteção:', 'dd-maintenance' ); ?></strong> <?php esc_html_e( 'Antes de modificar o wp-config.php, defina uma senha de segurança para proteger estas operações.', 'dd-maintenance' ); ?></p>
 				</div>
 
@@ -390,7 +390,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 					<?php esc_html_e( 'Nota: "true" bloqueia as alterações/editor, e "false" permite.', 'dd-maintenance' ); ?>
 				</p>
 
-				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-bottom:30px;">
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="dd-maint-style-margin-bottom-30px-5370cb">
 					<input type="hidden" name="action" value="dd_maintenance_config_action">
 					<input type="hidden" name="dd_maintenance_config_action" value="save_config">
 					<?php wp_nonce_field( DD_Maintenance_Config::NONCE_ACTION_SAVE_CONFIG ); ?>
@@ -406,7 +406,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 						<tr>
 							<th scope="row"><label for="dd_maint_file_mods"><code>DISALLOW_FILE_MODS</code></label></th>
 							<td>
-								<select id="dd_maint_file_mods" name="dd_maint_file_mods" style="max-width:100%;">
+								<select id="dd_maint_file_mods" name="dd_maint_file_mods" class="dd-maint-style-max-width-100-0697ec">
 									<option value="true" <?php selected( DD_Maintenance_Config::get_select_value( $status, 'DISALLOW_FILE_MODS' ), true ); ?>><?php esc_html_e( 'true - BLOQUEAR updates, instalações e alterações de arquivos', 'dd-maintenance' ); ?></option>
 									<option value="false" <?php selected( DD_Maintenance_Config::get_select_value( $status, 'DISALLOW_FILE_MODS' ), false ); ?>><?php esc_html_e( 'false - PERMITIR updates, instalações e alterações de arquivos', 'dd-maintenance' ); ?></option>
 								</select>
@@ -415,7 +415,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 						<tr>
 							<th scope="row"><label for="dd_maint_file_edit"><code>DISALLOW_FILE_EDIT</code></label></th>
 							<td>
-								<select id="dd_maint_file_edit" name="dd_maint_file_edit" style="max-width:100%;">
+								<select id="dd_maint_file_edit" name="dd_maint_file_edit" class="dd-maint-style-max-width-100-0697ec">
 									<option value="true" <?php selected( DD_Maintenance_Config::get_select_value( $status, 'DISALLOW_FILE_EDIT' ), true ); ?>><?php esc_html_e( 'true - BLOQUEAR editor de arquivos no painel', 'dd-maintenance' ); ?></option>
 									<option value="false" <?php selected( DD_Maintenance_Config::get_select_value( $status, 'DISALLOW_FILE_EDIT' ), false ); ?>><?php esc_html_e( 'false - PERMITIR editor de arquivos no painel', 'dd-maintenance' ); ?></option>
 								</select>
@@ -461,18 +461,18 @@ class DD_Maintenance_Admin_Page_Renderer {
 	 */
 	public function render_tab_s3( $settings, $s3_configured, $s3 ) {
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;">
-			<h2 style="margin-top:0;display:flex;align-items:center;gap:8px;">
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-1cf229">
+			<h2 class="dd-maint-style-margin-top-0-display-flex-align-items-center-gap-8981e5">
 				<span class="dashicons dashicons-cloud-upload"></span>
 				<?php esc_html_e( 'Configurações do DigitalOcean Spaces (S3)', 'dd-maintenance' ); ?>
 			</h2>
 
 			<?php if ( ! $s3_configured ) : ?>
-				<div class="notice notice-warning inline" style="margin-bottom:16px;">
+				<div class="notice notice-warning inline dd-maint-style-margin-bottom-16px-79a1c5">
 					<p><strong><?php esc_html_e( 'S3 não configurado:', 'dd-maintenance' ); ?></strong> <?php esc_html_e( 'Informe as credenciais abaixo para que os backups possam ser enviados para a nuvem com segurança.', 'dd-maintenance' ); ?></p>
 				</div>
 			<?php else : ?>
-				<div class="notice notice-success inline" style="margin-bottom:16px;">
+				<div class="notice notice-success inline dd-maint-style-margin-bottom-16px-79a1c5">
 					<p><strong><?php esc_html_e( 'S3 configurado com sucesso!', 'dd-maintenance' ); ?></strong> <?php esc_html_e( 'Os backups são enviados para o bucket:', 'dd-maintenance' ); ?> <code><?php echo esc_html( $s3->get_bucket() ); ?></code> (<?php echo esc_html( $s3->get_region() ); ?>).</p>
 				</div>
 			<?php endif; ?>
@@ -577,7 +577,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 			</form>
 
 			<?php if ( $s3_configured ) : ?>
-				<hr style="margin:24px 0;">
+				<hr class="dd-maint-style-margin-24px-0-95e61b">
 
 				<?php
 				$site_slug      = sanitize_title( get_bloginfo( 'name' ) );
@@ -586,68 +586,68 @@ class DD_Maintenance_Admin_Page_Renderer {
 				$has_s3_error   = is_wp_error( $remote_backups );
 				?>
 
-				<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-					<h3 style="margin:0;display:flex;align-items:center;gap:8px;">
-						<span class="dashicons dashicons-cloud" style="color:#2271b1;"></span>
+				<div class="dd-maint-style-display-flex-justify-content-space-between-align-801166">
+					<h3 class="dd-maint-style-margin-0-display-flex-align-items-center-gap-8px-b271d5">
+						<span class="dashicons dashicons-cloud dd-maint-style-color-2271b1-5dadfa"></span>
 						<?php esc_html_e( 'Backups Armazenados no Bucket S3 / Spaces', 'dd-maintenance' ); ?>
 					</h3>
 					<a href="<?php echo esc_url( $this->page_url( 's3' ) ); ?>" class="button button-small">
-						<span class="dashicons dashicons-update" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+						<span class="dashicons dashicons-update dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 						<?php esc_html_e( 'Atualizar Lista do S3', 'dd-maintenance' ); ?>
 					</a>
 				</div>
-				<p class="description" style="margin-top:0;">
+				<p class="description dd-maint-style-margin-top-0-291b7b">
 					<?php printf( esc_html__( 'Backups agrupados no bucket "%1$s" (região: %2$s):', 'dd-maintenance' ), esc_html( $s3->get_bucket() ), esc_html( $s3->get_region() ) ); ?>
 				</p>
 
 				<?php if ( $has_s3_error ) : ?>
-					<div class="notice notice-warning inline" style="margin:12px 0;">
+					<div class="notice notice-warning inline dd-maint-style-margin-12px-0-41db5c">
 						<p><?php printf( esc_html__( 'Não foi possível listar objetos do S3: %s', 'dd-maintenance' ), esc_html( $remote_backups->get_error_message() ) ); ?></p>
 					</div>
 				<?php elseif ( empty( $remote_backups ) ) : ?>
-					<p style="color:#666;font-style:italic;">
+					<p class="dd-maint-style-color-666-font-style-italic-5f541e">
 						<?php esc_html_e( 'Nenhum backup (.zip/.sql) encontrado no bucket S3 / Spaces.', 'dd-maintenance' ); ?>
 					</p>
 				<?php else : ?>
-					<table class="widefat striped" style="margin-top:10px;border:1px solid #c3c4c7;">
+					<table class="widefat striped dd-maint-style-margin-top-10px-border-1px-solid-c3c4c7-9450dc">
 						<thead>
 							<tr>
 								<th scope="col"><?php esc_html_e( 'Backup / Volumes', 'dd-maintenance' ); ?></th>
-								<th scope="col" style="width:120px;"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
-								<th scope="col" style="width:180px;"><?php esc_html_e( 'Data no S3 (GMT)', 'dd-maintenance' ); ?></th>
-								<th scope="col" style="text-align:right;width:150px;"><?php esc_html_e( 'Ação', 'dd-maintenance' ); ?></th>
+								<th scope="col" class="dd-maint-style-width-120px-9fe45c"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
+								<th scope="col" class="dd-maint-style-width-180px-34f7b3"><?php esc_html_e( 'Data no S3 (GMT)', 'dd-maintenance' ); ?></th>
+								<th scope="col" class="dd-maint-style-text-align-right-width-150px-9d3ff8"><?php esc_html_e( 'Ação', 'dd-maintenance' ); ?></th>
 							</tr>
 						</thead>
 						<tbody>
 							<?php foreach ( $remote_backups as $backup ) : ?>
 								<tr>
 									<td>
-										<strong style="font-family:monospace;font-size:12px;"><?php echo esc_html( $backup['display_name'] ); ?></strong>
+										<strong class="dd-maint-style-font-family-monospace-font-size-12px-5dc977"><?php echo esc_html( $backup['display_name'] ); ?></strong>
 										<?php if ( ! empty( $backup['folder'] ) ) : ?>
-											<div><code style="font-size:11px;"><?php echo esc_html( $backup['folder'] ); ?>/</code></div>
+											<div><code class="dd-maint-style-font-size-11px-e48b05"><?php echo esc_html( $backup['folder'] ); ?>/</code></div>
 										<?php endif; ?>
-										<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px;">
-											<span style="display:inline-block;padding:2px 6px;background:#e7f3ff;color:#135e96;border-radius:3px;font-size:11px;">
+										<div class="dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-align-items--1bd370">
+											<span class="dd-maint-style-display-inline-block-padding-2px-6px-background--c3c091">
 												<?php printf( esc_html__( '%d volume(s)', 'dd-maintenance' ), (int) $backup['total_parts'] ); ?>
 											</span>
 											<?php if ( ! empty( $backup['has_sql'] ) ) : ?>
-												<span style="display:inline-block;padding:2px 6px;background:#f0f0f1;color:#50575e;border-radius:3px;font-size:11px;">
+												<span class="dd-maint-style-display-inline-block-padding-2px-6px-background--092f8d">
 													<?php esc_html_e( 'Dump SQL', 'dd-maintenance' ); ?>
 												</span>
 											<?php endif; ?>
 										</div>
 										<?php if ( ! empty( $backup['parts'] ) || ! empty( $backup['has_sql'] ) ) : ?>
-											<details style="margin-top:6px;font-size:11px;color:#50575e;">
-												<summary style="cursor:pointer;color:#2271b1;"><?php esc_html_e( 'Ver arquivos deste backup', 'dd-maintenance' ); ?></summary>
-												<ul style="margin:5px 0 0 16px;">
+											<details class="dd-maint-style-margin-top-6px-font-size-11px-color-50575e-f4d163">
+												<summary class="dd-maint-style-cursor-pointer-color-2271b1-159ccf"><?php esc_html_e( 'Ver arquivos deste backup', 'dd-maintenance' ); ?></summary>
+												<ul class="dd-maint-style-margin-5px-0-0-16px-ae6033">
 													<?php foreach ( $backup['parts'] as $part ) : ?>
-														<li style="margin:2px 0;">
+														<li class="dd-maint-style-margin-2px-0-9d1682">
 															<code><?php echo esc_html( $part['key'] ); ?></code>
 															(<?php echo esc_html( $part['size_formatted'] ); ?>)
 														</li>
 													<?php endforeach; ?>
 													<?php if ( ! empty( $backup['has_sql'] ) ) : ?>
-														<li style="margin:2px 0;">
+														<li class="dd-maint-style-margin-2px-0-9d1682">
 															<code><?php echo esc_html( $backup['sql_key'] ); ?></code>
 															(<?php echo esc_html( $backup['sql_size_formatted'] ); ?>)
 														</li>
@@ -656,20 +656,20 @@ class DD_Maintenance_Admin_Page_Renderer {
 											</details>
 										<?php endif; ?>
 									</td>
-									<td style="font-size:12px;font-weight:600;">
+									<td class="dd-maint-style-font-size-12px-font-weight-600-050002">
 										<?php echo esc_html( $backup['size_formatted'] ); ?>
 									</td>
-									<td style="font-size:12px;color:#50575e;">
+									<td class="dd-maint-style-font-size-12px-color-50575e-223965">
 										<?php echo esc_html( $backup['last_modified'] ); ?>
 									</td>
-									<td style="text-align:right;">
-										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0;" onsubmit="return confirm('<?php echo esc_js( sprintf( __( 'Tem certeza que deseja excluir todos os arquivos do backup "%s" do S3 / Spaces?', 'dd-maintenance' ), $backup['identifier'] ) ); ?>');">
+									<td class="dd-maint-style-text-align-right-a527ba">
+										<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-dd-confirm="<?php echo esc_attr( sprintf( __( 'Tem certeza que deseja excluir todos os arquivos do backup "%s" do S3 / Spaces?', 'dd-maintenance' ), $backup['identifier'] ) ); ?>" class="dd-maint-style-margin-0-1da9fa">
 											<input type="hidden" name="action" value="dd_maintenance_delete_s3_backup">
 											<input type="hidden" name="backup_identifier" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
 											<input type="hidden" name="redirect_tab" value="s3">
 											<?php wp_nonce_field( 'dd_maintenance_delete_s3_backup' ); ?>
-											<button type="submit" class="button button-link-delete button-small" style="color:#b32d2e;text-decoration:none;">
-												<span class="dashicons dashicons-trash" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+											<button type="submit" class="button button-link-delete button-small dd-maint-style-color-b32d2e-text-decoration-none-990de9">
+												<span class="dashicons dashicons-trash dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 												<?php esc_html_e( 'Excluir backup', 'dd-maintenance' ); ?>
 											</button>
 										</form>
@@ -698,14 +698,14 @@ class DD_Maintenance_Admin_Page_Renderer {
 		$current_retention = isset( $settings['retention_local'] ) ? (int) $settings['retention_local'] : 5;
 		$chunk_size_mb     = ( new DD_Maintenance_Settings_Repository() )->get_split_size_mb( $settings );
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;">
-			<h2 style="margin-top:0;display:flex;align-items:center;gap:8px;">
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-1cf229">
+			<h2 class="dd-maint-style-margin-top-0-display-flex-align-items-center-gap-8981e5">
 				<span class="dashicons dashicons-clock"></span>
 				<?php esc_html_e( 'Agendamento Automático & Políticas de Retenção (WP-Cron)', 'dd-maintenance' ); ?>
 			</h2>
 
 			<p>
-				<?php printf( esc_html__( 'Configure a rotina automática para executar periodicamente o fluxo completo de manutenção (backup completo com volumes de até %d MB, envio ao S3/Spaces, limpeza de retenção e atualizações de plugins e core).', 'dd-maintenance' ), $chunk_size_mb ); ?>
+				<?php printf( esc_html__( 'Configure a rotina automática para executar periodicamente o fluxo completo de manutenção (backup completo com volumes de até %s MB, envio ao S3/Spaces, limpeza de retenção e atualizações de plugins e core).', 'dd-maintenance' ), esc_html( (string) $chunk_size_mb ) ); ?>
 			</p>
 
 			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
@@ -781,17 +781,17 @@ class DD_Maintenance_Admin_Page_Renderer {
 						<th scope="row"><?php esc_html_e( 'Status Atual do Cron', 'dd-maintenance' ); ?></th>
 						<td>
 							<?php if ( ! empty( $settings['schedule_enabled'] ) && $next_cron ) : ?>
-								<p style="margin-top:0;">
-									<span class="dashicons dashicons-yes-alt" style="color:#46b450;vertical-align:middle;"></span>
-									<strong style="color:#46b450;"><?php esc_html_e( 'Agendamento Ativo', 'dd-maintenance' ); ?></strong>
+								<p class="dd-maint-style-margin-top-0-291b7b">
+									<span class="dashicons dashicons-yes-alt dd-maint-style-color-46b450-vertical-align-middle-bd2f9d"></span>
+									<strong class="dd-maint-style-color-46b450-5c8216"><?php esc_html_e( 'Agendamento Ativo', 'dd-maintenance' ); ?></strong>
 								</p>
 								<p>
 									<strong><?php esc_html_e( 'Próxima Execução Prevista:', 'dd-maintenance' ); ?></strong>
 									<code><?php echo esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next_cron ), 'd/m/Y H:i:s' ) ); ?></code>
 								</p>
 							<?php else : ?>
-								<p style="color:#666;margin-top:0;">
-									<span class="dashicons dashicons-no-alt" style="color:#d63638;vertical-align:middle;"></span>
+								<p class="dd-maint-style-color-666-margin-top-0-98bc7f">
+									<span class="dashicons dashicons-no-alt dd-maint-style-color-d63638-vertical-align-middle-f9ba26"></span>
 									<?php esc_html_e( 'Nenhuma rotina automática agendada no momento.', 'dd-maintenance' ); ?>
 								</p>
 							<?php endif; ?>
@@ -812,9 +812,9 @@ class DD_Maintenance_Admin_Page_Renderer {
 		$saved_logs = DD_Maintenance::get_saved_logs();
 		$last_event = DD_Maintenance::get_last_event();
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;margin-bottom:24px;">
-			<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-				<h2 style="margin:0;display:flex;align-items:center;gap:8px;">
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-5658c0">
+			<div class="dd-maint-style-display-flex-justify-content-space-between-align-bcbb84">
+				<h2 class="dd-maint-style-margin-0-display-flex-align-items-center-gap-8px-b271d5">
 					<span class="dashicons dashicons-media-text"></span>
 					<?php esc_html_e( 'Log da Última Execução', 'dd-maintenance' ); ?>
 				</h2>
@@ -829,7 +829,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 			</div>
 
 			<?php if ( ! empty( $last_event ) ) : ?>
-				<p style="margin:0 0 12px;color:#50575e;">
+				<p class="dd-maint-style-margin-0-0-12px-color-50575e-ad976f">
 					<strong><?php esc_html_e( 'Último evento:', 'dd-maintenance' ); ?></strong>
 					<span class="dd-maint-badge <?php echo esc_attr( 'success' === ( $last_event['status'] ?? '' ) ? 'success' : ( 'warning' === ( $last_event['status'] ?? '' ) ? 'warning' : ( 'failure' === ( $last_event['status'] ?? '' ) ? 'error' : '' ) ) ); ?>">
 						<?php echo esc_html( DD_Maintenance_Observability::format( $last_event ) ); ?>
@@ -838,16 +838,16 @@ class DD_Maintenance_Admin_Page_Renderer {
 			<?php endif; ?>
 
 			<?php if ( ! empty( $last_log ) && is_array( $last_log ) ) : ?>
-				<pre style="background:#1d2327;color:#f0f0f1;padding:16px;border-radius:4px;overflow:auto;max-height:350px;font-family:monospace;font-size:13px;line-height:1.6;"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
+				<pre class="dd-maint-style-background-1d2327-color-f0f0f1-padding-16px-bord-c00564"><?php echo esc_html( implode( "\n", $last_log ) ); ?></pre>
 			<?php else : ?>
-				<p style="color:#666;font-style:italic;">
+				<p class="dd-maint-style-color-666-font-style-italic-5f541e">
 					<?php esc_html_e( 'Nenhum log registrado na sessão atual.', 'dd-maintenance' ); ?>
 				</p>
 			<?php endif; ?>
 		</div>
 
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:860px;">
-			<h2 style="margin-top:0;margin-bottom:16px;display:flex;align-items:center;gap:8px;">
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-1cf229">
+			<h2 class="dd-maint-style-margin-top-0-margin-bottom-16px-display-flex-ali-b2d039">
 				<span class="dashicons dashicons-archive"></span>
 				<?php esc_html_e( 'Histórico de Logs Salvos (Uploads)', 'dd-maintenance' ); ?>
 			</h2>
@@ -860,7 +860,7 @@ class DD_Maintenance_Admin_Page_Renderer {
 							<th><?php esc_html_e( 'Arquivo', 'dd-maintenance' ); ?></th>
 							<th><?php esc_html_e( 'Status', 'dd-maintenance' ); ?></th>
 							<th><?php esc_html_e( 'Tamanho', 'dd-maintenance' ); ?></th>
-							<th style="text-align:right;"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
+							<th class="dd-maint-style-text-align-right-a527ba"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -880,9 +880,9 @@ class DD_Maintenance_Admin_Page_Renderer {
 									<?php endif; ?>
 								</td>
 								<td><?php echo esc_html( $log_item['size_formatted'] ); ?></td>
-								<td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;align-items:center;">
+								<td class="dd-maint-style-text-align-right-display-flex-gap-6px-justify-co-7268be">
 									<button type="button" class="button button-small dd-view-log-btn" data-log-filename="<?php echo esc_attr( $log_item['filename'] ); ?>">
-										<span class="dashicons dashicons-visibility" style="font-size:14px;vertical-align:middle;line-height:1.4;"></span>
+										<span class="dashicons dashicons-visibility dd-maint-style-font-size-14px-vertical-align-middle-line-height-29c3c7"></span>
 										<?php esc_html_e( 'Ver Log', 'dd-maintenance' ); ?>
 									</button>
 
@@ -897,15 +897,15 @@ class DD_Maintenance_Admin_Page_Renderer {
 									);
 									?>
 									<a href="<?php echo esc_url( $download_url ); ?>" class="button button-small">
-										<span class="dashicons dashicons-download" style="font-size:14px;vertical-align:middle;line-height:1.4;"></span>
+										<span class="dashicons dashicons-download dd-maint-style-font-size-14px-vertical-align-middle-line-height-29c3c7"></span>
 										<?php esc_html_e( 'Baixar', 'dd-maintenance' ); ?>
 									</a>
 
-									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;margin:0;">
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="dd-maint-style-display-inline-margin-0-165435">
 										<input type="hidden" name="action" value="dd_maintenance_delete_log">
 										<input type="hidden" name="log_filename" value="<?php echo esc_attr( $log_item['filename'] ); ?>">
 										<?php wp_nonce_field( 'dd_maintenance_delete_log' ); ?>
-										<button type="submit" class="button button-small button-link-delete" onclick="return confirm('Excluir este log permanentemente?');">
+										<button type="submit" class="button button-small button-link-delete" data-dd-confirm-click="<?php esc_attr_e( 'Excluir este log permanentemente?', 'dd-maintenance' ); ?>">
 											<?php esc_html_e( 'Excluir', 'dd-maintenance' ); ?>
 										</button>
 									</form>
@@ -916,63 +916,21 @@ class DD_Maintenance_Admin_Page_Renderer {
 				</table>
 
 				<!-- Modal para visualização de log individual -->
-				<div id="dd-maint-log-viewer-modal" class="dd-maint-modal-backdrop" style="display:none;z-index:100001;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
-					<div class="dd-maint-modal-dialog" style="background:#fff;border-radius:6px;width:80%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.3);">
-						<div class="dd-maint-modal-header" style="padding:16px 20px;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;align-items:center;">
-							<h3 id="dd-maint-log-viewer-title" style="margin:0;font-size:16px;">Log</h3>
+				<div id="dd-maint-log-viewer-modal" class="dd-maint-modal-backdrop dd-maint-style-display-none-z-index-100001-position-fixed-top-0-84d2b7">
+					<div class="dd-maint-modal-dialog dd-maint-style-background-fff-border-radius-6px-width-80-max-wi-d438d8">
+						<div class="dd-maint-modal-header dd-maint-style-padding-16px-20px-border-bottom-1px-solid-ddd-di-181c93">
+							<h3 id="dd-maint-log-viewer-title" class="dd-maint-style-margin-0-font-size-16px-f36234">Log</h3>
 							<button type="button" id="dd-maint-log-viewer-close" class="button button-small">&times;</button>
 						</div>
-						<div class="dd-maint-modal-body" style="padding:20px;flex:1;overflow:auto;background:#1d2327;">
-							<pre id="dd-maint-log-viewer-content" style="color:#f0f0f1;margin:0;font-family:monospace;font-size:13px;line-height:1.6;white-space:pre-wrap;"></pre>
+						<div class="dd-maint-modal-body dd-maint-style-padding-20px-flex-1-overflow-auto-background-1d2-75dcd3">
+							<pre id="dd-maint-log-viewer-content" class="dd-maint-style-color-f0f0f1-margin-0-font-family-monospace-font-8a6b87"></pre>
 						</div>
 					</div>
 				</div>
 
-				<script>
-				(function() {
-					var modal = document.getElementById('dd-maint-log-viewer-modal');
-					var title = document.getElementById('dd-maint-log-viewer-title');
-					var content = document.getElementById('dd-maint-log-viewer-content');
-					var closeBtn = document.getElementById('dd-maint-log-viewer-close');
-					var ajaxUrl = <?php echo json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
-					var nonce = <?php echo json_encode( wp_create_nonce( 'dd_maint_ajax_nonce' ) ); ?>;
 
-					if (closeBtn) {
-						closeBtn.addEventListener('click', function() { modal.style.display = 'none'; });
-					}
-					if (modal) {
-						modal.addEventListener('click', function(e) { if (e.target === modal) modal.style.display = 'none'; });
-					}
-
-					document.querySelectorAll('.dd-view-log-btn').forEach(function(btn) {
-						btn.addEventListener('click', function() {
-							var fn = btn.getAttribute('data-log-filename');
-							title.innerText = 'Log: ' + fn;
-							content.innerText = 'Carregando log...';
-							modal.style.display = 'flex';
-
-							var fd = new FormData();
-							fd.append('action', 'dd_maintenance_ajax_action');
-							fd.append('step', 'get_log_content');
-							fd.append('log_filename', fn);
-							fd.append('nonce', nonce);
-
-							fetch(ajaxUrl, { method: 'POST', body: fd, credentials: 'same-origin' })
-							.then(function(r) { return r.json(); })
-							.then(function(res) {
-								if (res && res.success) {
-									content.innerText = res.data.content || 'Log vazio.';
-								} else {
-									content.innerText = 'Erro ao carregar log: ' + (res.data ? res.data.message : 'Desconhecido');
-								}
-							})
-							.catch(function(err) { content.innerText = 'Erro de conexão: ' + err; });
-						});
-					});
-				})();
-				</script>
 			<?php else : ?>
-				<p style="color:#666;font-style:italic;margin:0;">
+				<p class="dd-maint-style-color-666-font-style-italic-margin-0-a70e5c">
 					<?php esc_html_e( 'Nenhum histórico de log salvo no servidor.', 'dd-maintenance' ); ?>
 				</p>
 			<?php endif; ?>
@@ -993,53 +951,53 @@ class DD_Maintenance_Admin_Page_Renderer {
 		$s3            = new DD_Maintenance_S3();
 		$s3_configured = $s3->is_configured();
 		?>
-		<div style="background:#fff;border:1px solid #ccd0d4;border-radius:4px;padding:20px;max-width:960px;margin-bottom:24px;">
-			<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
-				<h2 style="margin:0;display:flex;align-items:center;gap:8px;">
-					<span class="dashicons dashicons-database-import" style="color:#2271b1;"></span>
+		<div class="dd-maint-style-background-fff-border-1px-solid-ccd0d4-border-ra-830b2a">
+			<div class="dd-maint-style-display-flex-justify-content-space-between-align-c674fa">
+				<h2 class="dd-maint-style-margin-0-display-flex-align-items-center-gap-8px-b271d5">
+					<span class="dashicons dashicons-database-import dd-maint-style-color-2271b1-5dadfa"></span>
 					<?php esc_html_e( 'Backups Locais Armazenados no Servidor', 'dd-maintenance' ); ?>
 				</h2>
 				<?php if ( ! empty( $local_backups ) ) : ?>
-					<span style="font-size:12px;color:#50575e;background:#f0f0f1;padding:4px 10px;border-radius:12px;">
+					<span class="dd-maint-style-font-size-12px-color-50575e-background-f0f0f1-pa-719fa0">
 						<strong><?php echo esc_html( count( $local_backups ) ); ?></strong> <?php esc_html_e( 'pacote(s) de backup', 'dd-maintenance' ); ?> &bull; <strong><?php echo esc_html( size_format( $total_bytes ) ); ?></strong> <?php esc_html_e( 'em disco', 'dd-maintenance' ); ?>
 					</span>
 				<?php endif; ?>
 			</div>
 
-			<p style="margin-top:0;">
+			<p class="dd-maint-style-margin-top-0-291b7b">
 				<?php esc_html_e( 'Baixe os arquivos de backup diretamente para seu computador ou restaure o site a qualquer momento. Os arquivos ficam salvos com segurança em', 'dd-maintenance' ); ?> <code>wp-content/uploads/dd-maintenance/</code>.
 			</p>
 
 			<!-- Tabela de Backups Locais -->
 			<?php if ( empty( $local_backups ) ) : ?>
-				<div class="notice notice-info inline" style="margin:16px 0;">
-					<p style="margin:4px 0;">
-						<span class="dashicons dashicons-info" style="color:#72aee6;vertical-align:middle;"></span>
+				<div class="notice notice-info inline dd-maint-style-margin-16px-0-598bcd">
+					<p class="dd-maint-style-margin-4px-0-60946a">
+						<span class="dashicons dashicons-info dd-maint-style-color-72aee6-vertical-align-middle-8f9b66"></span>
 						<?php esc_html_e( 'Nenhum arquivo de backup local encontrado na pasta do servidor. Execute um backup na aba "Visão Geral & Ações" para gerar novos arquivos.', 'dd-maintenance' ); ?>
 					</p>
 				</div>
 			<?php else : ?>
-				<table class="widefat striped" style="margin-top:12px;border:1px solid #c3c4c7;">
+				<table class="widefat striped dd-maint-style-margin-top-12px-border-1px-solid-c3c4c7-bd7524">
 					<thead>
 						<tr>
-							<th scope="col" style="min-width:220px;"><?php esc_html_e( 'Identificação do Backup & Volumes', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="width:140px;"><?php esc_html_e( 'Data de Criação', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="width:110px;"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="min-width:210px;"><?php esc_html_e( 'Downloads', 'dd-maintenance' ); ?></th>
-							<th scope="col" style="text-align:right;min-width:180px;"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-min-width-220px-1576af"><?php esc_html_e( 'Identificação do Backup & Volumes', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-width-140px-7a1ab9"><?php esc_html_e( 'Data de Criação', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-width-110px-80ffd2"><?php esc_html_e( 'Tamanho Total', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-min-width-210px-860edd"><?php esc_html_e( 'Downloads', 'dd-maintenance' ); ?></th>
+							<th scope="col" class="dd-maint-style-text-align-right-min-width-180px-31267b"><?php esc_html_e( 'Ações', 'dd-maintenance' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
 						<?php foreach ( $local_backups as $backup ) : ?>
 							<tr>
 								<td>
-									<div style="font-weight:600;font-family:monospace;font-size:13px;color:#1d2327;margin-bottom:4px;">
+									<div class="dd-maint-style-font-weight-600-font-family-monospace-font-size--6ede09">
 										<?php echo esc_html( $backup['identifier'] ); ?>
 									</div>
-									<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+									<div class="dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-align-items--6583bc">
 										<?php if ( ! empty( $backup['is_multipart'] ) ) : ?>
 											<span class="dd-maint-part-badge">
-												<?php printf( esc_html__( '%d volumes / partes', 'dd-maintenance' ), $backup['total_parts'] ); ?>
+												<?php printf( esc_html__( '%s volumes / partes', 'dd-maintenance' ), esc_html( (string) (int) $backup['total_parts'] ) ); ?>
 											</span>
 										<?php elseif ( ! empty( $backup['parts'] ) ) : ?>
 											<span class="dd-maint-part-badge">
@@ -1055,11 +1013,11 @@ class DD_Maintenance_Admin_Page_Renderer {
 									</div>
 
 									<?php if ( ! empty( $backup['is_multipart'] ) && count( $backup['parts'] ) > 1 ) : ?>
-										<details style="margin-top:6px;font-size:11px;color:#50575e;">
-											<summary style="cursor:pointer;color:#2271b1;"><?php esc_html_e( 'Ver lista de volumes individuais', 'dd-maintenance' ); ?></summary>
-											<ul style="margin:4px 0 0 14px;padding:0;list-style:disc;">
+										<details class="dd-maint-style-margin-top-6px-font-size-11px-color-50575e-f4d163">
+											<summary class="dd-maint-style-cursor-pointer-color-2271b1-159ccf"><?php esc_html_e( 'Ver lista de volumes individuais', 'dd-maintenance' ); ?></summary>
+											<ul class="dd-maint-style-margin-4px-0-0-14px-padding-0-list-style-disc-d66f4b">
 												<?php foreach ( $backup['parts'] as $p ) : ?>
-													<li style="margin:2px 0;">
+													<li class="dd-maint-style-margin-2px-0-9d1682">
 														<code><?php echo esc_html( $p['filename'] ); ?></code> (<?php echo esc_html( $p['size_formatted'] ); ?>)
 													</li>
 												<?php endforeach; ?>
@@ -1067,73 +1025,72 @@ class DD_Maintenance_Admin_Page_Renderer {
 										</details>
 									<?php endif; ?>
 								</td>
-								<td style="font-size:12.5px;color:#50575e;">
+								<td class="dd-maint-style-font-size-12-5px-color-50575e-751583">
 									<?php echo esc_html( $backup['date_formatted'] ); ?>
 								</td>
-								<td style="font-weight:600;font-size:12.5px;">
+								<td class="dd-maint-style-font-weight-600-font-size-12-5px-4f0b20">
 									<?php echo esc_html( $backup['size_formatted'] ); ?>
 								</td>
 								<td>
-									<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;">
+									<div class="dd-maint-style-display-flex-flex-direction-column-gap-6px-align-916be7">
 										<?php if ( ! empty( $backup['is_multipart'] ) && count( $backup['parts'] ) > 1 ) : ?>
-											<button type="button" class="button button-primary button-small" onclick="ddMaintDownloadAll(<?php echo esc_attr( wp_json_encode( wp_list_pluck( $backup['parts'], 'filename' ) ) ); ?>, this);" title="<?php esc_attr_e( 'Inicia o download de todos os volumes em lotes de 5 no navegador', 'dd-maintenance' ); ?>">
-												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+											<button type="button" class="button button-primary button-small dd-maint-download-all-trigger" data-dd-download-parts="<?php echo esc_attr( wp_json_encode( wp_list_pluck( $backup['parts'], 'filename' ) ) ); ?>" title="<?php esc_attr_e( 'Inicia o download de todos os volumes em lotes de 5 no navegador', 'dd-maintenance' ); ?>">
+												<span class="dashicons dashicons-download dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 												<?php esc_html_e( 'Baixar Todos os Volumes', 'dd-maintenance' ); ?>
 											</button>
 
-											<div style="display:flex;flex-wrap:wrap;gap:4px;">
+											<div class="dd-maint-style-display-flex-flex-wrap-wrap-gap-4px-5c6531">
 												<?php foreach ( $backup['parts'] as $p ) : ?>
 													<a href="<?php echo esc_url( self::get_download_url( $p['filename'] ) ); ?>" class="button button-secondary button-small" title="<?php echo esc_attr( $p['filename'] ); ?>" download="<?php echo esc_attr( $p['filename'] ); ?>">
-														<span class="dashicons dashicons-media-archive" style="font-size:12px;vertical-align:middle;"></span>
-														<?php printf( esc_html__( 'Parte %d (%s)', 'dd-maintenance' ), $p['part'], esc_html( $p['size_formatted'] ) ); ?>
+														<span class="dashicons dashicons-media-archive dd-maint-style-font-size-12px-vertical-align-middle-f45765"></span>
+														<?php printf( esc_html__( 'Parte %s (%s)', 'dd-maintenance' ), esc_html( (string) (int) $p['part'] ), esc_html( $p['size_formatted'] ) ); ?>
 													</a>
 												<?php endforeach; ?>
 											</div>
 										<?php elseif ( ! empty( $backup['parts'] ) ) : ?>
 											<a href="<?php echo esc_url( self::get_download_url( $backup['parts'][0]['filename'] ) ); ?>" class="button button-primary button-small" download="<?php echo esc_attr( $backup['parts'][0]['filename'] ); ?>">
-												<span class="dashicons dashicons-download" style="font-size:13px;vertical-align:middle;line-height:1.4;"></span>
+												<span class="dashicons dashicons-download dd-maint-style-font-size-13px-vertical-align-middle-line-height-8cdfa1"></span>
 												<?php esc_html_e( 'Baixar Backup (.zip)', 'dd-maintenance' ); ?>
 											</a>
 										<?php endif; ?>
 
 										<?php if ( ! empty( $backup['has_sql'] ) && ! empty( $backup['sql_filename'] ) ) : ?>
 											<a href="<?php echo esc_url( self::get_download_url( $backup['sql_filename'] ) ); ?>" class="button button-secondary button-small" download="<?php echo esc_attr( $backup['sql_filename'] ); ?>" title="<?php esc_attr_e( 'Baixar dump SQL do banco de dados', 'dd-maintenance' ); ?>">
-												<span class="dashicons dashicons-database" style="font-size:12px;vertical-align:middle;"></span>
+												<span class="dashicons dashicons-database dd-maint-style-font-size-12px-vertical-align-middle-f45765"></span>
 												<?php printf( esc_html__( 'Baixar Dump SQL (%s)', 'dd-maintenance' ), esc_html( $backup['sql_size_formatted'] ) ); ?>
 											</a>
 										<?php endif; ?>
 									</div>
 								</td>
-								<td style="text-align:right;">
-									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;margin-right:6px;" onsubmit="return confirm('<?php echo esc_js( __( 'Tem certeza que deseja restaurar este backup? Os arquivos e banco de dados atuais serão substituídos!', 'dd-maintenance' ) ); ?>');">
+								<td class="dd-maint-style-text-align-right-a527ba">
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-dd-confirm="<?php echo esc_attr( __( 'Tem certeza que deseja restaurar este backup? Os arquivos e banco de dados atuais serão substituídos!', 'dd-maintenance' ) ); ?>" class="dd-maint-style-display-inline-block-margin-right-6px-15b26a">
 										<input type="hidden" name="action" value="dd_maintenance_restore_local">
 										<input type="hidden" name="backup_filename" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
 										<?php wp_nonce_field( 'dd_maintenance_restore_local' ); ?>
 										<?php if ( $has_password ) : ?>
-											<input type="password" name="restore_password" placeholder="<?php esc_attr_e( 'Senha', 'dd-maintenance' ); ?>" style="width:105px;height:30px;font-size:12px;" required autocomplete="current-password">
+											<input type="password" name="restore_password" placeholder="<?php esc_attr_e( 'Senha', 'dd-maintenance' ); ?>" required autocomplete="current-password" class="dd-maint-style-width-105px-height-30px-font-size-12px-ce55b4">
 										<?php endif; ?>
-										<label style="display:block;margin:8px 0;font-size:12px;">
+										<label class="dd-maint-style-display-block-margin-8px-0-font-size-12px-ebcd62">
 											<input type="checkbox" name="apply_elementor_compatibility" value="1">
 											<?php esc_html_e( 'Aplicar compatibilidade Elementor somente se o arquivo conhecido for reconhecido', 'dd-maintenance' ); ?>
 										</label>
 										<button type="submit" class="button button-primary button-small" title="<?php esc_attr_e( 'Restaura os arquivos e banco deste backup', 'dd-maintenance' ); ?>">
-											<span class="dashicons dashicons-backup" style="vertical-align:middle;font-size:14px;width:14px;height:14px;"></span>
-											<?php esc_html_e( 'Restaurar', 'dd-maintenance' ); ?>
+											<span class="dashicons dashicons-backup dd-maint-style-vertical-align-middle-font-size-14px-width-14px--f0d581"></span>
 										</button>
 									</form>
 
-									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline-block;" onsubmit="return confirm('<?php echo esc_js( __( 'Tem certeza que deseja excluir este arquivo de backup local?', 'dd-maintenance' ) ); ?>');">
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-dd-confirm="<?php echo esc_attr( __( 'Tem certeza que deseja excluir este arquivo de backup local?', 'dd-maintenance' ) ); ?>" class="dd-maint-style-display-inline-block-44c26a">
 										<input type="hidden" name="action" value="dd_maintenance_delete_backup">
 										<input type="hidden" name="backup_filename" value="<?php echo esc_attr( $backup['identifier'] ); ?>">
 										<?php wp_nonce_field( 'dd_maintenance_delete_backup' ); ?>
 										<?php if ( $s3_configured ) : ?>
-											<label style="font-size:11px;color:#50575e;margin-right:6px;display:inline-flex;align-items:center;gap:3px;cursor:pointer;" title="<?php esc_attr_e( 'Marque para apagar também os arquivos deste backup no DigitalOcean Spaces / S3', 'dd-maintenance' ); ?>">
-												<input type="checkbox" name="delete_remote" value="1" style="margin:0;">
-												<span class="dashicons dashicons-cloud" style="font-size:13px;width:13px;height:13px;color:#2271b1;"></span>
+											<label title="<?php esc_attr_e( 'Marque para apagar também os arquivos deste backup no DigitalOcean Spaces / S3', 'dd-maintenance' ); ?>" class="dd-maint-style-font-size-11px-color-50575e-margin-right-6px-dis-36c7fe">
+												<input type="checkbox" name="delete_remote" value="1" class="dd-maint-style-margin-0-1da9fa">
+												<span class="dashicons dashicons-cloud dd-maint-style-font-size-13px-width-13px-height-13px-color-2271-df0d9f"></span>
 												<?php esc_html_e( '+ S3', 'dd-maintenance' ); ?>
 											</label>
 										<?php endif; ?>
-										<button type="submit" class="button button-link-delete button-small" style="color:#b32d2e;text-decoration:none;">
+										<button type="submit" class="button button-link-delete button-small dd-maint-style-color-b32d2e-text-decoration-none-990de9">
 											<?php esc_html_e( 'Excluir', 'dd-maintenance' ); ?>
 										</button>
 									</form>
@@ -1143,18 +1100,18 @@ class DD_Maintenance_Admin_Page_Renderer {
 				</table>
 			<?php endif; ?>
 
-			<hr style="margin:30px 0;">
+			<hr class="dd-maint-style-margin-30px-0-66f287">
 
 			<!-- Opção 2: Upload de Arquivo .ZIP -->
-			<h3 style="margin-top:24px;display:flex;align-items:center;gap:6px;">
-				<span class="dashicons dashicons-upload" style="color:#2271b1;"></span>
+			<h3 class="dd-maint-style-margin-top-24px-display-flex-align-items-center--47a341">
+				<span class="dashicons dashicons-upload dd-maint-style-color-2271b1-5dadfa"></span>
 				<?php esc_html_e( 'Fazer Upload de Arquivo .ZIP Externo para Restaurar', 'dd-maintenance' ); ?>
 			</h3>
 			<p>
 				<?php esc_html_e( 'Se você possui arquivos de backup baixados no seu computador, pode enviá-los abaixo para restaurar o site:', 'dd-maintenance' ); ?>
 			</p>
 
-			<div class="notice notice-warning inline" style="margin-bottom:16px;">
+			<div class="notice notice-warning inline dd-maint-style-margin-bottom-16px-79a1c5">
 				<p>
 					<strong><?php esc_html_e( 'Atenção:', 'dd-maintenance' ); ?></strong>
 					<?php esc_html_e( 'A restauração sobrescreverá os arquivos do site e as tabelas existentes no banco de dados com as versões contidas no arquivo de backup. Recomendamos gerar um backup atual antes de restaurar.', 'dd-maintenance' ); ?>

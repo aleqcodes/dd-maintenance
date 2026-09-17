@@ -6,9 +6,8 @@
     <file>includes</file>
     <exclude-pattern>*/updraftplus/*</exclude-pattern>
     <exclude-pattern>*/vendor/*</exclude-pattern>
-    <rule ref="WordPress">
-        <exclude name="WordPress.Files.FileName" />
-        <exclude name="Generic.Files.LineLength" />
-        <exclude name="Squiz.Commenting.FileComment.Missing" />
-    </rule>
+    <!-- Security output is enforced; PHPStan covers contracts and types. -->
+    <rule ref="WordPress.Security.EscapeOutput" />
+    <rule ref="Universal.Operators.StrictComparisons" />
+    <rule ref="WordPress.PHP.StrictInArray" />
 </ruleset>

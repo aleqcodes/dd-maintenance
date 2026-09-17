@@ -187,7 +187,8 @@ foreach ( $tabs as $tab ) {
 	}
 	if ( 'restore' === $tab || 'backups' === $tab ) {
 		assert( strpos( $output, 'Backups Locais Armazenados no Servidor' ) !== false, "A aba restore deve renderizar a área de backups locais." );
-		assert( strpos( $output, 'restore_token' ) !== false, 'O cliente AJAX deve enviar o token efêmero nas etapas de restauração.' );
+		$restore_asset = file_get_contents( __DIR__ . '/../assets/js/dd-maintenance-admin.js' );
+		assert( is_string( $restore_asset ) && strpos( $restore_asset, 'restore_token' ) !== false, 'O asset AJAX deve enviar o token efêmero nas etapas de restauração.' );
 	}
 	if ( 'logs' === $tab ) {
 		assert( strpos( $output, 'Sucesso com avisos' ) !== false, 'O histórico deve distinguir sucesso com avisos.' );

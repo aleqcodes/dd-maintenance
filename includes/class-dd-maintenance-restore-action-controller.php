@@ -6,6 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/class-dd-maintenance-legacy-compatibility.php';
 
 class DD_Maintenance_Restore_Action_Controller {
 
@@ -33,12 +34,14 @@ class DD_Maintenance_Restore_Action_Controller {
 		);
 
 		foreach ( $actions as $hook => $method ) {
-			add_action(
-				$hook,
-				function () use ( $method ) {
-					return call_user_func_array( array( $this->settings, $method ), func_get_args() );
-				}
-			);
+			$callback = function () use ( $method ) {
+				return call_user_func_array( array( $this->settings, $method ), func_get_args() );
+			};
+			if ( 0 === strpos( $hook, 'admin_post_backuper_' ) ) {
+				DD_Maintenance_Legacy_Compatibility::register_legacy_hook( $hook, $callback );
+				continue;
+			}
+			add_action( $hook, $callback );
 		}
 	}
 }

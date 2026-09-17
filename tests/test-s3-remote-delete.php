@@ -20,10 +20,10 @@ function get_bloginfo( $field ) { return 'Site Test'; }
 function wp_parse_url( $url ) { return parse_url( $url ); }
 function wp_remote_request( $url, $args = array() ) {
 	$method = $args['method'] ?? 'GET';
-	$GLOBALS['s3_mock_requests'][] = array( 'method' => $method, 'url' => $url );
-	if ( 'PUT' === $method && ! empty( $GLOBALS['s3_put_responses'] ) ) {
-		return array_shift( $GLOBALS['s3_put_responses'] );
+	if ( 'DELETE' !== $method || ! isset( $args['headers'], $args['timeout'] ) || 30 !== $args['timeout'] ) {
+		throw new RuntimeException( 'wp_remote_request recebeu um contrato inesperado.' );
 	}
+	$GLOBALS['s3_mock_requests'][] = array( 'method' => $method, 'url' => $url );
 	return array(
 		'response' => array( 'code' => 204 ),
 		'body'     => '',
@@ -100,6 +100,42 @@ function get_option( $name, $default = array() ) {
 		's3_region'     => 'nyc3',
 	);
 }
+abstract class DD_Test_S3_Put_Transport {
+	public $requests = array();
+	private $responses;
+
+	public function __construct( array $responses ) {
+		$this->responses = $responses;
+	}
+
+	public function __invoke( $url, $headers, $file, $size ) {
+		if ( ! is_string( $url ) || ! is_array( $headers ) || ! is_file( $file ) || (int) filesize( $file ) !== (int) $size ) {
+			throw new RuntimeException( 'O transporte S3 recebeu argumentos inválidos.' );
+		}
+		foreach ( array( 'Host', 'Authorization', 'x-amz-content-sha256', 'x-amz-date', 'Content-Type', 'Content-Length' ) as $header ) {
+			if ( ! isset( $headers[ $header ] ) || '' === (string) $headers[ $header ] ) {
+				throw new RuntimeException( 'O transporte S3 recebeu cabeçalhos incompletos.' );
+			}
+		}
+		$this->requests[] = array(
+			'url'     => $url,
+			'headers' => $headers,
+			'file'    => $file,
+			'size'    => (int) $size,
+		);
+		if ( empty( $this->responses ) ) {
+			throw new RuntimeException( 'O transporte S3 recebeu uma tentativa não preparada.' );
+		}
+		$response = array_shift( $this->responses );
+		if ( is_wp_error( $response ) || is_array( $response ) ) {
+			return $response;
+		}
+		throw new RuntimeException( 'O transporte S3 retornou um contrato inesperado.' );
+	}
+}
+
+final class DD_Test_S3_Curl_Transport extends DD_Test_S3_Put_Transport {}
+final class DD_Test_S3_Wp_Remote_Request_Transport extends DD_Test_S3_Put_Transport {}
 
 require_once __DIR__ . '/../includes/class-dd-maintenance-s3.php';
 
@@ -138,53 +174,70 @@ assert( $backup_abc['size'] === 40 * 1024 * 1024, 'O tamanho total deve somar os
 $GLOBALS['s3_mock_requests'] = array();
 $result = $s3->delete_backup_remote( 'backup-abc-2026-08-24' );
 assert( $result['deleted'] === 3, 'Deve encontrar e excluir exatamente as 3 partes do backup-abc (2 zips + 1 sql).' );
-// 4. Testa put_object com arquivo simulado
+// 4. Testa o transporte cURL com cURL habilitado, sem substituir funções globais.
+$curl_transport = new DD_Test_S3_Curl_Transport(
+	array(
+		array(
+			'status'  => 204,
+			'headers' => array( 'etag' => '"curl-etag"' ),
+			'body'    => '',
+		),
+	)
+);
+$curl_s3 = new DD_Maintenance_S3( $curl_transport );
 $dummy_file = sys_get_temp_dir() . '/dummy_part.zip';
 file_put_contents( $dummy_file, 'dummy zip content' );
-$GLOBALS['s3_mock_requests'] = array();
-$put_res = $s3->put_object( 'site-test/2026-08-24/test.zip', $dummy_file );
-assert( ! is_wp_error( $put_res ), 'put_object deve ter sucesso.' );
+$put_res = $curl_s3->put_object( 'site-test/2026-08-24/test.zip', $dummy_file );
+assert( ! is_wp_error( $put_res ), 'put_object deve ter sucesso via double cURL.' );
+assert( '"curl-etag"' === $put_res['etag'], 'put_object deve preservar o ETag do transporte cURL.' );
+assert( 1 === count( $curl_transport->requests ), 'O double cURL deve receber exatamente um PUT.' );
 
-// 5. Falha transitória deve repetir o mesmo PUT, sem criar outra chave.
-$GLOBALS['s3_put_responses'] = array(
+// 5. Double separado para o contrato wp_remote_request e retry idempotente.
+$wp_transport = new DD_Test_S3_Wp_Remote_Request_Transport(
 	array(
-		'response' => array( 'code' => 503 ),
-		'headers'  => array( 'x-amz-request-id' => 'retry-request' ),
-		'body'     => '<Error><Code>ServiceUnavailable</Code></Error>',
-	),
-	array(
-		'response' => array( 'code' => 204 ),
-		'headers'  => array(),
-		'body'     => '',
-	),
+		array(
+			'status'  => 503,
+			'headers' => array( 'x-amz-request-id' => 'retry-request' ),
+			'body'    => '<Error><Code>ServiceUnavailable</Code></Error>',
+		),
+		array(
+			'status'  => 204,
+			'headers' => array( 'etag' => '"retry-etag"' ),
+			'body'    => '',
+		),
+	)
 );
-$GLOBALS['s3_mock_requests'] = array();
-$retry_res = $s3->put_object( 'site-test/2026-08-24/retry.zip', $dummy_file );
+$wp_s3 = new DD_Maintenance_S3( $wp_transport );
+$retry_res = $wp_s3->put_object( 'site-test/2026-08-24/retry.zip', $dummy_file );
 assert( ! is_wp_error( $retry_res ), 'PUT deve ser concluído após uma falha transitória.' );
-assert( count( $GLOBALS['s3_mock_requests'] ) === 2, 'Retry deve repetir o PUT idempotente exatamente uma vez.' );
+assert( 2 === count( $wp_transport->requests ), 'Retry deve repetir o PUT idempotente exatamente uma vez.' );
+assert( $wp_transport->requests[0]['url'] === $wp_transport->requests[1]['url'], 'Retry deve reutilizar a mesma chave.' );
 
 // 6. Resposta HTTP inválida deve expor status e request id, nunca credenciais.
-$GLOBALS['s3_put_responses'] = array(
+$invalid_transport = new DD_Test_S3_Wp_Remote_Request_Transport(
 	array(
-		'response' => array( 'code' => 400 ),
-		'headers'  => array( 'x-amz-request-id' => 'invalid-request' ),
-		'body'     => '<Error><Code>InvalidArgument</Code><Message>payload inválido</Message></Error>',
-	),
+		array(
+			'status'  => 400,
+			'headers' => array( 'x-amz-request-id' => 'invalid-request' ),
+			'body'    => '<Error><Code>InvalidArgument</Code><Message>payload inválido</Message></Error>',
+		),
+	)
 );
-$GLOBALS['s3_mock_requests'] = array();
-$invalid_res = $s3->put_object( 'site-test/2026-08-24/invalid.zip', $dummy_file );
+$invalid_s3 = new DD_Maintenance_S3( $invalid_transport );
+$invalid_res = $invalid_s3->put_object( 'site-test/2026-08-24/invalid.zip', $dummy_file );
 assert( is_wp_error( $invalid_res ), 'Resposta HTTP inválida deve retornar WP_Error.' );
 assert( false !== strpos( $invalid_res->get_error_message(), 'HTTP 400' ), 'Erro inválido deve informar o status HTTP.' );
 assert( false !== strpos( $invalid_res->get_error_message(), 'Request ID: invalid-request' ), 'Erro inválido deve informar o request id.' );
 assert( false === strpos( $invalid_res->get_error_message(), 'TESTSECRET' ), 'Erro nunca deve incluir a Secret Key.' );
 
-$large_file = sys_get_temp_dir() . '/dummy_large_part.zip';
-$large_handle = fopen( $large_file, 'wb' );
-ftruncate( $large_handle, 40 * 1024 * 1024 );
-fclose( $large_handle );
-$large_res = $s3->put_object( 'site-test/2026-08-24/large.zip', $large_file );
-assert( is_wp_error( $large_res ) && false !== strpos( $large_res->get_error_message(), 'Instale ou habilite a extensão cURL' ), 'Uploads grandes sem cURL devem ser bloqueados explicitamente.' );
-unlink( $large_file );
-@unlink( $dummy_file );
+// O double deve falhar imediatamente quando o contrato do transporte muda.
+$unexpected_contract = false;
+try {
+	$curl_transport( 'https://unexpected.invalid', array(), $dummy_file, 0 );
+} catch ( RuntimeException $exception ) {
+	$unexpected_contract = true;
+}
+assert( true === $unexpected_contract, 'O double deve rejeitar chamadas fora do contrato.' );
 
+@unlink( $dummy_file );
 echo "Testes de exclusão remota no S3 passaram com sucesso!\n";

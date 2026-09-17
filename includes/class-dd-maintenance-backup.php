@@ -36,11 +36,15 @@ class DD_Maintenance_Backup {
 	/**
 	 * Inicializa uma sessão de backup em lotes (cria pasta e metadados da sessão).
 	 *
+	 * @param string $correlation_id Correlação operacional da sessão.
 	 * @return array|WP_Error Dados da sessão inicializada.
 	 */
-	public function init_session() {
+	public function init_session( string $correlation_id = '' ) {
 		$this->set_time_and_memory_limits();
-
+		if ( '' === $correlation_id ) {
+			$start_event    = DD_Maintenance::record_event( 'backup', 'operation_started', array( 'step' => 'init', 'status' => 'running' ) );
+			$correlation_id = $start_event['correlation_id'];
+		}
 
 		$backup_dir = DD_Maintenance::backup_dir();
 		$backup_real = realpath( $backup_dir );
@@ -91,9 +95,10 @@ class DD_Maintenance_Backup {
 			'metadata_added'       => false,
 			'volume_count'         => 0,
 			'volumes_completed'    => false,
-			'total_size'           => 0,
-			'parts'                => array(),
-			'created_at'           => time(),
+			'total_size'          => 0,
+			'parts'               => array(),
+			'correlation_id'      => $correlation_id,
+			'created_at'          => time(),
 		);
 
 		if ( ! $this->save_session_data( $session_dir, $session_data ) ) {
@@ -112,7 +117,22 @@ class DD_Maintenance_Backup {
 	 * @return bool
 	 */
 	private function save_session_data( string $session_dir, array $data ): bool {
-		return $this->session_store->save( $session_dir, $data );
+		$saved = $this->session_store->save( $session_dir, $data );
+		if ( ! $saved && class_exists( 'DD_Maintenance' ) && method_exists( 'DD_Maintenance', 'record_event' ) ) {
+			DD_Maintenance::record_event(
+				'backup',
+				'checkpoint_failed',
+				array(
+					'step'           => $data['phase'] ?? 'backup_checkpoint',
+					'session_id'     => $data['session_id'] ?? '',
+					'correlation_id' => $data['correlation_id'] ?? '',
+					'status'         => 'failure',
+					'failure_code'   => 'backup_session_save_failed',
+					'error_count'    => 1,
+				)
+			);
+		}
+		return $saved;
 	}
 
 	/**
@@ -183,7 +203,11 @@ class DD_Maintenance_Backup {
 				. '-- Table Prefix: ' . $table_prefix . "\n"
 				. '-- Data: ' . date( 'Y-m-d H:i:s' ) . "\n\n"
 				. "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n";
-			fwrite( $handle, $header );
+			if ( ! $this->write_handle( $handle, $header ) ) {
+				fclose( $handle );
+				$cleanup_errors = $this->cleanup_partial_write( $session, true );
+				return $this->write_failure( 'db_write', __( 'Não foi possível escrever o cabeçalho do dump do banco.', 'dd-maintenance' ), $cleanup_errors );
+			}
 			$session['db_initialized']    = true;
 			$session['db_completed']      = false;
 			$session['db_table_index']    = 0;
@@ -212,7 +236,12 @@ class DD_Maintenance_Backup {
 					continue;
 				}
 
-				fwrite( $handle, "\nDROP TABLE IF EXISTS `{$quoted_name}`;\n" . $create[1] . ";\n\n" );
+				$schema_sql = "\nDROP TABLE IF EXISTS `{$quoted_name}`;\n" . $create[1] . ";\n\n";
+				if ( ! $this->write_handle( $handle, $schema_sql ) ) {
+					fclose( $handle );
+					$cleanup_errors = $this->cleanup_partial_write( $session, true );
+					return $this->write_failure( 'db_write', __( 'Não foi possível escrever o schema do dump do banco.', 'dd-maintenance' ), $cleanup_errors );
+				}
 				fflush( $handle );
 				$session['db_schema_written'] = true;
 				$session['db_position']       = ftell( $handle );
@@ -264,7 +293,11 @@ class DD_Maintenance_Backup {
 			}
 
 			if ( '' !== $sql ) {
-				fwrite( $handle, $sql );
+				if ( ! $this->write_handle( $handle, $sql ) ) {
+					fclose( $handle );
+					$cleanup_errors = $this->cleanup_partial_write( $session, true );
+					return $this->write_failure( 'db_write', __( 'Não foi possível escrever os dados do dump do banco.', 'dd-maintenance' ), $cleanup_errors );
+				}
 				fflush( $handle );
 			}
 
@@ -286,8 +319,12 @@ class DD_Maintenance_Backup {
 
 		$completed = $session['db_table_index'] >= $total;
 		if ( $completed ) {
-			fwrite( $handle, "\nSET FOREIGN_KEY_CHECKS = 1;\n-- Fim do dump\n" );
-			fflush( $handle );
+			$footer = "\nSET FOREIGN_KEY_CHECKS = 1;\n-- Fim do dump\n";
+			if ( ! $this->write_handle( $handle, $footer ) ) {
+				fclose( $handle );
+				$cleanup_errors = $this->cleanup_partial_write( $session, true );
+				return $this->write_failure( 'db_write', __( 'Não foi possível finalizar o dump do banco.', 'dd-maintenance' ), $cleanup_errors );
+			}
 			$session['db_completed'] = true;
 			$session['db_position']  = ftell( $handle );
 			if ( ! $this->save_session_data( $session['session_dir'], $session ) ) {
@@ -379,10 +416,22 @@ class DD_Maintenance_Backup {
 						fclose( $queue );
 						return $source_ok;
 					}
-					fwrite( $manifest, wp_json_encode( $entry ) . "\n" );
+					$manifest_line = $this->jsonl_line( $entry );
+					if ( ! $this->write_handle( $manifest, $manifest_line ) ) {
+						fclose( $manifest );
+						fclose( $queue );
+						$cleanup_errors = $this->cleanup_partial_write( $session );
+						return $this->write_failure( 'index_write', __( 'Não foi possível escrever o manifesto do backup.', 'dd-maintenance' ), $cleanup_errors );
+					}
 					$session['total_files']++;
 				} elseif ( is_dir( $path ) ) {
-					fwrite( $queue, wp_json_encode( $entry ) . "\n" );
+					$queue_line = $this->jsonl_line( $entry );
+					if ( ! $this->write_handle( $queue, $queue_line ) ) {
+						fclose( $manifest );
+						fclose( $queue );
+						$cleanup_errors = $this->cleanup_partial_write( $session );
+						return $this->write_failure( 'index_write', __( 'Não foi possível escrever a fila do backup.', 'dd-maintenance' ), $cleanup_errors );
+					}
 				} elseif ( file_exists( $path ) ) {
 					fclose( $manifest );
 					fclose( $queue );
@@ -478,10 +527,22 @@ class DD_Maintenance_Backup {
 							fclose( $queue );
 							return $source_ok;
 						}
-						fwrite( $manifest, wp_json_encode( $entry ) . "\n" );
+						$manifest_line = $this->jsonl_line( $entry );
+						if ( ! $this->write_handle( $manifest, $manifest_line ) ) {
+							fclose( $manifest );
+							fclose( $queue );
+							$cleanup_errors = $this->cleanup_partial_write( $session );
+							return $this->write_failure( 'index_write', __( 'Não foi possível atualizar o manifesto do backup.', 'dd-maintenance' ), $cleanup_errors );
+						}
 						$session['total_files']++;
 					} elseif ( is_dir( $item_path ) ) {
-						fwrite( $queue, wp_json_encode( $entry ) . "\n" );
+						$queue_line = $this->jsonl_line( $entry );
+						if ( ! $this->write_handle( $queue, $queue_line ) ) {
+							fclose( $manifest );
+							fclose( $queue );
+							$cleanup_errors = $this->cleanup_partial_write( $session );
+							return $this->write_failure( 'index_write', __( 'Não foi possível atualizar a fila do backup.', 'dd-maintenance' ), $cleanup_errors );
+						}
 					} elseif ( file_exists( $item_path ) ) {
 						fclose( $manifest );
 						fclose( $queue );
@@ -505,8 +566,13 @@ class DD_Maintenance_Backup {
 
 		if ( $completed ) {
 			if ( empty( $session['db_manifested'] ) && ! empty( $session['settings']['include_db'] ) && is_file( $session['db_file'] ) ) {
-				$entry = array( 'path' => $session['db_file'], 'target' => 'database.sql' );
-				file_put_contents( $session['manifest_file'], wp_json_encode( $entry ) . "\n", FILE_APPEND );
+				$entry      = array( 'path' => $session['db_file'], 'target' => 'database.sql' );
+				$manifest_line = $this->jsonl_line( $entry );
+				$written = is_string( $manifest_line ) ? file_put_contents( $session['manifest_file'], $manifest_line, FILE_APPEND | LOCK_EX ) : false;
+				if ( false === $written || (int) $written !== strlen( $manifest_line ) ) {
+					$cleanup_errors = $this->cleanup_partial_write( $session );
+					return $this->write_failure( 'index_write', __( 'Não foi possível registrar o dump no manifesto do backup.', 'dd-maintenance' ), $cleanup_errors );
+				}
 				clearstatcache( true, $session['manifest_file'] );
 				$session['manifest_size'] = (int) filesize( $session['manifest_file'] );
 				$session['total_files']++;
@@ -711,6 +777,9 @@ class DD_Maintenance_Backup {
 						'files'   => array_values( $session['large_files'] ),
 					)
 				);
+				if ( false === $metadata ) {
+					return new WP_Error( 'volume_metadata_write', __( 'Não foi possível serializar o manifesto dos arquivos grandes.', 'dd-maintenance' ) );
+				}
 				$last_volume = end( $volume_files );
 				$entry_size  = strlen( $metadata ) + 1024;
 				$payload_limit = $this->get_payload_size( $session );
@@ -724,8 +793,11 @@ class DD_Maintenance_Backup {
 					return $zip;
 				}
 				if ( false === $zip->locateName( '__dd_chunks__/manifest.json' ) ) {
-					$zip->addFromString( '__dd_chunks__/manifest.json', $metadata );
-					$zip->setCompressionName( '__dd_chunks__/manifest.json', ZipArchive::CM_STORE );
+					if ( ! $zip->addFromString( '__dd_chunks__/manifest.json', $metadata )
+						|| ! $zip->setCompressionName( '__dd_chunks__/manifest.json', ZipArchive::CM_STORE ) ) {
+						$zip->close();
+						return new WP_Error( 'volume_metadata_write', __( 'Não foi possível escrever o manifesto dos arquivos grandes.', 'dd-maintenance' ) );
+					}
 				}
 				$closed = $this->close_volume( $zip, $last_volume, $session );
 				if ( is_wp_error( $closed ) ) {
@@ -817,7 +889,22 @@ class DD_Maintenance_Backup {
 			return $session;
 		}
 
-		$this->clean_session_directory( $session['session_dir'] );
+		$cleaned = $this->clean_session_directory( $session['session_dir'] );
+		if ( ! $cleaned ) {
+			DD_Maintenance::record_event(
+				'backup',
+				'cleanup_failed',
+				array(
+					'step'           => 'backup_cleanup',
+					'session_id'     => $session_id,
+					'correlation_id' => $session['correlation_id'] ?? '',
+					'status'         => 'failure',
+					'failure_code'   => 'backup_cleanup_failed',
+					'error_count'    => 1,
+				)
+			);
+			return new WP_Error( 'backup_cleanup_failed', __( 'Não foi possível limpar todos os arquivos temporários do backup.', 'dd-maintenance' ) );
+		}
 		return true;
 	}
 	/**
@@ -830,11 +917,11 @@ class DD_Maintenance_Backup {
 	 * @return array
 	 */
 	public function cleanup_failed_session( string $session_id, string $error_message = '', array $accumulated_log = array() ): array {
-		$session_id  = sanitize_file_name( $session_id );
-		$session     = $this->get_session_data( $session_id );
-		$base_name   = ! is_wp_error( $session ) && ! empty( $session['base_name'] ) ? $session['base_name'] : '';
-		$session_dir = ! is_wp_error( $session ) && ! empty( $session['session_dir'] ) ? $session['session_dir'] : '';
-
+		$session_id    = sanitize_file_name( $session_id );
+		$session       = $this->get_session_data( $session_id );
+		$base_name     = ! is_wp_error( $session ) && ! empty( $session['base_name'] ) ? $session['base_name'] : '';
+		$session_dir   = ! is_wp_error( $session ) && ! empty( $session['session_dir'] ) ? $session['session_dir'] : '';
+		$correlation_id = ! is_wp_error( $session ) ? (string) ( $session['correlation_id'] ?? '' ) : '';
 		$cleanup_failed = false;
 		if ( ! empty( $session_dir ) && is_dir( $session_dir ) ) {
 			$cleanup_failed = ! $this->clean_session_directory( $session_dir );
@@ -864,12 +951,30 @@ class DD_Maintenance_Backup {
 			: '[AUTOLIMPEZA] Arquivos temporários residuais removidos da pasta de uploads com sucesso.';
 		$log[] = '[Fim com Erro] ' . current_time( 'Y-m-d H:i:s' );
 
-
-		DD_Maintenance::save_log( $log, 'failure', $base_name );
+		$log_path = DD_Maintenance::save_log( $log, 'failure', $base_name );
+		if ( '' === $log_path ) {
+			$cleanup_failed = true;
+			$log[]          = '[AVISO] O log da falha não pôde ser persistido.';
+		}
+		if ( $cleanup_failed ) {
+			DD_Maintenance::record_event(
+				'backup',
+				'cleanup_failed',
+				array(
+					'step'           => 'backup_fail_cleanup',
+					'session_id'     => $session_id,
+					'correlation_id' => $correlation_id,
+					'status'         => 'failure',
+					'failure_code'   => 'backup_cleanup_failed',
+					'error_count'    => 1,
+				)
+			);
+		}
 
 		return array(
-			'cleaned' => true,
+			'cleaned' => ! $cleanup_failed,
 			'log'     => $log,
+			'errors'  => $cleanup_failed ? array( 'cleanup_failed' ) : array(),
 		);
 	}
 
@@ -1152,7 +1257,101 @@ class DD_Maintenance_Backup {
 	}
 
 	/**
-	 * Reverte uma gravação incompleta para o último checkpoint persistido.
+	 * Escreve todo o conteúdo em um handle aberto.
+	 *
+	 * @param resource $handle  Handle de destino.
+	 * @param mixed    $content Conteúdo a escrever.
+	 * @return bool
+	 */
+	private function write_handle( $handle, $content ): bool {
+		if ( ! is_string( $content ) ) {
+			return false;
+		}
+		$written = fwrite( $handle, $content );
+		return false !== $written && strlen( $content ) === $written;
+	}
+
+	/**
+	 * Serializa uma entrada JSONL sem transformar falha de encoding em linha válida.
+	 *
+	 * @param array $entry Entrada.
+	 * @return string|false
+	 */
+	private function jsonl_line( array $entry ) {
+		$json = wp_json_encode( $entry );
+		return false === $json ? false : $json . "\n";
+	}
+
+	/**
+	 * Remove ou trunca artefatos escritos antes de confirmar o checkpoint.
+	 *
+	 * @param array $session Estado da sessão.
+	 * @param bool  $database Se deve limpar o dump SQL.
+	 * @return string[]
+	 */
+	private function cleanup_partial_write( array $session, bool $database = false ): array {
+		$errors = array();
+		if ( $database ) {
+			$path = $session['db_file'] ?? '';
+			if ( is_string( $path ) && is_link( $path ) ) {
+				return unlink( $path ) ? $errors : array( 'db_file' );
+			}
+			if ( is_string( $path ) && file_exists( $path ) ) {
+				$position = (int) ( $session['db_position'] ?? 0 );
+				if ( $position > 0 ) {
+					if ( ! $this->truncate_file( $path, $position ) ) {
+						$errors[] = 'db_file';
+					}
+				} elseif ( ! unlink( $path ) ) {
+					$errors[] = 'db_file';
+				}
+			}
+			return $errors;
+		}
+
+		foreach ( array( 'manifest_file', 'index_queue_file' ) as $key ) {
+			$path = $session[ $key ] ?? '';
+			if ( ! is_string( $path ) ) {
+				continue;
+			}
+			if ( is_link( $path ) ) {
+				if ( ! unlink( $path ) ) {
+					$errors[] = $key;
+				}
+				continue;
+			}
+			if ( ! file_exists( $path ) ) {
+				continue;
+			}
+			$size = 'manifest_file' === $key ? (int) ( $session['manifest_size'] ?? 0 ) : (int) ( $session['index_queue_size'] ?? 0 );
+			if ( ! empty( $session['index_initialized'] ) ) {
+				if ( ! $this->truncate_file( $path, $size ) ) {
+					$errors[] = $key;
+				}
+			} elseif ( ! unlink( $path ) ) {
+				$errors[] = $key;
+			}
+		}
+		return $errors;
+	}
+
+	/**
+	 * Cria erro estável para falhas de escrita, preservando falhas de limpeza.
+	 *
+	 * @param string   $code             Código original.
+	 * @param string   $message          Mensagem original.
+	 * @param string[] $cleanup_errors   Artefatos que não puderam ser limpos.
+	 * @return WP_Error
+	 */
+	private function write_failure( string $code, string $message, array $cleanup_errors = array() ): WP_Error {
+		if ( ! empty( $cleanup_errors ) ) {
+			$message .= ' [cleanup: ' . implode( ', ', $cleanup_errors ) . ']';
+		}
+		return new WP_Error( $code, $message );
+	}
+
+	/**
+	 * Abre e trunca um arquivo para recuperar o checkpoint confirmado.
 	 *
 	 * @param string $file Caminho do arquivo.
 	 * @param int    $size Tamanho confirmado.

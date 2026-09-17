@@ -23,6 +23,15 @@ function wp_unslash( $value ) { return $value; }
 function is_user_logged_in() { return true; }
 function current_user_can( $capability ) { return 'manage_options' === $capability; }
 function check_ajax_referer( $action, $query_arg, $stop = true ) { return true; }
+if ( ! function_exists( 'get_option' ) ) {
+	function get_option( $name, $default = false ) { return $GLOBALS['dd_test_options'][ $name ] ?? $default; }
+}
+if ( ! function_exists( 'update_option' ) ) {
+	function update_option( $name, $value, $autoload = true ) { $GLOBALS['dd_test_options'][ $name ] = $value; return true; }
+}
+if ( ! function_exists( 'add_action' ) ) {
+	function add_action() {}
+}
 function wp_send_json_success( $data = null ) { throw new DD_Maintenance_Test_Response( true, $data ); }
 function wp_send_json_error( $data = null ) { throw new DD_Maintenance_Test_Response( false, $data ); }
 if ( ! class_exists( 'DD_Maintenance_Test_Response' ) ) {
@@ -45,7 +54,7 @@ if ( ! class_exists( 'DD_Maintenance_Config' ) ) {
 require_once __DIR__ . '/../includes/class-dd-maintenance.php';
 require_once __DIR__ . '/../includes/class-dd-maintenance-settings.php';
 require_once __DIR__ . '/../includes/class-dd-maintenance-restore.php';
-$production_settings = ( new ReflectionClass( 'DD_Maintenance_Settings' ) )->newInstanceWithoutConstructor();
+$production_settings = new DD_Maintenance_Settings();
 $_POST               = array( 'mode' => 'upload_init' );
 try {
 	$production_settings->ajax_handle_restore();

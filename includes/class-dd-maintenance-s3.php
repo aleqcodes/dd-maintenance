@@ -63,9 +63,23 @@ class DD_Maintenance_S3 {
 	private $endpoint;
 
 	/**
-	 * Construtor.
+	 * Transporte de upload injetado para testes e integrações controladas.
+	 *
+	 * @var callable|null
 	 */
-	public function __construct() {
+	private $put_transport;
+
+	/**
+	 * Construtor.
+	 *
+	 * @param callable|null $put_transport Transporte opcional para o PUT.
+	 */
+	public function __construct( $put_transport = null ) {
+		if ( null !== $put_transport && ! is_callable( $put_transport ) ) {
+			throw new InvalidArgumentException( 'O transporte de upload S3 deve ser chamável.' );
+		}
+		$this->put_transport = $put_transport;
+
 		$saved_settings = ( new DD_Maintenance_Settings_Repository() )->get();
 
 		$this->settings   = is_array( $saved_settings ) ? $saved_settings : array();
@@ -846,6 +860,17 @@ class DD_Maintenance_S3 {
 		}
 		ignore_user_abort( true );
 
+		if ( null !== $this->put_transport ) {
+			$response = call_user_func( $this->put_transport, $url, $headers, $file, $size );
+			if ( is_wp_error( $response ) ) {
+				return $response;
+			}
+			if ( ! is_array( $response ) ) {
+				return new WP_Error( 's3_transport_contract', __( 'O transporte de upload retornou um resultado inválido.', 'dd-maintenance' ) );
+			}
+			return $this->parse_put_response( $response );
+		}
+
 		if ( function_exists( 'curl_init' ) ) {
 			$handle = fopen( $file, 'rb' );
 			if ( ! $handle ) {
@@ -900,12 +925,14 @@ class DD_Maintenance_S3 {
 			curl_close( $ch );
 			fclose( $handle );
 
-			if ( $code >= 200 && $code < 300 ) {
-				return array( 'etag' => '' );
-			}
-
-			$error_code = 0 === $code ? 's3_transport' : ( $this->is_retryable_http_code( $code ) ? 's3_upload_retryable' : 's3_upload' );
-			return new WP_Error( $error_code, $this->friendly_error( $code, (string) $body, $error, $request_id ) );
+			return $this->parse_put_response(
+				array(
+					'status'  => $code,
+					'body'    => (string) $body,
+					'error'   => $error,
+					'headers' => array( 'x-amz-request-id' => $request_id ),
+				)
+			);
 		}
 
 		$body_limit = $this->get_safe_body_limit();
@@ -940,14 +967,39 @@ class DD_Maintenance_S3 {
 			return $response;
 		}
 
-		$code       = (int) wp_remote_retrieve_response_code( $response );
-		$request_id = wp_remote_retrieve_header( $response, 'x-amz-request-id' );
+		return $this->parse_put_response(
+			array(
+				'status'  => (int) wp_remote_retrieve_response_code( $response ),
+				'body'    => wp_remote_retrieve_body( $response ),
+				'headers' => array(
+					'x-amz-request-id' => wp_remote_retrieve_header( $response, 'x-amz-request-id' ),
+					'etag'             => wp_remote_retrieve_header( $response, 'etag' ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Normaliza a resposta HTTP dos transportes de upload.
+	 *
+	 * @param array $response Resposta normalizada do transporte.
+	 * @return array|WP_Error
+	 */
+	private function parse_put_response( array $response ) {
+		$code       = isset( $response['status'] ) ? (int) $response['status'] : 0;
+		$body       = isset( $response['body'] ) ? (string) $response['body'] : '';
+		$error      = isset( $response['error'] ) ? (string) $response['error'] : '';
+		$headers    = isset( $response['headers'] ) && is_array( $response['headers'] ) ? $response['headers'] : array();
+		$request_id = isset( $headers['x-amz-request-id'] ) ? (string) $headers['x-amz-request-id'] : '';
+
 		if ( $code >= 200 && $code < 300 ) {
-			return array( 'etag' => wp_remote_retrieve_header( $response, 'etag' ) );
+			return array(
+				'etag' => isset( $headers['etag'] ) ? (string) $headers['etag'] : '',
+			);
 		}
 
-		$error_code = $this->is_retryable_http_code( $code ) ? 's3_upload_retryable' : 's3_upload';
-		return new WP_Error( $error_code, $this->friendly_error( $code, wp_remote_retrieve_body( $response ), '', $request_id ) );
+		$error_code = 0 === $code && '' !== $error ? 's3_transport' : ( $this->is_retryable_http_code( $code ) ? 's3_upload_retryable' : 's3_upload' );
+		return new WP_Error( $error_code, $this->friendly_error( $code, $body, $error, $request_id ) );
 	}
 
 	/**

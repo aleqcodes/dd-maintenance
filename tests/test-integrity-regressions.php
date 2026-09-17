@@ -135,7 +135,13 @@ final class DD_Maintenance {
 		wp_mkdir_p( $dir );
 		return $dir;
 	}
+
+	public static function record_event( $operation, $event, $context = array() ) {
+		return DD_Maintenance_Observability::make_event( $operation, $event, $context );
+	}
 }
+
+require dirname( __DIR__ ) . '/includes/class-dd-maintenance-observability.php';
 
 require dirname( __DIR__ ) . '/includes/class-dd-maintenance-backup.php';
 require dirname( __DIR__ ) . '/includes/class-dd-maintenance-restore.php';
@@ -168,6 +174,12 @@ try {
 	file_put_contents( $store_dir . '/state.json', json_encode( $stored_json ) );
 	$tampered_state = $session_store->load( $store_dir, 'missing', 'corrupted' );
 	assert( is_wp_error( $tampered_state ) && 'corrupted' === $tampered_state->get_error_code(), 'Uma sessão alterada deve ser rejeitada pelo checksum.' );
+	$legacy_dir = DD_Maintenance::backup_dir() . '/legacy-session-store';
+	wp_mkdir_p( $legacy_dir );
+	file_put_contents( $legacy_dir . '/state.json', json_encode( array( 'session_id' => 'legacy-store-test', 'step' => 3 ) ) );
+	$legacy_state = $session_store->load( $legacy_dir, 'missing', 'corrupted' );
+	assert( ! is_wp_error( $legacy_state ) && 3 === $legacy_state['step'], 'Sessões antigas sem checksum devem continuar legíveis durante a transição.' );
+	$session_store->remove_directory( $legacy_dir );
 	$session_store->remove_directory( $store_dir );
 	$first  = $backup->init_session();
 	$second = $backup->init_session();
@@ -207,10 +219,13 @@ try {
 	assert( ! is_wp_error( $batch1 ) && $batch1['completed'] === false, 'O primeiro lote SQL deve deixar trabalho pendente.' );
 	assert( $saved1['db_offset'] > 0 && $batch1['percent'] > 0, 'O lote SQL deve persistir offset e progresso reais.' );
 	$batch2 = $restore->restore_database_step( 'rst_progress', 0.0 );
+	$saved2 = json_decode( file_get_contents( $restore_dir . '/state.json' ), true );
 	assert( ! is_wp_error( $batch2 ) && $batch2['completed'] === true && $batch2['queries'] === 600, 'O segundo lote deve retomar e concluir sem repetir consultas.' );
+	$setup_count = count( array_filter( $wpdb->queries, static function( $sql ) { return 'SET FOREIGN_KEY_CHECKS = 0;' === $sql; } ) );
+	assert( 1 === $setup_count, 'A preparação do banco não deve repetir queries entre lotes.' );
+	assert( true === $saved2['db_done'] && ! empty( $saved2['db_stats']['warnings'] ), 'Uma finalização sem tabela de opções deve terminar com aviso explícito.' );
 
-	$settings_reflection = new ReflectionClass( 'DD_Maintenance_Settings' );
-	$settings_handler    = $settings_reflection->newInstanceWithoutConstructor();
+	$settings_handler = new DD_Maintenance_Settings();
 	$capture_response    = static function( array $post ) use ( $settings_handler ) {
 		$_POST = $post;
 		try {
@@ -298,11 +313,25 @@ try {
 	file_put_contents( $existing_state_dir . '/state.json', json_encode( $existing_state ) );
 	$existing_result = $restore->restore_files_step( 'rst_existing_file' );
 	$restored_file   = ABSPATH . 'wp-content/data/fixture.txt';
+	$saved_existing  = json_decode( file_get_contents( $existing_state_dir . '/state.json' ), true );
 	assert( ! is_wp_error( $existing_result ) && true === $existing_result['completed'], 'Um arquivo existente deve concluir a restauração progressiva.' );
 	assert( file_exists( $restored_file ) && 'restore fixture' === file_get_contents( $restored_file ), 'Um arquivo existente deve ser copiado para o destino calculado.' );
+	assert( true === $saved_existing['files_done'] && 1 === $saved_existing['files_copied'], 'A última cópia deve persistir o estado final antes de retornar.' );
+	assert( (int) $saved_existing['files_queue_offset'] > 0, 'A última cópia deve persistir o offset consumido.' );
 
 	$existing_repeat = $restore->restore_files_step( 'rst_existing_file' );
 	assert( ! is_wp_error( $existing_repeat ) && 1 === $existing_repeat['copied'], 'A retomada do lote de arquivos deve ser idempotente.' );
+
+	$checkpoint_failure_dir = DD_Maintenance::backup_dir() . '/restore_checkpoint_failure';
+	wp_mkdir_p( $checkpoint_failure_dir );
+	$checkpoint_state = array( 'session_id' => 'rst_checkpoint_failure', 'step' => 'files', 'files_copied' => 0 );
+	assert( $session_store->save( $checkpoint_failure_dir, $checkpoint_state ) === true, 'O estado inicial do checkpoint deve ser criado.' );
+	assert( chmod( $checkpoint_failure_dir, 0555 ) === true, 'O diretório do checkpoint deve aceitar simulação de falha de disco.' );
+	$checkpoint_state['files_copied'] = 1;
+	assert( $restore->save_restore_session_data( $checkpoint_failure_dir, $checkpoint_state ) === false, 'A falha de persistência deve ser retornada ao chamador.' );
+	$unchanged_checkpoint = $session_store->load( $checkpoint_failure_dir, 'missing', 'corrupted' );
+	assert( ! is_wp_error( $unchanged_checkpoint ) && 0 === $unchanged_checkpoint['files_copied'], 'Uma falha de checkpoint não deve avançar o estado persistido.' );
+	chmod( $checkpoint_failure_dir, 0755 );
 
 
 	$sql_only = DD_Maintenance::backup_dir() . '/sql-only.sql';

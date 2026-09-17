@@ -24,6 +24,7 @@ class DD_Maintenance_Backup_Result {
 	public $size = 0;
 	public $percent = 0;
 	public $log = '';
+	public $correlation_id = '';
 
 	/**
 	 * Converte o array legado de backup para um resultado tipado por contrato.

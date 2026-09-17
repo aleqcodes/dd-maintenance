@@ -375,8 +375,15 @@ class DD_Maintenance_Elementor_Compatibility {
 		if ( is_link( $parent ) || false === $parent_real || wp_normalize_path( $parent_real ) !== wp_normalize_path( $parent ) ) return false;
 		if ( is_link( $target ) ) return false;
 		$temp = $target . '.tmp-' . wp_generate_password( 12, false );
-		if ( is_link( $temp ) || ! copy( $source, $temp ) ) return false;
-		return rename( $temp, $target );
+		if ( is_link( $temp ) || ! copy( $source, $temp ) ) {
+			if ( file_exists( $temp ) ) unlink( $temp );
+			return false;
+		}
+		if ( ! rename( $temp, $target ) ) {
+			if ( file_exists( $temp ) ) unlink( $temp );
+			return false;
+		}
+		return true;
 	}
 
 	private static function atomic_write( string $target, string $content ): bool {
@@ -385,8 +392,16 @@ class DD_Maintenance_Elementor_Compatibility {
 		if ( is_link( $parent ) || false === $parent_real || wp_normalize_path( $parent_real ) !== wp_normalize_path( $parent ) ) return false;
 		if ( is_link( $target ) ) return false;
 		$temp = $target . '.tmp-' . wp_generate_password( 12, false );
-		if ( is_link( $temp ) || false === file_put_contents( $temp, $content, LOCK_EX ) ) return false;
-		return rename( $temp, $target );
+		$written = file_put_contents( $temp, $content, LOCK_EX );
+		if ( is_link( $temp ) || false === $written || (int) $written !== strlen( $content ) ) {
+			if ( file_exists( $temp ) ) unlink( $temp );
+			return false;
+		}
+		if ( ! rename( $temp, $target ) ) {
+			if ( file_exists( $temp ) ) unlink( $temp );
+			return false;
+		}
+		return true;
 	}
 
 	private static function record( array $result ): void {
